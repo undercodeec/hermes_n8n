@@ -2,8 +2,7 @@
 // Sistema completo de CRM conversacional para ventas por WhatsApp
 
 generator client {
-  provider      = "prisma-client-js"
-  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+  provider = "prisma-client-js"
 }
 
 datasource db {
