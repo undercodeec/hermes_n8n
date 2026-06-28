@@ -1,0 +1,439 @@
+// Hermes Backend - Prisma Schema
+// Sistema completo de CRM conversacional para ventas por WhatsApp
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// Auth & Users
+// ─────────────────────────────────────────────
+
+enum UserRole {
+  ADMIN
+  SALES_AGENT
+  VIEWER
+}
+
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  name      String
+  role      UserRole @default(SALES_AGENT)
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relaciones
+  assignedHandoffs HumanHandoff[] @relation("AssignedAgent")
+  assignedTasks    Task[]         @relation("AssignedUser")
+  auditLogs        AuditLog[]
+
+  @@map("users")
+}
+
+// ─────────────────────────────────────────────
+// Contacts & Leads
+// ─────────────────────────────────────────────
+
+model Contact {
+  id        String   @id @default(uuid())
+  waId      String   @unique // WhatsApp ID (número de teléfono)
+  phone     String?
+  name      String?
+  email     String?
+  company   String?
+  position  String?  // Cargo
+  notes     String?
+  metadata  Json?    // Datos extra flexibles
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Relaciones
+  leads         Lead[]
+  conversations Conversation[]
+  messages      Message[]
+
+  @@map("contacts")
+}
+
+enum LeadStage {
+  NEW
+  CONTACTED
+  QUALIFIED
+  PROPOSAL
+  NEGOTIATION
+  WON
+  LOST
+}
+
+model Lead {
+  id               String    @id @default(uuid())
+  contactId        String
+  stage            LeadStage @default(NEW)
+  score            Int       @default(0)
+  productOfInterest String?
+  estimatedBudget  Float?
+  lastObjection    String?
+  nextAction       String?
+  closeProbability Float?    // 0.0 a 1.0
+  lostReason       String?
+  wonAt            DateTime?
+  lostAt           DateTime?
+  metadata         Json?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  // Relaciones
+  contact        Contact         @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  tasks          Task[]
+  campaignSource CampaignSource? @relation(fields: [campaignSourceId], references: [id])
+  campaignSourceId String?
+
+  @@map("leads")
+}
+
+// ─────────────────────────────────────────────
+// Conversations & Messages
+// ─────────────────────────────────────────────
+
+enum ConversationStatus {
+  ACTIVE
+  PAUSED
+  HANDED_OFF
+  CLOSED
+}
+
+model Conversation {
+  id        String             @id @default(uuid())
+  contactId String
+  status    ConversationStatus @default(ACTIVE)
+  channel   String             @default("whatsapp")
+  metadata  Json?
+  closedAt  DateTime?
+  createdAt DateTime           @default(now())
+  updatedAt DateTime           @updatedAt
+
+  // Relaciones
+  contact  Contact            @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  messages Message[]
+  state    ConversationState?
+  handoffs HumanHandoff[]
+  tasks    Task[]
+
+  @@map("conversations")
+}
+
+model ConversationState {
+  id                String   @id @default(uuid())
+  conversationId    String   @unique
+  summary           String?  // Resumen corto de la conversación
+  detectedIntent    String?  // Intención detectada
+  nextSuggestedAction String? // Próxima acción sugerida
+  detectedRisks     String?  // Riesgos detectados
+  commercialTags    Json?    // Etiquetas comerciales (array de strings)
+  closeScore        Float?   // Puntaje de probabilidad de cierre
+  leadStage         String?  // Etapa del lead según la conversación
+  lastObjection     String?  // Última objeción detectada
+  updatedAt         DateTime @updatedAt
+
+  // Relaciones
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@map("conversation_states")
+}
+
+enum MessageDirection {
+  INBOUND
+  OUTBOUND
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  DOCUMENT
+  AUDIO
+  VIDEO
+  TEMPLATE
+  INTERACTIVE
+  REACTION
+  STICKER
+  LOCATION
+  UNKNOWN
+}
+
+model Message {
+  id             String           @id @default(uuid())
+  conversationId String
+  contactId      String
+  direction      MessageDirection
+  type           MessageType      @default(TEXT)
+  content        String?          // Contenido del mensaje
+  rawPayload     Json?            // Payload crudo de Meta
+  wamid          String?          @unique // WhatsApp Message ID
+  tokensUsed     Int?             // Tokens consumidos por Hermes
+  latencyMs      Int?             // Latencia en ms de la respuesta
+  costEstimate   Float?           // Costo estimado en USD
+  metadata       Json?
+  createdAt      DateTime         @default(now())
+
+  // Relaciones
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([conversationId, createdAt])
+  @@index([contactId])
+  @@map("messages")
+}
+
+// ─────────────────────────────────────────────
+// Products & Pricing
+// ─────────────────────────────────────────────
+
+model Product {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  category    String?
+  sku         String?  @unique
+  imageUrl    String?
+  isActive    Boolean  @default(true)
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  // Relaciones
+  priceLists PriceList[]
+
+  @@map("products")
+}
+
+model PriceList {
+  id           String    @id @default(uuid())
+  productId    String
+  name         String
+  price        Float
+  currency     String    @default("USD")
+  validFrom    DateTime  @default(now())
+  validUntil   DateTime?
+  restrictions String?   // Restricciones o condiciones
+  notes        String?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relaciones
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@map("price_lists")
+}
+
+// ─────────────────────────────────────────────
+// Knowledge & Playbooks
+// ─────────────────────────────────────────────
+
+enum DocumentType {
+  FAQ
+  POLICY
+  CATALOG
+  GUIDE
+  TERMS
+  PRICING
+  GENERAL
+}
+
+model KnowledgeDocument {
+  id        String       @id @default(uuid())
+  title     String
+  content   String       // Contenido completo del documento
+  type      DocumentType @default(GENERAL)
+  version   Int          @default(1)
+  tags      Json?        // Array de tags para búsqueda
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@map("knowledge_documents")
+}
+
+enum PlaybookType {
+  OPENING
+  OBJECTION_HANDLING
+  CLOSING
+  FOLLOW_UP
+  UPSELL
+  CROSS_SELL
+  REACTIVATION
+  GENERAL
+}
+
+model SalesPlaybook {
+  id        String       @id @default(uuid())
+  title     String
+  content   String       // Contenido del guión
+  type      PlaybookType @default(GENERAL)
+  triggers  Json?        // Condiciones para activar el playbook
+  priority  Int          @default(0)
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  @@map("sales_playbooks")
+}
+
+// ─────────────────────────────────────────────
+// Tasks & Handoff
+// ─────────────────────────────────────────────
+
+enum TaskType {
+  FOLLOW_UP
+  APPOINTMENT
+  CALLBACK
+  QUOTE
+  DEMO
+  GENERAL
+}
+
+enum TaskStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+}
+
+model Task {
+  id             String     @id @default(uuid())
+  leadId         String?
+  conversationId String?
+  assignedUserId String?
+  type           TaskType   @default(GENERAL)
+  status         TaskStatus @default(PENDING)
+  title          String
+  description    String?
+  dueAt          DateTime?
+  completedAt    DateTime?
+  metadata       Json?
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+
+  // Relaciones
+  lead         Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  assignedUser User?         @relation("AssignedUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
+
+  @@map("tasks")
+}
+
+enum HandoffReason {
+  SPECIAL_DISCOUNT
+  COMPLAINT
+  COMPLEX_QUOTE
+  B2B_NEGOTIATION
+  FRUSTRATED_USER
+  REPEATED_NO_PROGRESS
+  INFO_ERROR
+  PAYMENT_ISSUE
+  CUSTOM
+}
+
+enum HandoffStatus {
+  PENDING
+  ASSIGNED
+  IN_PROGRESS
+  RESOLVED
+  CANCELLED
+}
+
+model HumanHandoff {
+  id              String        @id @default(uuid())
+  conversationId  String
+  reason          HandoffReason @default(CUSTOM)
+  reasonDetail    String?
+  status          HandoffStatus @default(PENDING)
+  assignedAgentId String?
+  resolution      String?
+  resolvedAt      DateTime?
+  metadata        Json?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  // Relaciones
+  conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  assignedAgent User?        @relation("AssignedAgent", fields: [assignedAgentId], references: [id], onDelete: SetNull)
+
+  @@map("human_handoffs")
+}
+
+// ─────────────────────────────────────────────
+// Campaigns & Ads
+// ─────────────────────────────────────────────
+
+model CampaignSource {
+  id           String   @id @default(uuid())
+  utmSource    String?
+  utmMedium    String?
+  utmCampaign  String?
+  utmTerm      String?
+  utmContent   String?
+  landingPage  String?
+  entryChannel String?  @default("whatsapp")
+  firstMessage String?  // Primer mensaje del contacto
+  metadata     Json?
+  createdAt    DateTime @default(now())
+
+  // Relaciones
+  leads       Lead[]
+  adsMetadata AdsMetadata[]
+
+  @@map("campaign_sources")
+}
+
+model AdsMetadata {
+  id               String   @id @default(uuid())
+  campaignSourceId String
+  adId             String?  // Meta Ad ID
+  adsetId          String?  // Meta Adset ID
+  campaignId       String?  // Meta Campaign ID
+  adName           String?
+  spend            Float?   // Gasto del anuncio
+  impressions      Int?
+  clicks           Int?
+  currency         String?  @default("USD")
+  metadata         Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  // Relaciones
+  campaignSource CampaignSource @relation(fields: [campaignSourceId], references: [id], onDelete: Cascade)
+
+  @@map("ads_metadata")
+}
+
+// ─────────────────────────────────────────────
+// Audit
+// ─────────────────────────────────────────────
+
+model AuditLog {
+  id         String   @id @default(uuid())
+  userId     String?
+  action     String   // e.g. "UPDATE_PLAYBOOK", "CREATE_PRODUCT", "HANDOFF_CREATED"
+  entity     String   // e.g. "products", "playbooks", "leads"
+  entityId   String?
+  changes    Json?    // { before: {...}, after: {...} }
+  ipAddress  String?
+  createdAt  DateTime @default(now())
+
+  // Relaciones
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entity, entityId])
+  @@index([userId])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
