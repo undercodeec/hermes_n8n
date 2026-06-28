@@ -1,0 +1,88 @@
+version: '3.8'
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: hermes-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      PORT: 3003
+    ports:
+      - '3003:3003'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      n8n:
+        condition: service_started
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: hermes-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: hermes_user
+      POSTGRES_PASSWORD: hermes_password
+      POSTGRES_DB: hermes_db
+    ports:
+      - '5432:5432'
+    volumes:
+      - hermes_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U hermes_user -d hermes_db']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: hermes-redis
+    restart: unless-stopped
+    ports:
+      - '6379:6379'
+    volumes:
+      - hermes_redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  n8n:
+    image: n8nio/n8n:latest
+    container_name: hermes-n8n
+    restart: unless-stopped
+    ports:
+      - '5678:5678'
+    environment:
+      N8N_HOST: localhost
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      GENERIC_TIMEZONE: America/Guayaquil
+      TZ: America/Guayaquil
+      N8N_BASIC_AUTH_ACTIVE: 'true'
+      N8N_BASIC_AUTH_USER: admin
+      N8N_BASIC_AUTH_PASSWORD: hermes_n8n_admin_change_me
+      N8N_RUNNERS_ENABLED: 'true'
+      N8N_SECURE_COOKIE: 'false'
+    volumes:
+      - hermes_n8n_data:/home/node/.n8n
+    healthcheck:
+      test: ['CMD-SHELL', 'wget -q -O - http://localhost:5678/healthz || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  hermes_pgdata:
+    driver: local
+  hermes_redis_data:
+    driver: local
+  hermes_n8n_data:
+    driver: local
