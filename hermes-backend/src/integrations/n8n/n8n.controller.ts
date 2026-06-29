@@ -50,7 +50,12 @@ export class N8nTestController {
   /** Compara el token recibido contra `N8N_CALLBACK_TOKEN` en tiempo constante. */
   private assertAuthorized(token?: string): void {
     const expected = this.config.getOrThrow<string>('N8N_CALLBACK_TOKEN');
-    const a = Buffer.from(token ?? '');
+    // Fail-closed: nunca autorizar si el secreto no está configurado (vacío o
+    // débil) o si no llega token. `getOrThrow` no protege contra string vacío.
+    if (!token || expected.length < 16) {
+      throw new UnauthorizedException('Invalid or missing internal token');
+    }
+    const a = Buffer.from(token);
     const b = Buffer.from(expected);
     if (a.length !== b.length || !timingSafeEqual(a, b)) {
       throw new UnauthorizedException('Invalid or missing internal token');
