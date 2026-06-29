@@ -4,8 +4,9 @@ import * as crypto from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { MetaService } from '../meta/meta.service';
 import { HermesService } from '../hermes/hermes.service';
+import { HandoffService } from '../handoff/handoff.service';
 import { MetaWebhookDto, MetaWebhookMessage, MetaWebhookContact } from './dto/meta-webhook.dto';
-import { MessageDirection, MessageType, ConversationStatus } from '@prisma/client';
+import { MessageDirection, MessageType, ConversationStatus, HandoffReason } from '@prisma/client';
 
 @Injectable()
 export class WebhookService {
@@ -16,6 +17,7 @@ export class WebhookService {
     private readonly prisma: PrismaService,
     private readonly metaService: MetaService,
     private readonly hermesService: HermesService,
+    private readonly handoffService: HandoffService,
   ) {}
 
   /**
@@ -282,21 +284,17 @@ export class WebhookService {
   }
 
   /**
-   * Crea un handoff automático
+   * Crea un handoff automático.
+   *
+   * Delega en `HandoffService.create` (no escribe a Prisma directo): el service
+   * pausa la conversación, crea el registro y emite `conversation.handoff_requested`
+   * en un único punto, cubriendo tanto el handoff automático como el manual.
    */
   private async createAutoHandoff(conversationId: string, triggerMessage: string) {
-    await this.prisma.conversation.update({
-      where: { id: conversationId },
-      data: { status: ConversationStatus.HANDED_OFF },
-    });
-
-    await this.prisma.humanHandoff.create({
-      data: {
-        conversationId,
-        reason: 'CUSTOM',
-        reasonDetail: `Handoff automático. Mensaje trigger: ${triggerMessage.substring(0, 200)}`,
-        status: 'PENDING',
-      },
+    await this.handoffService.create({
+      conversationId,
+      reason: HandoffReason.CUSTOM,
+      reasonDetail: `Handoff automático. Mensaje trigger: ${triggerMessage.substring(0, 200)}`,
     });
 
     this.logger.log(`Handoff automático creado para conversación ${conversationId}`);
