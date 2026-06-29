@@ -56,19 +56,20 @@ services:
     container_name: hermes-n8n
     restart: unless-stopped
     ports:
-      - '5678:5678'
+      - '127.0.0.1:5678:5678'
     environment:
-      N8N_HOST: localhost
+      N8N_HOST: n8n.undercodeec.com
       N8N_PORT: 5678
-      N8N_PROTOCOL: http
-      WEBHOOK_URL: http://localhost:5678/
+      N8N_PROTOCOL: https
+      WEBHOOK_URL: https://n8n.undercodeec.com/
       GENERIC_TIMEZONE: America/Guayaquil
       TZ: America/Guayaquil
       N8N_BASIC_AUTH_ACTIVE: 'true'
       N8N_BASIC_AUTH_USER: admin
       N8N_BASIC_AUTH_PASSWORD: hermes_n8n_admin_change_me
       N8N_RUNNERS_ENABLED: 'true'
-      N8N_SECURE_COOKIE: 'false'
+      N8N_SECURE_COOKIE: 'true'
+      N8N_PROXY_HOPS: '1'
     volumes:
       - hermes_n8n_data:/home/node/.n8n
     healthcheck:
