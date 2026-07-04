@@ -70,6 +70,11 @@ services:
       N8N_RUNNERS_ENABLED: 'true'
       N8N_SECURE_COOKIE: 'true'
       N8N_PROXY_HOPS: '1'
+      # Permite require('crypto') dentro del Code node (nodo Verify HMAC).
+      NODE_FUNCTION_ALLOW_BUILTIN: crypto
+      # Secreto HMAC: se interpola desde hermes-backend/.env (no se hardcodea
+      # porque el repo es público). Mismo valor que usa el backend para firmar.
+      N8N_HMAC_SECRET: ${N8N_HMAC_SECRET}
     volumes:
       - hermes_n8n_data:/home/node/.n8n
     healthcheck:
