@@ -7,6 +7,7 @@ import { N8nQueueProcessor } from './n8n.queue.processor';
 import { N8nTestController } from './n8n.controller';
 import { PingListener } from './listeners/ping.listener';
 import { ConversationListener } from './listeners/conversation.listener';
+import { LeadListener } from './listeners/lead.listener';
 
 /**
  * Módulo de integración con n8n. Registra la cola `n8n-events` con su política
@@ -35,6 +36,7 @@ import { ConversationListener } from './listeners/conversation.listener';
     N8nQueueProcessor,
     PingListener,
     ConversationListener,
+    LeadListener,
   ],
 })
 export class N8nModule {}

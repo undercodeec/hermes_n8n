@@ -5,6 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MetaService } from '../meta/meta.service';
 import { HermesService } from '../hermes/hermes.service';
 import { HandoffService } from '../handoff/handoff.service';
+import { LeadsService } from '../leads/leads.service';
 import { MetaWebhookDto, MetaWebhookMessage, MetaWebhookContact } from './dto/meta-webhook.dto';
 import { MessageDirection, MessageType, ConversationStatus, HandoffReason } from '@prisma/client';
 
@@ -18,6 +19,7 @@ export class WebhookService {
     private readonly metaService: MetaService,
     private readonly hermesService: HermesService,
     private readonly handoffService: HandoffService,
+    private readonly leadsService: LeadsService,
   ) {}
 
   /**
@@ -182,6 +184,21 @@ export class WebhookService {
         await this.updateConversationState(conversation.id, hermesResponse);
       }
 
+      // Paso 11 (Etapa 3): calificación automática de lead. Si Hermes detectó
+      // una intención de alta compra, upsert del lead a QUALIFIED + emisión de
+      // `lead.qualified` (el service es el punto único de emisión).
+      if (this.shouldQualifyLead(hermesResponse.detectedIntent)) {
+        await this.leadsService.qualifyFromConversation({
+          contactId: contact.id,
+          conversationId: conversation.id,
+          detectedIntent: hermesResponse.detectedIntent,
+          productOfInterest: context.productOfInterest,
+        });
+        this.logger.log(
+          `Lead calificado automáticamente para ${contact.waId} (intent: ${hermesResponse.detectedIntent})`,
+        );
+      }
+
       this.logger.log(
         `Respuesta enviada a ${contact.waId} en ${latencyMs}ms`,
       );
@@ -281,6 +298,28 @@ export class WebhookService {
 
     const lowerMessage = userMessage.toLowerCase();
     return handoffKeywords.some((keyword) => lowerMessage.includes(keyword));
+  }
+
+  /**
+   * Decide si un lead debe calificarse automáticamente según el `detectedIntent`
+   * devuelto por Hermes. La lista de intents de alta intención es configurable
+   * vía `LEAD_QUALIFICATION_INTENTS` (CSV). Comparación case-insensitive.
+   *
+   * NOTA: el criterio `closeScore >= LEAD_QUALIFICATION_SCORE_THRESHOLD` del plan
+   * (§9.1) queda pendiente hasta que Hermes devuelva un puntaje de cierre; hoy
+   * `HermesResponseDto` no lo incluye, así que la calificación es sólo por intent.
+   */
+  private shouldQualifyLead(detectedIntent?: string): boolean {
+    if (!detectedIntent) return false;
+
+    const configured =
+      this.configService.get<string>('LEAD_QUALIFICATION_INTENTS') ?? '';
+    const highIntents = configured
+      .split(',')
+      .map((s) => s.trim().toLowerCase())
+      .filter(Boolean);
+
+    return highIntents.includes(detectedIntent.trim().toLowerCase());
   }
 
   /**

@@ -757,19 +757,25 @@ Por ahora, n8n + Telegram es el canal único de notificación al equipo de venta
 - [x] **Refactor confirmado**: `webhook.service.ts:createAutoHandoff` ya no escribe a Prisma directo; llama a `HandoffService.create(...)`. `HandoffService` inyectado en `WebhookService`, `HandoffModule` importado en `WebhookModule`.
 - [x] Emitir `ConversationHandoffRequestedEvent` desde `HandoffService.create` — único punto de emisión, cubre handoff manual y automático. `traceId` leído de `ClsService` (guard con `isActive()`).
 - [x] `nest build` OK (compila limpio).
-- [ ] Workflow en n8n `handoff-requested-notify-vendor` con verificación HMAC + Telegram (ver §8.2). *(manual, en el panel)*
-- [ ] Agregar `N8N_WEBHOOK_HANDOFF_REQUESTED=/webhook/handoff-requested` al `.env` del VPS (hoy resuelve a `undefined` → el processor descarta el job sin reintentar). Sin esta var el evento se encola pero no se despacha.
-- [ ] Desplegar al VPS (`git pull` + rebuild) — Redis/n8n viven en la red Docker del VPS.
-- [ ] Test end-to-end manual: enviar mensaje con keyword de handoff → ver mensaje en Telegram del vendedor.
+- [x] Workflow `handoff-requested-notify-vendor` creado y activo en n8n (2026-07-04). Nodos: Webhook POST path `handoff-requested` → Code (verifica HMAC con `require('crypto')` y `process.env.N8N_HMAC_SECRET`) → Telegram Send Message → Respond to Webhook 200.
+- [x] `N8N_WEBHOOK_HANDOFF_REQUESTED=/webhook/handoff-requested` agregado al `.env` local y al `.env` del VPS (2026-07-04).
+- [x] `docker-compose.yml` actualizado con `NODE_FUNCTION_ALLOW_BUILTIN: crypto` y `N8N_HMAC_SECRET: ${N8N_HMAC_SECRET}` en el servicio `n8n` (2026-07-04). Permite que el nodo Code use `require('crypto')` sin hardcodear el secreto.
+- [x] Desplegado al VPS (2026-07-04): `git pull origin main` + regeneración del lockfile en Linux + `docker compose build --no-cache app` (~104s, FINISHED) + `docker compose up -d app n8n`. App levantada: banner `HERMES BACKEND - RUNNING` en logs.
+- [x] Test end-to-end manual OK (2026-07-05): curl con payload firmado HMAC → n8n → Telegram recibido "Nuevo handoff solicitado. Revisar caso en Hermes." ✅
 - [ ] Test de caída: apagar n8n, disparar handoff, verificar que BullMQ reintenta con backoff.
 
 ### Etapa 3 — Segundo evento real: `lead.qualified`
 
-- [ ] Crear `LeadQualifiedEvent`.
-- [ ] Listener.
-- [ ] Emitirlo desde `LeadsService.update` cuando stage pasa a `QUALIFIED`.
-- [ ] **Lógica de calificación automática confirmada** (§9 punto 1): en `webhook.service.ts`, después de la respuesta de Hermes, evaluar si `closeScore >= 0.7` o `detectedIntent ∈ ['pricing_request', 'quote_request', 'payment_inquiry']`. Si sí, upsert Lead con stage `QUALIFIED` y emitir el evento. Umbral configurable vía env (`LEAD_QUALIFICATION_SCORE_THRESHOLD`).
-- [ ] Workflow en n8n `lead-qualified-notify-vendor`.
+- [x] Crear `LeadQualifiedEvent` + `LeadCreatedEvent` (`common/events/lead.events.ts`).
+- [x] Listener `integrations/n8n/listeners/lead.listener.ts` (`LeadListener`) para `lead.qualified` y `lead.created`. Registrado en `n8n.module.ts`.
+- [x] Emitir `lead.qualified` desde `LeadsService.update` cuando stage pasa a `QUALIFIED` (calificación manual) + `lead.created` desde `LeadsService.create`. `EventEmitter2`/`ClsService` inyectados en `LeadsService`.
+- [x] **Lógica de calificación automática**: nuevo método `LeadsService.qualifyFromConversation(...)` (punto único de emisión, idempotente: no reemite si el lead ya está en QUALIFIED o etapa posterior). `webhook.service.ts` lo llama tras la respuesta de Hermes vía el helper `shouldQualifyLead(detectedIntent)`. `WebhookService` inyecta `LeadsService`; `LeadsModule` importado en `WebhookModule`.
+  - **Ajuste importante**: `HermesResponseDto` **no** devuelve `closeScore` hoy → la calificación es **sólo por `detectedIntent`** (el criterio `closeScore >= 0.7` queda como TODO hasta que Hermes lo calcule). Además Hermes devuelve intents en **español** (`consulta_precio`, `agendar_cita`, etc.), no los `pricing_request` en inglés del `.env.example` original → `LEAD_QUALIFICATION_INTENTS` actualizado a valores en español (+ los ingleses por si acaso). El `.env` local ya tiene el valor corregido; **falta corregirlo en el `.env` del VPS**.
+- [x] `nest build` OK (compila limpio).
+- [ ] Corregir `LEAD_QUALIFICATION_INTENTS` en el `.env` del VPS (los valores en inglés nunca calificarían).
+- [ ] Agregar `N8N_WEBHOOK_LEAD_QUALIFIED=/webhook/lead-qualified` — ya está en el `.env` local y probablemente en el del VPS; confirmar.
+- [ ] Desplegar al VPS (`git pull` main + rebuild app).
+- [ ] Workflow en n8n `lead-qualified-notify-vendor` (mismo patrón HMAC + Telegram que handoff; ver §8.2 nodo IF opcional por `data.score`).
 - [ ] Validación end-to-end: simular mensaje con intent de compra → verificar Lead QUALIFIED en DB + mensaje en Telegram.
 
 ### Etapa 4 — Conversation stalled + task followup
@@ -925,5 +931,27 @@ npm install @nestjs/event-emitter @nestjs/bullmq bullmq ioredis nestjs-cls
   - **Emisión única** en `HandoffService.create`: tras crear el registro emite el evento vía `EventEmitter2`. `traceId` leído de `ClsService` con guard `isActive()` (devuelve `undefined` fuera de contexto de request). `EventEmitter2`/`ClsService` ya son globales, no hizo falta tocar imports de módulo.
   - `nest build` compila limpio. **Pendiente** (manual/VPS): (1) crear workflow n8n `handoff-requested-notify-vendor` (HMAC + Telegram), (2) agregar `N8N_WEBHOOK_HANDOFF_REQUESTED=/webhook/handoff-requested` al `.env` del VPS — sin esta var `N8nConfig.resolveWebhookPath` devuelve `undefined` y el processor descarta el job, (3) desplegar y test end-to-end + test de caída de n8n.
   - **Commiteado en rama local `feat/n8n-handoff-event`** (commit `1df8bbe`, 7 archivos, +230/−46). **NO pusheado a `origin` ni mergeado a `main`** — queda local a la espera de validar el lado n8n + tests antes de integrar. `.claude/settings.local.json` quedó fuera del commit (config no relacionada).
+
+- **2026-07-04 (revisión 11 — Etapa 2: deploy completo al VPS):**
+  - Branch `feat/n8n-handoff-event` commiteada, mergeada a `main` y pusheada a GitHub. Commit `57c35a1` incluye además cambio en `docker-compose.yml`: `NODE_FUNCTION_ALLOW_BUILTIN: crypto` y `N8N_HMAC_SECRET: ${N8N_HMAC_SECRET}` en el servicio `n8n` (necesario para que el nodo Code del workflow pueda hacer `require('crypto')` y acceder al secreto sin hardcodearlo).
+  - VPS actualizado: `git pull` → lockfile regenerado en contenedor Linux (`node:20-bookworm-slim`) → `docker compose build --no-cache app` (~104s, OK) → `docker compose up -d app n8n`. App y n8n reiniciados. Banner `HERMES BACKEND - RUNNING` confirmado en logs.
+  - `N8N_WEBHOOK_HANDOFF_REQUESTED=/webhook/handoff-requested` agregado al `.env` del VPS. Ya no se descarta el job por path `undefined`.
+  - Workflow `handoff-requested-notify-vendor` creado y activo en `https://n8n.undercodeec.com`. Nodos: Webhook (POST, path `handoff-requested`) → Code (verifica HMAC SHA-256 con `process.env.N8N_HMAC_SECRET`) → Telegram Send Message → Respond to Webhook (200).
+  - **Pendientes de cierre de Etapa 2**: test E2E manual (keyword de handoff → Telegram) y test de resiliencia (n8n caído → BullMQ reintenta). Estos se hacen enviando un mensaje de WhatsApp real o usando curl directo al webhook de n8n para aislar cada capa.
+  - **Próximo**: Etapa 3 — `lead.qualified` (crear `LeadQualifiedEvent`, listener, lógica de calificación automática en `webhook.service.ts`, workflow en n8n).
+
+- **2026-07-05 (revisión 12 — ETAPA 2 VALIDADA):**
+  - **Fix de acceso a env vars en n8n**: `process.env.N8N_HMAC_SECRET` en el nodo Code fallaba con `access to env vars denied` (n8n bloquea `process.env` por defecto). Solución: agregar `N8N_BLOCK_ENV_ACCESS_IN_NODE: 'false'` al servicio `n8n` en `docker-compose.yml` + cambiar a la sintaxis `$env.N8N_HMAC_SECRET` en el nodo Code. Commiteado en `5abe5d5`, desplegado con `docker compose up -d n8n` (solo reinicio de n8n, sin rebuild de app).
+  - **Test E2E OK**: curl con payload HMAC firmado → `https://n8n.undercodeec.com/webhook/handoff-requested` → HTTP 200 → nodo Code verifica firma → nodo Telegram → mensaje recibido "Nuevo handoff solicitado. Revisar caso en Hermes." ✅
+  - **Etapa 2 cerrada**. Único pendiente menor: test de resiliencia (n8n caído → BullMQ reintenta). No bloquea avanzar.
+  - **Próximo**: Etapa 3 — `lead.qualified` (crear `LeadQualifiedEvent`, listener, lógica de calificación automática en `webhook.service.ts`, workflow en n8n `lead-qualified-notify-vendor`).
+
+- **2026-07-05 (revisión 13 — Etapa 3: backend de `lead.qualified` implementado):** implementado el lado backend completo del segundo evento real. Cambios:
+  - Nuevo `common/events/lead.events.ts` con `LeadQualifiedEvent` (campos: leadId, contactId, conversationId, score, detectedIntent?, productOfInterest?, traceId?) y `LeadCreatedEvent`.
+  - Nuevo `integrations/n8n/listeners/lead.listener.ts` (`LeadListener`) — encola `lead.qualified` y `lead.created` a BullMQ con `jobId: eventId`; registrado en `n8n.module.ts`. `lead.created` no tiene path de webhook configurado → el processor lo descarta sin error (punto de extensión para dashboard/WebSocket).
+  - `LeadsService`: inyectados `EventEmitter2` + `ClsService`. `create()` emite `lead.created`; `update()` emite `lead.qualified` en la transición a QUALIFIED. Nuevo método `qualifyFromConversation(...)` — punto único de emisión para la calificación automática, idempotente (no reemite ni retrocede si el lead ya está en QUALIFIED/PROPOSAL/NEGOTIATION/WON). Helper privado `emitQualified(...)` centraliza la emisión.
+  - `webhook.service.ts`: inyecta `LeadsService`; tras `updateConversationState` evalúa `shouldQualifyLead(detectedIntent)` y si aplica llama a `qualifyFromConversation(...)`. `LeadsModule` importado en `WebhookModule`.
+  - **Dos correcciones de realidad** vs. el plan original: (1) `HermesResponseDto` no devuelve `closeScore`, así que la calificación es sólo por `detectedIntent` (criterio de score = TODO). (2) Hermes devuelve `detectedIntent` en español; `LEAD_QUALIFICATION_INTENTS` corregido de inglés (`pricing_request,...`) a español (`consulta_precio,agendar_cita,cotizacion,pago` + los ingleses de respaldo). Con los valores viejos nunca calificaba.
+  - `nest build` compila limpio. **Pendiente** (VPS/manual): (1) corregir `LEAD_QUALIFICATION_INTENTS` en el `.env` del VPS, (2) desplegar (`git pull` main + rebuild app), (3) crear workflow n8n `lead-qualified-notify-vendor`, (4) test E2E.
 
 _Si modificás este documento, agregá una entrada nueva en esta sección con fecha y resumen de cambios._
