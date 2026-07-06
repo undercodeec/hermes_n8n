@@ -10,6 +10,7 @@ import {
   HttpStatus,
   Logger,
   BadRequestException,
+  ValidationPipe,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { WebhookService } from './webhook.service';
@@ -42,7 +43,12 @@ export class WebhookController {
   @ApiOperation({ summary: 'Recibir eventos del webhook de Meta' })
   @ApiResponse({ status: 200, description: 'Evento recibido' })
   async receive(
-    @Body() body: MetaWebhookDto,
+    // El ValidationPipe global corre con whitelist + forbidNonWhitelisted, lo que
+    // rechazaría el payload de Meta (DTO sin decoradores) con 400. Meta es un
+    // tercero que puede añadir campos en cualquier momento, así que en esta ruta
+    // desactivamos la lista blanca y aceptamos el body tal cual.
+    @Body(new ValidationPipe({ whitelist: false, forbidNonWhitelisted: false }))
+    body: MetaWebhookDto,
     @Headers('x-hub-signature-256') signature: string,
   ): Promise<string> {
     // Validar firma (en producción se debería usar RawBody para esto)
