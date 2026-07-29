@@ -34,6 +34,9 @@ export class LeadListener {
           score: evt.score,
           detectedIntent: evt.detectedIntent,
           productOfInterest: evt.productOfInterest,
+          contactName: evt.contactName,
+          waId: evt.waId,
+          crmUrl: evt.crmUrl,
         },
       },
       { jobId: evt.eventId }, // idempotencia: BullMQ rechaza jobId duplicado

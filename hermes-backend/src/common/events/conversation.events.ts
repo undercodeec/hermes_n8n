@@ -19,6 +19,9 @@ export class ConversationHandoffRequestedEvent extends DomainEvent {
     public readonly reason: string,
     public readonly reasonDetail?: string,
     public readonly assignedAgentId?: string,
+    public readonly contactName?: string,
+    public readonly waId?: string,
+    public readonly crmUrl?: string,
     traceId?: string,
   ) {
     super(traceId);

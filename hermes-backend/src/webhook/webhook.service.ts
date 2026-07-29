@@ -6,8 +6,19 @@ import { MetaService } from '../meta/meta.service';
 import { HermesService } from '../hermes/hermes.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { LeadsService } from '../leads/leads.service';
-import { MetaWebhookDto, MetaWebhookMessage, MetaWebhookContact } from './dto/meta-webhook.dto';
-import { MessageDirection, MessageType, ConversationStatus, HandoffReason } from '@prisma/client';
+import {
+  MetaWebhookDto,
+  MetaWebhookMessage,
+  MetaWebhookContact,
+} from './dto/meta-webhook.dto';
+import {
+  ConversationStatus,
+  HandoffReason,
+  MessageDirection,
+  MessageSender,
+  MessageType,
+  Prisma,
+} from '@prisma/client';
 
 @Injectable()
 export class WebhookService {
@@ -27,7 +38,9 @@ export class WebhookService {
    * Meta envía un challenge que debemos devolver
    */
   verifyWebhook(mode: string, token: string, challenge: string): string {
-    const verifyToken = this.configService.get<string>('META_WEBHOOK_VERIFY_TOKEN');
+    const verifyToken = this.configService.get<string>(
+      'META_WEBHOOK_VERIFY_TOKEN',
+    );
 
     if (mode === 'subscribe' && token === verifyToken) {
       this.logger.log('Webhook verificado exitosamente');
@@ -44,7 +57,9 @@ export class WebhookService {
   validateSignature(payload: string, signature: string): boolean {
     const appSecret = this.configService.get<string>('META_APP_SECRET');
     if (!appSecret) {
-      this.logger.warn('META_APP_SECRET no configurado, omitiendo validación de firma');
+      this.logger.warn(
+        'META_APP_SECRET no configurado, omitiendo validación de firma',
+      );
       return true;
     }
 
@@ -77,7 +92,7 @@ export class WebhookService {
 
         // Procesar estados de mensajes (delivered, read, etc.)
         if (statuses?.length) {
-          await this.processStatuses(statuses);
+          this.processStatuses(statuses);
         }
 
         // Procesar mensajes entrantes
@@ -109,20 +124,30 @@ export class WebhookService {
       // Paso 5: Obtener o crear conversación activa
       const conversation = await this.getOrCreateConversation(contact.id);
 
+      await this.leadsService.findOrCreateForConversation({
+        contactId: contact.id,
+        conversationId: conversation.id,
+      });
+
       // Paso 3: Guardar mensaje crudo con metadata
       const messageType = this.mapMessageType(message.type);
       const messageContent = this.extractMessageContent(message);
 
-      const savedMessage = await this.prisma.message.create({
+      await this.prisma.message.create({
         data: {
           conversationId: conversation.id,
           contactId: contact.id,
           direction: MessageDirection.INBOUND,
+          sender: MessageSender.CONTACT,
           type: messageType,
           content: messageContent,
-          rawPayload: message as any,
+          rawPayload: message as unknown as Prisma.InputJsonValue,
           wamid: message.id,
         },
+      });
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { updatedAt: new Date() },
       });
 
       this.logger.log(
@@ -131,12 +156,17 @@ export class WebhookService {
 
       // Verificar si la conversación está en handoff (derivada a humano)
       if (conversation.status === ConversationStatus.HANDED_OFF) {
-        this.logger.log(`Conversación ${conversation.id} en handoff, no se genera respuesta automática`);
+        this.logger.log(
+          `Conversación ${conversation.id} en handoff, no se genera respuesta automática`,
+        );
         return;
       }
 
       // Paso 5: Obtener contexto completo
-      const context = await this.buildConversationContext(contact.id, conversation.id);
+      const context = await this.buildConversationContext(
+        contact.id,
+        conversation.id,
+      );
 
       // Paso 6: Llamar a Hermes con prompt + contexto
       const hermesResponse = await this.hermesService.generateResponse({
@@ -151,10 +181,15 @@ export class WebhookService {
       const latencyMs = Date.now() - startTime;
 
       // Paso 8: Aplicar reglas post-procesamiento
-      const shouldHandoff = this.checkHandoffSignals(hermesResponse.response, messageContent || '');
+      const shouldHandoff = this.checkHandoffSignals(
+        messageContent || '',
+        hermesResponse.detectedIntent,
+      );
 
       if (shouldHandoff) {
-        await this.createAutoHandoff(conversation.id, messageContent || '');
+        this.logger.debug(
+          'Handoff detectado; se abrirá tras enviar la transición',
+        );
         // Aún así enviar respuesta de transición
       }
 
@@ -170,6 +205,7 @@ export class WebhookService {
           conversationId: conversation.id,
           contactId: contact.id,
           direction: MessageDirection.OUTBOUND,
+          sender: MessageSender.HERMES,
           type: MessageType.TEXT,
           content: hermesResponse.response,
           wamid: sentMessage?.messages?.[0]?.id,
@@ -178,6 +214,18 @@ export class WebhookService {
           costEstimate: hermesResponse.costEstimate,
         },
       });
+      await this.prisma.conversation.update({
+        where: { id: conversation.id },
+        data: { updatedAt: new Date() },
+      });
+
+      if (shouldHandoff) {
+        await this.createAutoHandoff(
+          conversation.id,
+          messageContent || '',
+          hermesResponse.detectedIntent,
+        );
+      }
 
       // Actualizar estado conversacional
       if (hermesResponse.suggestedTags || hermesResponse.detectedIntent) {
@@ -199,13 +247,13 @@ export class WebhookService {
         );
       }
 
-      this.logger.log(
-        `Respuesta enviada a ${contact.waId} en ${latencyMs}ms`,
-      );
-    } catch (error) {
+      this.logger.log(`Respuesta enviada a ${contact.waId} en ${latencyMs}ms`);
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       this.logger.error(
-        `Error procesando mensaje de ${metaContact.wa_id}: ${error.message}`,
-        error.stack,
+        `Error procesando mensaje de ${metaContact.wa_id}: ${errorMessage}`,
+        error instanceof Error ? error.stack : undefined,
       );
     }
   }
@@ -234,7 +282,9 @@ export class WebhookService {
     const activeConversation = await this.prisma.conversation.findFirst({
       where: {
         contactId,
-        status: { in: [ConversationStatus.ACTIVE, ConversationStatus.HANDED_OFF] },
+        status: {
+          in: [ConversationStatus.ACTIVE, ConversationStatus.HANDED_OFF],
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
@@ -255,7 +305,10 @@ export class WebhookService {
   /**
    * Construye el contexto completo para Hermes
    */
-  private async buildConversationContext(contactId: string, conversationId: string) {
+  private async buildConversationContext(
+    contactId: string,
+    conversationId: string,
+  ) {
     // Últimos mensajes de la conversación
     const recentMessages = await this.prisma.message.findMany({
       where: { conversationId },
@@ -289,15 +342,38 @@ export class WebhookService {
   /**
    * Verifica señales de handoff automático
    */
-  private checkHandoffSignals(aiResponse: string, userMessage: string): boolean {
+  private checkHandoffSignals(
+    userMessage: string,
+    detectedIntent?: string,
+  ): boolean {
     const handoffKeywords = [
-      'hablar con humano', 'hablar con persona', 'agente real',
-      'quiero quejarme', 'reclamo', 'estoy molesto', 'no funciona',
-      'descuento especial', 'cotización compleja', 'precio corporativo',
+      'hablar con humano',
+      'hablar con persona',
+      'agente real',
+      'quiero quejarme',
+      'reclamo',
+      'estoy molesto',
+      'no funciona',
+      'descuento especial',
+      'cotización compleja',
+      'precio corporativo',
     ];
 
-    const lowerMessage = userMessage.toLowerCase();
-    return handoffKeywords.some((keyword) => lowerMessage.includes(keyword));
+    const keywords = this.csvConfig('HANDOFF_KEYWORDS', handoffKeywords);
+    const intents = this.csvConfig('HANDOFF_INTENTS', [
+      'solicitud_humano',
+      'queja',
+      'reclamo',
+      'pago_fallido',
+      'negociacion_especial',
+      'error',
+    ]);
+    const lowerMessage = userMessage.toLocaleLowerCase('es');
+    const normalizedIntent = detectedIntent?.trim().toLocaleLowerCase('es');
+    return (
+      keywords.some((keyword) => lowerMessage.includes(keyword)) ||
+      (normalizedIntent ? intents.includes(normalizedIntent) : false)
+    );
   }
 
   /**
@@ -312,12 +388,12 @@ export class WebhookService {
   private shouldQualifyLead(detectedIntent?: string): boolean {
     if (!detectedIntent) return false;
 
-    const configured =
-      this.configService.get<string>('LEAD_QUALIFICATION_INTENTS') ?? '';
-    const highIntents = configured
-      .split(',')
-      .map((s) => s.trim().toLowerCase())
-      .filter(Boolean);
+    const highIntents = this.csvConfig('LEAD_QUALIFICATION_INTENTS', [
+      'consulta_precio',
+      'cotizacion',
+      'agendar_cita',
+      'pago',
+    ]);
 
     return highIntents.includes(detectedIntent.trim().toLowerCase());
   }
@@ -329,19 +405,46 @@ export class WebhookService {
    * pausa la conversación, crea el registro y emite `conversation.handoff_requested`
    * en un único punto, cubriendo tanto el handoff automático como el manual.
    */
-  private async createAutoHandoff(conversationId: string, triggerMessage: string) {
+  private async createAutoHandoff(
+    conversationId: string,
+    triggerMessage: string,
+    detectedIntent?: string,
+  ) {
     await this.handoffService.create({
       conversationId,
-      reason: HandoffReason.CUSTOM,
+      reason: this.handoffReason(detectedIntent),
       reasonDetail: `Handoff automático. Mensaje trigger: ${triggerMessage.substring(0, 200)}`,
     });
 
-    this.logger.log(`Handoff automático creado para conversación ${conversationId}`);
+    this.logger.log(
+      `Handoff automático creado para conversación ${conversationId}`,
+    );
   }
 
   /**
    * Actualiza el estado conversacional con datos de la respuesta de Hermes
    */
+  private csvConfig(key: string, defaults: string[]): string[] {
+    const configured = this.configService.get<string>(key);
+    return (configured ? configured.split(',') : defaults)
+      .map((value) => value.trim().toLocaleLowerCase('es'))
+      .filter(Boolean);
+  }
+
+  private handoffReason(detectedIntent?: string): HandoffReason {
+    const intent = detectedIntent?.trim().toLocaleLowerCase('es');
+    if (intent === 'queja' || intent === 'reclamo') {
+      return HandoffReason.COMPLAINT;
+    }
+    if (intent === 'pago_fallido') {
+      return HandoffReason.PAYMENT_ISSUE;
+    }
+    if (intent === 'negociacion_especial') {
+      return HandoffReason.B2B_NEGOTIATION;
+    }
+    return HandoffReason.CUSTOM;
+  }
+
   private async updateConversationState(
     conversationId: string,
     hermesResponse: {
@@ -369,10 +472,12 @@ export class WebhookService {
   /**
    * Procesa estados de mensajes (delivered, read, failed)
    */
-  private async processStatuses(statuses: any[]) {
+  private processStatuses(
+    statuses: Array<{ status?: unknown; id?: unknown }>,
+  ): void {
     for (const status of statuses) {
       this.logger.debug(
-        `Status: ${status.status} para mensaje ${status.id}`,
+        `Status: ${String(status.status)} para mensaje ${String(status.id)}`,
       );
       // Se puede extender para actualizar estado de entrega en BD
     }
@@ -406,7 +511,10 @@ export class WebhookService {
       case 'image':
         return message.image?.caption || '[Imagen]';
       case 'document':
-        return message.document?.caption || `[Documento: ${message.document?.filename || 'sin nombre'}]`;
+        return (
+          message.document?.caption ||
+          `[Documento: ${message.document?.filename || 'sin nombre'}]`
+        );
       case 'audio':
         return '[Audio]';
       case 'video':
@@ -414,7 +522,11 @@ export class WebhookService {
       case 'location':
         return `[Ubicación: ${message.location?.name || `${message.location?.latitude}, ${message.location?.longitude}`}]`;
       case 'interactive':
-        return message.interactive?.button_reply?.title || message.interactive?.list_reply?.title || '[Interactivo]';
+        return (
+          message.interactive?.button_reply?.title ||
+          message.interactive?.list_reply?.title ||
+          '[Interactivo]'
+        );
       case 'reaction':
         return message.reaction?.emoji || '[Reacción]';
       case 'sticker':

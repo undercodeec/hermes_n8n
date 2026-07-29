@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsEnum, IsNumber, Min, Max } from 'class-validator';
+import { IsString, IsOptional, IsEnum, IsNumber } from 'class-validator';
 import { LeadStage } from '@prisma/client';
 
 export class CreateLeadDto {
@@ -26,4 +26,11 @@ export class CreateLeadDto {
   @IsOptional()
   @IsString()
   campaignSourceId?: string;
+
+  @ApiPropertyOptional({
+    description: 'Conversación principal de la nueva oportunidad',
+  })
+  @IsOptional()
+  @IsString()
+  conversationId?: string;
 }

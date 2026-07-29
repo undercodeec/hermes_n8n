@@ -17,7 +17,9 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "admin:create": "node dist/scripts/create-admin.js",
+    "admin:create:dev": "ts-node src/scripts/create-admin.ts"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",
@@ -69,6 +71,11 @@
     "tsconfig-paths": "^4.2.0",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.20.0"
+  },
+  "overrides": {
+    "@nestjs/swagger": {
+      "js-yaml": "^5.2.2"
+    }
   },
   "jest": {
     "moduleFileExtensions": [
