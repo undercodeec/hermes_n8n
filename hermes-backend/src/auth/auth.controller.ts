@@ -16,6 +16,7 @@ import {
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { CrmProofDto } from './dto/crm-proof.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -45,6 +46,17 @@ export class AuthController {
   @ApiResponse({ status: 401, description: 'Credenciales inválidas' })
   async login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
+  }
+
+  @Post('crm-proof')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({
+    summary: 'Canjear una prueba OTP de Undercodeec por un JWT de Hermes CRM',
+  })
+  @ApiResponse({ status: 200, description: 'Acceso CRM concedido' })
+  @ApiResponse({ status: 401, description: 'Prueba inválida, vencida o reutilizada' })
+  async loginWithCrmProof(@Body() dto: CrmProofDto) {
+    return this.authService.loginWithCrmProof(dto.proof);
   }
 
   @Get('profile')
