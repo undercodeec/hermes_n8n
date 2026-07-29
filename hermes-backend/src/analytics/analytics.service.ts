@@ -1,10 +1,49 @@
 import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { MessageDirection, ConversationStatus } from '@prisma/client';
+import {
+  ConversationStatus,
+  HandoffStatus,
+  LeadStage,
+  MessageDirection,
+  Prisma,
+} from '@prisma/client';
 
 @Injectable()
 export class AnalyticsService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async getCrmOverview() {
+    const [totalObserved, qualified, won, lost, open, pendingHandoffs] =
+      await Promise.all([
+        this.prisma.lead.count(),
+        this.prisma.lead.count({ where: { stage: LeadStage.QUALIFIED } }),
+        this.prisma.lead.count({ where: { stage: LeadStage.WON } }),
+        this.prisma.lead.count({ where: { stage: LeadStage.LOST } }),
+        this.prisma.lead.count({
+          where: { stage: { notIn: [LeadStage.WON, LeadStage.LOST] } },
+        }),
+        this.prisma.humanHandoff.count({
+          where: {
+            status: {
+              in: [
+                HandoffStatus.PENDING,
+                HandoffStatus.ASSIGNED,
+                HandoffStatus.IN_PROGRESS,
+              ],
+            },
+          },
+        }),
+      ]);
+
+    return {
+      totalObserved,
+      qualified,
+      open,
+      won,
+      lost,
+      pendingHandoffs,
+    };
+  }
 
   /**
    * Distribución del funnel de leads por etapa
@@ -25,9 +64,15 @@ export class AnalyticsService {
 
     const [total, active, handedOff, closed] = await Promise.all([
       this.prisma.conversation.count({ where: { createdAt: dateFilter } }),
-      this.prisma.conversation.count({ where: { status: ConversationStatus.ACTIVE, createdAt: dateFilter } }),
-      this.prisma.conversation.count({ where: { status: ConversationStatus.HANDED_OFF, createdAt: dateFilter } }),
-      this.prisma.conversation.count({ where: { status: ConversationStatus.CLOSED, createdAt: dateFilter } }),
+      this.prisma.conversation.count({
+        where: { status: ConversationStatus.ACTIVE, createdAt: dateFilter },
+      }),
+      this.prisma.conversation.count({
+        where: { status: ConversationStatus.HANDED_OFF, createdAt: dateFilter },
+      }),
+      this.prisma.conversation.count({
+        where: { status: ConversationStatus.CLOSED, createdAt: dateFilter },
+      }),
     ]);
 
     const handoffRate = total > 0 ? (handedOff / total) * 100 : 0;
@@ -78,15 +123,20 @@ export class AnalyticsService {
       select: { costEstimate: true, conversationId: true },
     });
 
-    const totalCost = messages.reduce((sum, m) => sum + (m.costEstimate || 0), 0);
+    const totalCost = messages.reduce(
+      (sum, m) => sum + (m.costEstimate || 0),
+      0,
+    );
     const conversationIds = new Set(messages.map((m) => m.conversationId));
-    const avgCostPerConversation = conversationIds.size > 0 ? totalCost / conversationIds.size : 0;
+    const avgCostPerConversation =
+      conversationIds.size > 0 ? totalCost / conversationIds.size : 0;
 
     return {
       totalCost: Math.round(totalCost * 10000) / 10000,
       totalMessages: messages.length,
       uniqueConversations: conversationIds.size,
-      avgCostPerConversation: Math.round(avgCostPerConversation * 10000) / 10000,
+      avgCostPerConversation:
+        Math.round(avgCostPerConversation * 10000) / 10000,
     };
   }
 
@@ -98,14 +148,19 @@ export class AnalyticsService {
       include: {
         _count: { select: { leads: true } },
         leads: { select: { stage: true } },
-        adsMetadata: { select: { spend: true, impressions: true, clicks: true } },
+        adsMetadata: {
+          select: { spend: true, impressions: true, clicks: true },
+        },
       },
     });
 
     return sources.map((source) => {
       const totalLeads = source._count.leads;
       const wonLeads = source.leads.filter((l) => l.stage === 'WON').length;
-      const totalSpend = source.adsMetadata.reduce((sum, a) => sum + (a.spend || 0), 0);
+      const totalSpend = source.adsMetadata.reduce(
+        (sum, a) => sum + (a.spend || 0),
+        0,
+      );
       const costPerLead = totalLeads > 0 ? totalSpend / totalLeads : 0;
 
       return {
@@ -115,16 +170,22 @@ export class AnalyticsService {
         utmMedium: source.utmMedium,
         totalLeads,
         wonLeads,
-        conversionRate: totalLeads > 0 ? Math.round((wonLeads / totalLeads) * 10000) / 100 : 0,
+        conversionRate:
+          totalLeads > 0
+            ? Math.round((wonLeads / totalLeads) * 10000) / 100
+            : 0,
         totalSpend: Math.round(totalSpend * 100) / 100,
         costPerLead: Math.round(costPerLead * 100) / 100,
       };
     });
   }
 
-  private buildDateFilter(fromDate?: Date, toDate?: Date) {
+  private buildDateFilter(
+    fromDate?: Date,
+    toDate?: Date,
+  ): Prisma.DateTimeFilter | undefined {
     if (!fromDate && !toDate) return undefined;
-    const filter: any = {};
+    const filter: Prisma.DateTimeFilter = {};
     if (fromDate) filter.gte = fromDate;
     if (toDate) filter.lte = toDate;
     return filter;

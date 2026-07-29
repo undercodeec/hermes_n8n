@@ -27,7 +27,12 @@ export class HttpExceptionFilter implements ExceptionFilter {
         ? exception.getResponse()
         : 'Internal server error';
 
+    const responseDetails =
+      typeof message === 'object' && message !== null
+        ? (message as Record<string, unknown>)
+        : {};
     const errorResponse = {
+      ...responseDetails,
       statusCode: status,
       timestamp: new Date().toISOString(),
       path: request.url,
@@ -35,7 +40,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       message:
         typeof message === 'string'
           ? message
-          : (message as Record<string, unknown>)?.message || message,
+          : responseDetails.message || message,
     };
 
     if (status >= 500) {

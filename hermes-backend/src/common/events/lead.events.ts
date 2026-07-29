@@ -20,6 +20,9 @@ export class LeadQualifiedEvent extends DomainEvent {
     public readonly score: number,
     public readonly detectedIntent?: string,
     public readonly productOfInterest?: string,
+    public readonly contactName?: string,
+    public readonly waId?: string,
+    public readonly crmUrl?: string,
     traceId?: string,
   ) {
     super(traceId);

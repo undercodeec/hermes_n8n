@@ -1,16 +1,15 @@
-import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
+import { NestFactory } from '@nestjs/core';
+import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { LoggingInterceptor } from './common/interceptors/logging.interceptor';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
-  const configService = app.get(ConfigService);
+  const config = app.get(ConfigService);
 
-  // Global pipes
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -19,37 +18,45 @@ async function bootstrap() {
       transformOptions: { enableImplicitConversion: true },
     }),
   );
-
-  // Global filters & interceptors
   app.useGlobalFilters(new HttpExceptionFilter());
   app.useGlobalInterceptors(new LoggingInterceptor());
 
-  // CORS
+  const configuredOrigins = config
+    .get<string>('CORS_ORIGINS', '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+  if (
+    config.get<string>('NODE_ENV') === 'production' &&
+    configuredOrigins.length === 0
+  ) {
+    throw new Error('CORS_ORIGINS es obligatorio en producción');
+  }
   app.enableCors({
-    origin: '*', // En producción, restringir a dominios específicos
+    origin:
+      configuredOrigins.length > 0
+        ? configuredOrigins
+        : ['http://localhost:3000'],
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE',
     credentials: true,
   });
 
-  // Swagger / OpenAPI
   const swaggerConfig = new DocumentBuilder()
     .setTitle('Hermes Backend API')
-    .setDescription(
-      'API del backend comercial para Hermes Agent - CRM conversacional por WhatsApp',
-    )
-    .setVersion('1.0')
+    .setDescription('API del CRM conversacional Hermes para WhatsApp Cloud API')
+    .setVersion('1.1')
     .addBearerAuth()
     .addTag('Auth', 'Autenticación y gestión de usuarios')
     .addTag('Webhook', 'Webhook de Meta WhatsApp Cloud API')
     .addTag('Contacts', 'Gestión de contactos')
     .addTag('Leads', 'Gestión de leads y funnel de ventas')
-    .addTag('Conversations', 'Conversaciones y estados')
+    .addTag('Conversations', 'Conversaciones, mensajes y ventana de respuesta')
     .addTag('Messages', 'Historial de mensajes')
     .addTag('Products', 'Catálogo de productos')
     .addTag('Price Lists', 'Listas de precios')
     .addTag('Knowledge', 'Base de conocimiento')
     .addTag('Playbooks', 'Guiones de ventas')
-    .addTag('Handoff', 'Escalamiento a humanos')
+    .addTag('Handoff', 'Escalamiento y control humano')
     .addTag('Tasks', 'Tareas y seguimiento')
     .addTag('Campaigns', 'Fuentes de campaña y ads')
     .addTag('Analytics', 'KPIs y métricas')
@@ -58,17 +65,11 @@ async function bootstrap() {
   const document = SwaggerModule.createDocument(app, swaggerConfig);
   SwaggerModule.setup('api/docs', app, document);
 
-  const port = configService.get<number>('PORT', 3000);
+  const port = config.get<number>('PORT', 3000);
   await app.listen(port);
-
-  console.log(`
-╔══════════════════════════════════════════════════╗
-║          HERMES BACKEND - RUNNING                ║
-╠══════════════════════════════════════════════════╣
-║  Server:    http://localhost:${port}               ║
-║  Swagger:   http://localhost:${port}/api/docs       ║
-║  Env:       ${configService.get('NODE_ENV', 'development').padEnd(37)}║
-╚══════════════════════════════════════════════════╝
-  `);
+  console.log(
+    `Hermes Backend activo en http://localhost:${port} (Swagger: /api/docs)`,
+  );
 }
-bootstrap();
+
+void bootstrap();

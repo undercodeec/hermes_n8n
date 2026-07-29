@@ -1,0 +1,15 @@
+.git
+.gitignore
+.claude
+.env
+.env.*
+!.env.example
+
+node_modules
+dist
+coverage
+test
+
+*.log
+*.tsbuildinfo
+npm-debug.log*

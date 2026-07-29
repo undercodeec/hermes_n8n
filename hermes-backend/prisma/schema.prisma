@@ -33,6 +33,7 @@ model User {
   // Relaciones
   assignedHandoffs HumanHandoff[] @relation("AssignedAgent")
   assignedTasks    Task[]         @relation("AssignedUser")
+  sentMessages     Message[]      @relation("HumanSender")
   auditLogs        AuditLog[]
 
   @@map("users")
@@ -49,9 +50,9 @@ model Contact {
   name      String?
   email     String?
   company   String?
-  position  String?  // Cargo
+  position  String? // Cargo
   notes     String?
-  metadata  Json?    // Datos extra flexibles
+  metadata  Json? // Datos extra flexibles
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -74,28 +75,32 @@ enum LeadStage {
 }
 
 model Lead {
-  id               String    @id @default(uuid())
-  contactId        String
-  stage            LeadStage @default(NEW)
-  score            Int       @default(0)
+  id                String    @id @default(uuid())
+  contactId         String
+  conversationId    String?   @unique
+  stage             LeadStage @default(NEW)
+  score             Int       @default(0)
   productOfInterest String?
-  estimatedBudget  Float?
-  lastObjection    String?
-  nextAction       String?
-  closeProbability Float?    // 0.0 a 1.0
-  lostReason       String?
-  wonAt            DateTime?
-  lostAt           DateTime?
-  metadata         Json?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  estimatedBudget   Float?
+  lastObjection     String?
+  nextAction        String?
+  closeProbability  Float? // 0.0 a 1.0
+  lostReason        String?
+  wonAt             DateTime?
+  lostAt            DateTime?
+  metadata          Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
 
   // Relaciones
-  contact        Contact         @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  tasks          Task[]
-  campaignSource CampaignSource? @relation(fields: [campaignSourceId], references: [id])
+  contact          Contact         @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  conversation     Conversation?   @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  tasks            Task[]
+  campaignSource   CampaignSource? @relation(fields: [campaignSourceId], references: [id])
   campaignSourceId String?
 
+  @@index([contactId, createdAt])
+  @@index([stage, updatedAt])
   @@map("leads")
 }
 
@@ -124,24 +129,27 @@ model Conversation {
   contact  Contact            @relation(fields: [contactId], references: [id], onDelete: Cascade)
   messages Message[]
   state    ConversationState?
+  lead     Lead?
   handoffs HumanHandoff[]
   tasks    Task[]
 
+  @@index([contactId, updatedAt])
+  @@index([status, updatedAt])
   @@map("conversations")
 }
 
 model ConversationState {
-  id                String   @id @default(uuid())
-  conversationId    String   @unique
-  summary           String?  // Resumen corto de la conversación
-  detectedIntent    String?  // Intención detectada
+  id                  String   @id @default(uuid())
+  conversationId      String   @unique
+  summary             String? // Resumen corto de la conversación
+  detectedIntent      String? // Intención detectada
   nextSuggestedAction String? // Próxima acción sugerida
-  detectedRisks     String?  // Riesgos detectados
-  commercialTags    Json?    // Etiquetas comerciales (array de strings)
-  closeScore        Float?   // Puntaje de probabilidad de cierre
-  leadStage         String?  // Etapa del lead según la conversación
-  lastObjection     String?  // Última objeción detectada
-  updatedAt         DateTime @updatedAt
+  detectedRisks       String? // Riesgos detectados
+  commercialTags      Json? // Etiquetas comerciales (array de strings)
+  closeScore          Float? // Puntaje de probabilidad de cierre
+  leadStage           String? // Etapa del lead según la conversación
+  lastObjection       String? // Última objeción detectada
+  updatedAt           DateTime @updatedAt
 
   // Relaciones
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -168,27 +176,38 @@ enum MessageType {
   UNKNOWN
 }
 
+enum MessageSender {
+  CONTACT
+  HERMES
+  HUMAN
+  SYSTEM
+}
+
 model Message {
   id             String           @id @default(uuid())
   conversationId String
   contactId      String
   direction      MessageDirection
+  sender         MessageSender    @default(SYSTEM)
+  sentByUserId   String?
   type           MessageType      @default(TEXT)
-  content        String?          // Contenido del mensaje
-  rawPayload     Json?            // Payload crudo de Meta
+  content        String? // Contenido del mensaje
+  rawPayload     Json? // Payload crudo de Meta
   wamid          String?          @unique // WhatsApp Message ID
-  tokensUsed     Int?             // Tokens consumidos por Hermes
-  latencyMs      Int?             // Latencia en ms de la respuesta
-  costEstimate   Float?           // Costo estimado en USD
+  tokensUsed     Int? // Tokens consumidos por Hermes
+  latencyMs      Int? // Latencia en ms de la respuesta
+  costEstimate   Float? // Costo estimado en USD
   metadata       Json?
   createdAt      DateTime         @default(now())
 
   // Relaciones
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  sentByUser   User?        @relation("HumanSender", fields: [sentByUserId], references: [id], onDelete: SetNull)
 
   @@index([conversationId, createdAt])
   @@index([contactId])
+  @@index([sentByUserId])
   @@map("messages")
 }
 
@@ -222,7 +241,7 @@ model PriceList {
   currency     String    @default("USD")
   validFrom    DateTime  @default(now())
   validUntil   DateTime?
-  restrictions String?   // Restricciones o condiciones
+  restrictions String? // Restricciones o condiciones
   notes        String?
   isActive     Boolean   @default(true)
   createdAt    DateTime  @default(now())
@@ -251,10 +270,10 @@ enum DocumentType {
 model KnowledgeDocument {
   id        String       @id @default(uuid())
   title     String
-  content   String       // Contenido completo del documento
+  content   String // Contenido completo del documento
   type      DocumentType @default(GENERAL)
   version   Int          @default(1)
-  tags      Json?        // Array de tags para búsqueda
+  tags      Json? // Array de tags para búsqueda
   isActive  Boolean      @default(true)
   createdAt DateTime     @default(now())
   updatedAt DateTime     @updatedAt
@@ -276,9 +295,9 @@ enum PlaybookType {
 model SalesPlaybook {
   id        String       @id @default(uuid())
   title     String
-  content   String       // Contenido del guión
+  content   String // Contenido del guión
   type      PlaybookType @default(GENERAL)
-  triggers  Json?        // Condiciones para activar el playbook
+  triggers  Json? // Condiciones para activar el playbook
   priority  Int          @default(0)
   isActive  Boolean      @default(true)
   createdAt DateTime     @default(now())
@@ -367,6 +386,8 @@ model HumanHandoff {
   conversation  Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   assignedAgent User?        @relation("AssignedAgent", fields: [assignedAgentId], references: [id], onDelete: SetNull)
 
+  @@index([conversationId, status])
+  @@index([status, createdAt])
   @@map("human_handoffs")
 }
 
@@ -383,7 +404,7 @@ model CampaignSource {
   utmContent   String?
   landingPage  String?
   entryChannel String?  @default("whatsapp")
-  firstMessage String?  // Primer mensaje del contacto
+  firstMessage String? // Primer mensaje del contacto
   metadata     Json?
   createdAt    DateTime @default(now())
 
@@ -397,11 +418,11 @@ model CampaignSource {
 model AdsMetadata {
   id               String   @id @default(uuid())
   campaignSourceId String
-  adId             String?  // Meta Ad ID
-  adsetId          String?  // Meta Adset ID
-  campaignId       String?  // Meta Campaign ID
+  adId             String? // Meta Ad ID
+  adsetId          String? // Meta Adset ID
+  campaignId       String? // Meta Campaign ID
   adName           String?
-  spend            Float?   // Gasto del anuncio
+  spend            Float? // Gasto del anuncio
   impressions      Int?
   clicks           Int?
   currency         String?  @default("USD")
@@ -420,14 +441,14 @@ model AdsMetadata {
 // ─────────────────────────────────────────────
 
 model AuditLog {
-  id         String   @id @default(uuid())
-  userId     String?
-  action     String   // e.g. "UPDATE_PLAYBOOK", "CREATE_PRODUCT", "HANDOFF_CREATED"
-  entity     String   // e.g. "products", "playbooks", "leads"
-  entityId   String?
-  changes    Json?    // { before: {...}, after: {...} }
-  ipAddress  String?
-  createdAt  DateTime @default(now())
+  id        String   @id @default(uuid())
+  userId    String?
+  action    String // e.g. "UPDATE_PLAYBOOK", "CREATE_PRODUCT", "HANDOFF_CREATED"
+  entity    String // e.g. "products", "playbooks", "leads"
+  entityId  String?
+  changes   Json? // { before: {...}, after: {...} }
+  ipAddress String?
+  createdAt DateTime @default(now())
 
   // Relaciones
   user User? @relation(fields: [userId], references: [id], onDelete: SetNull)

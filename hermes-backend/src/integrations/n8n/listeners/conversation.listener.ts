@@ -33,6 +33,9 @@ export class ConversationListener {
           reason: evt.reason,
           reasonDetail: evt.reasonDetail,
           assignedAgentId: evt.assignedAgentId,
+          contactName: evt.contactName,
+          waId: evt.waId,
+          crmUrl: evt.crmUrl,
         },
       },
       { jobId: evt.eventId }, // idempotencia: BullMQ rechaza jobId duplicado

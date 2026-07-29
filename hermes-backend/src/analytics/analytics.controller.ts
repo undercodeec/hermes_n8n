@@ -1,14 +1,31 @@
 import { Controller, Get, Query, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AnalyticsService } from './analytics.service';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { UserRole } from '@prisma/client';
 
 @ApiTags('Analytics')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.ADMIN, UserRole.SALES_AGENT)
 @Controller('api/analytics')
 export class AnalyticsController {
   constructor(private readonly analyticsService: AnalyticsService) {}
+
+  @Get('crm-overview')
+  @ApiOperation({
+    summary: 'Resumen CRM: observados, calificados, abiertos y handoffs',
+  })
+  getCrmOverview() {
+    return this.analyticsService.getCrmOverview();
+  }
 
   @Get('funnel')
   @ApiOperation({ summary: 'Distribución del funnel de leads' })
@@ -18,8 +35,18 @@ export class AnalyticsController {
 
   @Get('conversations')
   @ApiOperation({ summary: 'Métricas de conversaciones' })
-  @ApiQuery({ name: 'from', required: false, type: String, description: 'Fecha inicio (ISO)' })
-  @ApiQuery({ name: 'to', required: false, type: String, description: 'Fecha fin (ISO)' })
+  @ApiQuery({
+    name: 'from',
+    required: false,
+    type: String,
+    description: 'Fecha inicio (ISO)',
+  })
+  @ApiQuery({
+    name: 'to',
+    required: false,
+    type: String,
+    description: 'Fecha fin (ISO)',
+  })
   getConversations(@Query('from') from?: string, @Query('to') to?: string) {
     return this.analyticsService.getConversationMetrics(
       from ? new Date(from) : undefined,

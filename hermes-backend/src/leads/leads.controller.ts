@@ -1,17 +1,34 @@
 import {
-  Controller, Get, Post, Put, Delete,
-  Param, Body, Query, UseGuards,
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Post,
+  Put,
+  Query,
+  UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import {
+  ApiBearerAuth,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
+import { UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
+import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { LeadsService } from './leads.service';
 import { CreateLeadDto } from './dto/create-lead.dto';
+import { QueryLeadsDto } from './dto/query-leads.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
-import { LeadStage } from '@prisma/client';
 
 @ApiTags('Leads')
 @ApiBearerAuth()
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, RolesGuard)
+@Roles(UserRole.ADMIN, UserRole.SALES_AGENT)
 @Controller('api/leads')
 export class LeadsController {
   constructor(private readonly leadsService: LeadsService) {}
@@ -25,15 +42,8 @@ export class LeadsController {
 
   @Get()
   @ApiOperation({ summary: 'Listar leads' })
-  @ApiQuery({ name: 'page', required: false, type: Number })
-  @ApiQuery({ name: 'limit', required: false, type: Number })
-  @ApiQuery({ name: 'stage', required: false, enum: LeadStage })
-  findAll(
-    @Query('page') page?: number,
-    @Query('limit') limit?: number,
-    @Query('stage') stage?: LeadStage,
-  ) {
-    return this.leadsService.findAll(page || 1, limit || 20, stage);
+  findAll(@Query() query: QueryLeadsDto) {
+    return this.leadsService.findAll(query);
   }
 
   @Get('funnel')
@@ -50,11 +60,16 @@ export class LeadsController {
 
   @Put(':id')
   @ApiOperation({ summary: 'Actualizar lead' })
-  update(@Param('id') id: string, @Body() dto: UpdateLeadDto) {
-    return this.leadsService.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateLeadDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.leadsService.update(id, dto, userId);
   }
 
   @Delete(':id')
+  @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Eliminar lead' })
   remove(@Param('id') id: string) {
     return this.leadsService.remove(id);
