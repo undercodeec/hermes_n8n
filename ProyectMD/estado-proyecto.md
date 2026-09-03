@@ -2,13 +2,15 @@
 
 > **Única fuente de verdad documental de esta carpeta.**
 >
-> **Fecha de corte:** 2026-08-02, zona horaria `America/Guayaquil`.
+> **Fecha de corte:** 2026-08-03, zona horaria `America/Guayaquil`.
 >
 > Este documento reemplaza los planes, guías, contratos, bitácoras y resúmenes Markdown anteriores de `ProyectMD/`. Cuando el código, Git y un documento histórico se contradicen, prevalecen el código y las verificaciones reproducibles. Las afirmaciones sobre el VPS no comprobadas en esta auditoría se identifican como evidencia histórica, no como estado confirmado hoy.
 
 ## 1. Resumen ejecutivo
 
 Hermes es un CRM conversacional ligero para un único operador. Recibe conversaciones de WhatsApp Cloud API, usa Gemini mediante una interfaz compatible con OpenAI, guarda el estado comercial en PostgreSQL, deriva casos a una persona y utiliza n8n/Telegram para notificaciones auxiliares.
+
+El proyecto se encuentra en la fase de **cierre técnico del MVP y preparación de puesta en producción del CRM**: el backend, la interfaz web y el flujo de autenticación OTP están implementados y versionados; quedan por completar los controles de seguridad, el despliegue aislado y la validación integral con servicios reales.
 
 Estado real a la fecha de corte:
 
@@ -25,7 +27,7 @@ Estado real a la fecha de corte:
 
 | Etiqueta | Significado |
 |---|---|
-| **Confirmado** | Existe en código/Git local y fue inspeccionado o ejecutado el 2026-08-02. |
+| **Confirmado** | Existe en código/Git local y fue inspeccionado o ejecutado el 2026-08-03. |
 | **Reportado** | Consta en bitácoras; requiere VPS, Meta, n8n o Telegram para reconfirmarse. |
 | **Pendiente** | No está implementado, desplegado o suficientemente probado. |
 | **Fuera del MVP** | Se dejó deliberadamente para una etapa posterior. |
@@ -99,8 +101,9 @@ Son dos repositorios independientes; no convertir Hermes en submódulo del repos
 Repositorio: https://github.com/undercodeec/hermes_n8n.git
 Aplicación:  .../Hermes/hermes-backend/
 Rama local:  main
-HEAD:        4a5362e feat(auth): exchange admin OTP proof for CRM session
-origin/main: 4a5362e (referencia local inspeccionada)
+HEAD:        5ff5c5e docs: consolidate Hermes project status
+origin/main: 5ff5c5e (referencia local inspeccionada)
+Funcional:   4a5362e feat(auth): exchange admin OTP proof for CRM session
 Anterior:    1406545 feat(crm): consolidate leads, handoffs and operator workflows
 ```
 
@@ -347,7 +350,7 @@ Esto prueba el núcleo conversacional en esa fecha, no el despliegue posterior d
 
 Estado productivo del CRM: **no confirmado**.
 
-## 12. Verificaciones del 2026-08-02
+## 12. Verificaciones del 2026-08-03
 
 | Componente | Verificación | Resultado |
 |---|---|---|
@@ -596,7 +599,55 @@ No añadir más funciones todavía:
 
 Después: plantillas, etiquetas, follow-ups o múltiples operadores.
 
-## 21. Política documental
+## 21. Diagnóstico del flujo de desarrollo
+
+```text
+Implementación local y versionada
+        ↓
+Hardening de seguridad y decisiones operativas
+        ↓
+Despliegue reproducible en VPS
+        ↓
+Pruebas de aceptación con Meta, correo, n8n y Telegram
+        ↓
+Operación controlada del MVP
+        ↓
+Evolución funcional
+```
+
+### Fase actual: cierre técnico del MVP
+
+El núcleo del producto está construido: persistencia CRM, APIs protegidas, procesamiento de conversaciones de WhatsApp, clasificación comercial, handoff humano, interfaz de operador y notificaciones asíncronas. Las pruebas locales de backend ejecutadas el 2026-08-03 confirman que la base de código compila y que sus suites unitarias y E2E simuladas pasan.
+
+El trabajo no debe avanzar aún hacia nuevas capacidades. Antes corresponde cerrar los riesgos que impedirían una operación segura y verificable:
+
+1. endurecer Compose, red y credenciales;
+2. decidir y persistir la política de OTP, incluido el tratamiento del login por contraseña;
+3. desplegar backend, migración, frontend y proxy desde copias limpias de `main`;
+4. confirmar los workflows de n8n/Telegram y las variables de entorno;
+5. ejecutar y registrar la aceptación productiva de la sección 17.
+
+Al superar esa aceptación, Hermes pasará de **MVP implementado pendiente de despliegue** a **MVP operativo validado**. Sólo entonces conviene priorizar las mejoras P1/P2: plantillas de WhatsApp, observabilidad de colas, etiquetas, follow-ups, eventos comerciales, tiempo real o soporte para varios operadores.
+
+## 22. Campañas oficiales de WhatsApp Cloud API — actualización 2026-09-03 (America/Guayaquil)
+
+Commit de implementación: `44feef4 feat(campaigns): add official WhatsApp template campaigns`.
+
+### Implementado localmente
+
+- Modelos Prisma `Campaign`, `CampaignRecipient` y consentimiento de marketing en `Contact`, con migración `20260903143000_whatsapp_campaigns`.
+- Endpoints CRM protegidos para plantillas aprobadas de WABA, campañas, destinatarios, importación JSON por lotes y acciones explícitas de inicio, pausa, reanudación y cancelación.
+- Normalización E.164 para Ecuador, importación que no crea Leads, consentimiento explícito y baja por Quick Reply de Meta.
+- Cola BullMQ independiente, limitada por configuración; consulta el estado de campaña y consentimiento antes de cada envío.
+- Persistencia de `wamid`, estados de webhook idempotentes y métricas de campañas; Meta se usa solamente desde `MetaService`.
+
+### Seguridad, validación y pendiente
+
+- Nuevas variables sin valores secretos: `META_WABA_ID`, `CAMPAIGNS_ENABLED=false`, `CAMPAIGN_SEND_RATE_PER_SECOND=2`, `CAMPAIGN_MEDIA_ALLOWED_HOSTS`.
+- `npm test -- --runInBand` (5 suites, 21 pruebas), `npm run test:e2e -- --runInBand` (1 suite, 10 pruebas), `npm run build` y `npx prisma validate`: aprobados localmente.
+- No se desplegó ni se envió ningún WhatsApp real. Pendiente: migración autorizada, WABA/allowlist, verificar Quick Reply real y prueba controlada con un único contacto OPTED_IN.
+
+## 23. Política documental
 
 Cada actualización debe incluir fecha/zona, commits, evidencia confirmada vs reportada, comandos/conteos, cambios productivos sin secretos y pendientes priorizados.
 
