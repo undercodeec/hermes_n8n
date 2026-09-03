@@ -2,9 +2,45 @@
 
 > **Única fuente de verdad documental de esta carpeta.**
 >
-> **Fecha de corte:** 2026-08-03, zona horaria `America/Guayaquil`.
+> **Fecha de corte:** 2026-09-03, zona horaria `America/Guayaquil`.
 >
 > Este documento reemplaza los planes, guías, contratos, bitácoras y resúmenes Markdown anteriores de `ProyectMD/`. Cuando el código, Git y un documento histórico se contradicen, prevalecen el código y las verificaciones reproducibles. Las afirmaciones sobre el VPS no comprobadas en esta auditoría se identifican como evidencia histórica, no como estado confirmado hoy.
+
+## Actualización productiva — 2026-09-03 (America/Guayaquil)
+
+Esta actualización prevalece sobre las secciones anteriores que clasificaban como pendiente el despliegue del CRM, proxy u OTP. Distingue evidencia de VPS del código publicado posteriormente.
+
+### Estado confirmado de producción
+
+| Área | Implementado | Probado | Desplegado | Certificado E2E |
+|---|---|---|---|---|
+| Hermes Backend | Sí | Arranque y documentación HTTP | Sí, commit observado `09d38bc` | No integral |
+| Contenedor `hermes-app` | Sí | Arranque y `/api/docs` HTTP 200 | Sí, puerto 3003 | Sólo HTTP |
+| Proxy Undercodeec → Hermes | Sí | `/api/hermes/docs/` HTTP 200 | Sí | Sólo HTTP |
+| Solicitud OTP de Admin | Sí | Respuesta HTTP 200 reportada | Sí | Solicitud validada; canje completo no certificado aquí |
+| Campañas WhatsApp | Sí, commits `44feef4` y `09d38bc` | Pruebas locales, build y Prisma validate | Código presente en el commit desplegado `09d38bc`; activación/envío no confirmado | No |
+
+El despliegue observado usa `/var/www/hermes/hermes-backend`, rama `main`, servicio Compose `app` y contenedor `hermes-app`. La aplicación quedó operativa en el puerto 3003. PostgreSQL, Redis y n8n no fueron reconstruidos intencionalmente durante la recreación controlada de `app`.
+
+### Configuración CRM compartida
+
+- Hermes y Undercodeec tienen `CRM_HERMES_PROOF_SECRET=<CONFIGURADO>` y el valor debe ser idéntico en ambos entornos.
+- `CRM_OTP_HASH_SECRET=<CONFIGURADO>` es independiente y permanece únicamente en Undercodeec/Admin.
+- `CRM_OPERATOR_EMAIL=<CONFIGURADO>` está configurado en ambos servicios; el identificador no se expone en esta documentación ni en la UI pública de login.
+- La evidencia reporta permisos restrictivos y respaldo previo de los archivos de entorno. No se registran secretos, tokens, contraseñas ni OTPs en este documento.
+
+### Correcciones históricas resueltas
+
+- El proxy de Next.js requiere base `https://hermes.undercodeec.com/api`; sin el sufijo `/api` respondía 404 para rutas reenviadas.
+- La ausencia inicial de secretos CRM en Undercodeec provocó un HTTP 500 al solicitar OTP. Tras configurar valores enmascarados y reiniciar la API, `request-code` respondió HTTP 200 con mensaje genérico.
+- Los errores de PM2, assets Next.js, `paymentSessions` y variables faltantes deben tratarse como históricos si no existe una línea nueva con timestamp, uptime y proceso actual que los reproduzca.
+
+### Pendientes reales
+
+1. Certificar E2E el ciclo OTP completo: solicitud, verificación, canje de prueba Hermes, sesión CRM y rechazo de reuso.
+2. Ejecutar la aceptación funcional de WhatsApp, handoff, respuesta humana, n8n/Telegram y recuperación de BullMQ con evidencia enmascarada.
+3. Resolver la política de persistencia/alta disponibilidad de OTP y `jti`, y decidir el tratamiento del login por contraseña de emergencia.
+4. Desplegar y verificar por separado los commits de campañas y privacidad del login que no tengan evidencia VPS posterior.
 
 ## 1. Resumen ejecutivo
 
@@ -425,7 +461,7 @@ REDIS_URL=redis://redis:6379
 JWT_SECRET=<secreto-independiente>
 JWT_EXPIRATION=8h
 CRM_HERMES_PROOF_SECRET=<secreto-compartido-32+-bytes>
-CRM_OPERATOR_EMAIL=gerencia@undercodeec.com
+CRM_OPERATOR_EMAIL=<CONFIGURADO>
 CRM_BASE_URL=https://undercodeec.com/admin/crm
 CORS_ORIGINS=https://undercodeec.com
 META_PHONE_NUMBER_ID=<id>
