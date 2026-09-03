@@ -5,9 +5,10 @@ import { MetaModule } from '../meta/meta.module';
 import { HermesModule } from '../hermes/hermes.module';
 import { HandoffModule } from '../handoff/handoff.module';
 import { LeadsModule } from '../leads/leads.module';
+import { CampaignsModule } from '../campaigns/campaigns.module';
 
 @Module({
-  imports: [MetaModule, HermesModule, HandoffModule, LeadsModule],
+  imports: [MetaModule, HermesModule, HandoffModule, LeadsModule, CampaignsModule],
   controllers: [WebhookController],
   providers: [WebhookService],
   exports: [WebhookService],

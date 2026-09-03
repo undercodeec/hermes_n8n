@@ -20,6 +20,33 @@ enum UserRole {
   VIEWER
 }
 
+enum MarketingConsentStatus {
+  UNKNOWN
+  OPTED_IN
+  OPTED_OUT
+}
+
+enum CampaignStatus {
+  DRAFT
+  READY
+  RUNNING
+  PAUSED
+  COMPLETED
+  CANCELLED
+  FAILED
+}
+
+enum CampaignRecipientStatus {
+  PENDING
+  QUEUED
+  SENT
+  DELIVERED
+  READ
+  REPLIED
+  FAILED
+  SKIPPED
+}
+
 model User {
   id        String   @id @default(uuid())
   email     String   @unique
@@ -35,6 +62,7 @@ model User {
   assignedTasks    Task[]         @relation("AssignedUser")
   sentMessages     Message[]      @relation("HumanSender")
   auditLogs        AuditLog[]
+  createdCampaigns Campaign[] @relation("CampaignCreator")
 
   @@map("users")
 }
@@ -53,6 +81,10 @@ model Contact {
   position  String? // Cargo
   notes     String?
   metadata  Json? // Datos extra flexibles
+  marketingConsentStatus MarketingConsentStatus @default(UNKNOWN)
+  marketingConsentAt     DateTime?
+  marketingConsentSource String?
+  marketingOptOutAt      DateTime?
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -60,8 +92,60 @@ model Contact {
   leads         Lead[]
   conversations Conversation[]
   messages      Message[]
+  campaignRecipients CampaignRecipient[]
 
   @@map("contacts")
+}
+
+model Campaign {
+  id               String         @id @default(uuid())
+  name             String
+  templateName     String
+  templateLanguage String
+  templateCategory String?
+  headerVideoMediaId String?
+  headerVideoUrl   String?
+  status           CampaignStatus @default(DRAFT)
+  totalRecipients  Int            @default(0)
+  startedAt        DateTime?
+  completedAt      DateTime?
+  pausedAt         DateTime?
+  createdByUserId  String?
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  createdBy        User?              @relation("CampaignCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  recipients       CampaignRecipient[]
+
+  @@index([status, createdAt])
+  @@map("campaigns")
+}
+
+model CampaignRecipient {
+  id           String                  @id @default(uuid())
+  campaignId   String
+  contactId    String
+  phone        String
+  status       CampaignRecipientStatus @default(PENDING)
+  wamid        String?                 @unique
+  metaTimestamp DateTime?
+  sentAt       DateTime?
+  deliveredAt  DateTime?
+  readAt       DateTime?
+  repliedAt    DateTime?
+  failedAt     DateTime?
+  errorCode    String?
+  errorMessage String?
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+
+  campaign     Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact      Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([campaignId, contactId])
+  @@index([campaignId, status])
+  @@index([contactId, createdAt])
+  @@map("campaign_recipients")
 }
 
 enum LeadStage {

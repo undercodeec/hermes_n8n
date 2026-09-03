@@ -7,6 +7,7 @@ import {
 } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { AnalyticsService } from './analytics.service';
+import { CampaignsService } from '../campaigns/campaigns.service';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
 import { UserRole } from '@prisma/client';
@@ -17,7 +18,7 @@ import { UserRole } from '@prisma/client';
 @Roles(UserRole.ADMIN, UserRole.SALES_AGENT)
 @Controller('api/analytics')
 export class AnalyticsController {
-  constructor(private readonly analyticsService: AnalyticsService) {}
+  constructor(private readonly analyticsService: AnalyticsService, private readonly campaignsService: CampaignsService) {}
 
   @Get('crm-overview')
   @ApiOperation({
@@ -79,6 +80,6 @@ export class AnalyticsController {
   @Get('campaigns')
   @ApiOperation({ summary: 'Rendimiento por campaña' })
   getCampaigns() {
-    return this.analyticsService.getCampaignPerformance();
+    return this.campaignsService.getPerformance();
   }
 }
