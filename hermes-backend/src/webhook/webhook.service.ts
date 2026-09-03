@@ -6,6 +6,7 @@ import { MetaService } from '../meta/meta.service';
 import { HermesService } from '../hermes/hermes.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { LeadsService } from '../leads/leads.service';
+import { CampaignsService } from '../campaigns/campaigns.service';
 import {
   MetaWebhookDto,
   MetaWebhookMessage,
@@ -31,6 +32,7 @@ export class WebhookService {
     private readonly hermesService: HermesService,
     private readonly handoffService: HandoffService,
     private readonly leadsService: LeadsService,
+    private readonly campaignsService: CampaignsService,
   ) {}
 
   /**
@@ -92,7 +94,7 @@ export class WebhookService {
 
         // Procesar estados de mensajes (delivered, read, etc.)
         if (statuses?.length) {
-          this.processStatuses(statuses);
+          await this.processStatuses(statuses);
         }
 
         // Procesar mensajes entrantes
@@ -120,6 +122,10 @@ export class WebhookService {
     try {
       // Paso 4: Identificar o crear contacto
       const contact = await this.upsertContact(metaContact);
+
+      // Campaign attribution is deliberately separate from lead creation. The
+      // established inbound flow below remains the sole place that creates a lead.
+      await this.campaignsService.markReplied(contact.id);
 
       // Paso 5: Obtener o crear conversación activa
       const conversation = await this.getOrCreateConversation(contact.id);
@@ -149,6 +155,12 @@ export class WebhookService {
         where: { id: conversation.id },
         data: { updatedAt: new Date() },
       });
+
+      if (this.isCampaignOptOut(message)) {
+        await this.campaignsService.optOut(contact.id);
+        this.logger.log(`Contacto marcó baja de campañas`);
+        return;
+      }
 
       this.logger.log(
         `Mensaje recibido de ${contact.waId}: ${messageContent?.substring(0, 50)}...`,
@@ -472,15 +484,29 @@ export class WebhookService {
   /**
    * Procesa estados de mensajes (delivered, read, failed)
    */
-  private processStatuses(
-    statuses: Array<{ status?: unknown; id?: unknown }>,
-  ): void {
+  private async processStatuses(
+    statuses: Array<{ status?: unknown; id?: unknown; timestamp?: unknown; errors?: unknown }>,
+  ): Promise<void> {
     for (const status of statuses) {
-      this.logger.debug(
-        `Status: ${String(status.status)} para mensaje ${String(status.id)}`,
+      if (typeof status.id !== 'string' || typeof status.status !== 'string') continue;
+      const firstError = Array.isArray(status.errors) ? status.errors[0] as { code?: unknown; message?: unknown } : undefined;
+      await this.campaignsService.markRecipientStatus(
+        status.id,
+        status.status,
+        typeof status.timestamp === 'string' ? status.timestamp : undefined,
+        firstError && typeof firstError === 'object' ? {
+          code: typeof firstError.code === 'number' ? firstError.code : undefined,
+          message: typeof firstError.message === 'string' ? firstError.message : undefined,
+        } : undefined,
       );
-      // Se puede extender para actualizar estado de entrega en BD
     }
+  }
+
+  private isCampaignOptOut(message: MetaWebhookMessage): boolean {
+    if (message.type !== 'interactive' || message.interactive?.type !== 'button_reply') return false;
+    const reply = message.interactive.button_reply;
+    const value = `${reply?.id || ''} ${reply?.title || ''}`.trim().toLocaleLowerCase('es');
+    return value === 'no recibir mensajes' || value.includes('no_recibir_mensajes') || value.includes('opt_out');
   }
 
   /**

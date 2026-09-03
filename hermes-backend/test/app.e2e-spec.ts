@@ -12,6 +12,7 @@ import request from 'supertest';
 import { App } from 'supertest/types';
 import { AnalyticsController } from '../src/analytics/analytics.controller';
 import { AnalyticsService } from '../src/analytics/analytics.service';
+import { CampaignsService } from '../src/campaigns/campaigns.service';
 import { AuthController } from '../src/auth/auth.controller';
 import { AuthService } from '../src/auth/auth.service';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
@@ -68,6 +69,7 @@ describe('Contratos HTTP del CRM (e2e aislado)', () => {
     getCostMetrics: jest.fn(),
     getCampaignPerformance: jest.fn(),
   };
+  const campaignsService = { getPerformance: jest.fn() };
 
   const testAuthGuard: CanActivate = {
     canActivate(context: ExecutionContext) {
@@ -102,6 +104,7 @@ describe('Contratos HTTP del CRM (e2e aislado)', () => {
         { provide: ConversationsService, useValue: conversationsService },
         { provide: HandoffService, useValue: handoffService },
         { provide: AnalyticsService, useValue: analyticsService },
+        { provide: CampaignsService, useValue: campaignsService },
         RolesGuard,
       ],
     })
