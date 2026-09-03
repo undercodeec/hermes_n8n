@@ -151,10 +151,17 @@ export class CampaignsService {
 
   async processSendJob(data: CampaignJobData) {
     const recipient = await this.prisma.campaignRecipient.findUnique({ where: { id: data.recipientId }, include: { campaign: true, contact: true } });
-    if (!recipient || recipient.campaignId !== data.campaignId || recipient.wamid || recipient.campaign.status !== CampaignStatus.RUNNING) return;
+    if (!recipient || recipient.campaignId !== data.campaignId || recipient.wamid || recipient.status !== CampaignRecipientStatus.QUEUED || recipient.campaign.status !== CampaignStatus.RUNNING) return;
     if (recipient.contact.marketingConsentStatus !== MarketingConsentStatus.OPTED_IN) {
       await this.prisma.campaignRecipient.update({ where: { id: recipient.id }, data: { status: CampaignRecipientStatus.SKIPPED } }); return;
     }
+    // Claim atomically before the external side effect. Two jobs, or a resumed
+    // campaign, cannot both reach Meta for the same recipient.
+    const claim = await this.prisma.campaignRecipient.updateMany({
+      where: { id: recipient.id, status: CampaignRecipientStatus.QUEUED, wamid: null, sendAttemptedAt: null },
+      data: { sendAttemptedAt: new Date() },
+    });
+    if (claim.count !== 1) return;
     try {
       const result = await this.meta.sendTemplateMessage(recipient.phone, recipient.campaign.templateName, recipient.campaign.templateLanguage, { headerVideoMediaId: recipient.campaign.headerVideoMediaId || undefined, headerVideoUrl: recipient.campaign.headerVideoUrl || undefined });
       const wamid = result.messages?.[0]?.id;
@@ -163,11 +170,25 @@ export class CampaignsService {
       await this.completeIfFinished(data.campaignId);
     } catch (error) {
       const metaError = this.meta.toSafeError(error);
-      if (!metaError.retryable) {
-        await this.prisma.campaignRecipient.update({ where: { id: recipient.id }, data: { status: CampaignRecipientStatus.FAILED, failedAt: new Date(), errorCode: metaError.code, errorMessage: metaError.message } });
-        await this.completeIfFinished(data.campaignId); return;
+      // 429 explicitly means Meta rejected the request, so releasing the claim
+      // and letting BullMQ retry is safe. A timeout or 5xx is ambiguous: Meta
+      // could have accepted it, therefore it is never resent automatically.
+      if (metaError.status === 429) {
+        await this.prisma.campaignRecipient.update({ where: { id: recipient.id }, data: { sendAttemptedAt: null } });
+        throw error;
       }
-      throw error;
+      await this.prisma.campaignRecipient.update({
+        where: { id: recipient.id },
+        data: {
+          status: CampaignRecipientStatus.FAILED,
+          failedAt: new Date(),
+          errorCode: metaError.code,
+          errorMessage: metaError.retryable
+            ? 'Entrega no confirmada; no se reintentó para evitar un envío duplicado.'
+            : metaError.message,
+        },
+      });
+      await this.completeIfFinished(data.campaignId);
     }
   }
 
@@ -187,6 +208,15 @@ export class CampaignsService {
     if (next === CampaignRecipientStatus.FAILED) { update.failedAt = eventAt; update.errorCode = error?.code ? String(error.code) : null; update.errorMessage = this.sanitizeError(error?.message); }
     await this.prisma.campaignRecipient.update({ where: { id: recipient.id }, data: update });
     await this.completeIfFinished(recipient.campaignId);
+  }
+
+  async markRetryExhausted(data: CampaignJobData, error: unknown) {
+    const safe = this.meta.toSafeError(error);
+    const result = await this.prisma.campaignRecipient.updateMany({
+      where: { id: data.recipientId, campaignId: data.campaignId, status: CampaignRecipientStatus.QUEUED, wamid: null },
+      data: { status: CampaignRecipientStatus.FAILED, failedAt: new Date(), errorCode: safe.code, errorMessage: 'Meta rechazó repetidamente la solicitud por límite de tasa.' },
+    });
+    if (result.count) await this.completeIfFinished(data.campaignId);
   }
 
   async markReplied(contactId: string) {
