@@ -73,13 +73,13 @@ export class MetaService {
     } catch { return false; }
   }
 
-  toSafeError(error: unknown): { retryable: boolean; code: string | null; message: string } {
+  toSafeError(error: unknown): { retryable: boolean; status: number | null; code: string | null; message: string } {
     const axiosError = error as AxiosError<{ error?: { code?: number; message?: string } }>;
     const status = axiosError.response?.status;
     const code = axiosError.response?.data?.error?.code;
     const raw = axiosError.response?.data?.error?.message || axiosError.message || 'Error de Meta';
     const message = raw.replace(/[\r\n]/g, ' ').slice(0, 500);
-    return { retryable: !status || status === 429 || status >= 500, code: code ? String(code) : status ? String(status) : null, message };
+    return { retryable: !status || status === 429 || status >= 500, status: status || null, code: code ? String(code) : status ? String(status) : null, message };
   }
 
   async markAsRead(messageId: string): Promise<void> {

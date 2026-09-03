@@ -635,10 +635,10 @@ Commit de implementación: `44feef4 feat(campaigns): add official WhatsApp templ
 
 ### Implementado localmente
 
-- Modelos Prisma `Campaign`, `CampaignRecipient` y consentimiento de marketing en `Contact`, con migración `20260903143000_whatsapp_campaigns`.
+- Modelos Prisma `Campaign`, `CampaignRecipient` y consentimiento de marketing en `Contact`, con migraciones `20260903143000_whatsapp_campaigns` y `20260903160000_campaign_send_idempotency`.
 - Endpoints CRM protegidos para plantillas aprobadas de WABA, campañas, destinatarios, importación JSON por lotes y acciones explícitas de inicio, pausa, reanudación y cancelación.
 - Normalización E.164 para Ecuador, importación que no crea Leads, consentimiento explícito y baja por Quick Reply de Meta.
-- Cola BullMQ independiente, limitada por configuración; consulta el estado de campaña y consentimiento antes de cada envío.
+- Cola BullMQ independiente, limitada por configuración; reclama atómicamente el destinatario antes de Meta y no reintenta resultados ambiguos para evitar duplicados.
 - Persistencia de `wamid`, estados de webhook idempotentes y métricas de campañas; Meta se usa solamente desde `MetaService`.
 
 ### Seguridad, validación y pendiente
