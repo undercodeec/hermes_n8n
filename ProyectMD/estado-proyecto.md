@@ -677,11 +677,13 @@ Commits relevantes: `44feef4 feat(campaigns): add official WhatsApp template cam
 - Una respuesta de un destinatario de campaña se guarda en Inbox, se marca como `REPLIED` y abre un handoff `CUSTOM` para atención humana; Hermes no se invoca ni genera/envía una respuesta automática. La baja por Quick Reply conserva su flujo de `OPTED_OUT` sin abrir el handoff.
 - Cola BullMQ independiente, limitada por configuración; reclama atómicamente el destinatario antes de Meta y no reintenta resultados ambiguos para evitar duplicados.
 - Persistencia de `wamid`, estados de webhook idempotentes y métricas de campañas; Meta se usa solamente desde `MetaService`.
+- Actualización 2026-09-04 (America/Guayaquil), aún sin commit: biblioteca de videos de campaña. Un operador puede cargar un MP4 (máximo 16 MB) desde el CRM; Hermes lo carga al número de WhatsApp mediante Meta y guarda el `Media ID` en PostgreSQL. También puede registrar una vez un `Media ID` existente: Hermes lo verifica contra el WABA configurado antes de guardarlo. Las campañas seleccionan el video de la biblioteca y no requieren copiar IDs ni cambiar `.env`.
 
 ### Seguridad, validación y pendiente
 
 - Nuevas variables sin valores secretos: `META_WABA_ID`, `CAMPAIGNS_ENABLED=false`, `CAMPAIGN_SEND_RATE_PER_SECOND=2`, `CAMPAIGN_MEDIA_ALLOWED_HOSTS`.
 - Verificación adicional de `26891a3`: `npm test -- --runInBand webhook.service.spec.ts campaigns.service.spec.ts` (2 suites, 5/5 pruebas) y `npm run build`: aprobados localmente. La nueva prueba confirma que una respuesta de campaña no llama a Hermes ni a `MetaService.sendTextMessage`.
+- Verificación de la biblioteca multimedia 2026-09-04: `npm test -- --runInBand campaigns.service.spec.ts` (1 suite, 5/5) y `npm run build` en `hermes-backend`; `npm run build` en `undercodeec_nextjs`: aprobados. Falta aplicar la migración `20260904100000_campaign_media_library`, desplegar ambos servicios y realizar la prueba controlada.
 - `26891a3` fue publicado en `origin/main`; no existe evidencia VPS posterior de su despliegue. No se ha enviado ningún WhatsApp real. Pendiente: desplegarlo, migración autorizada, WABA/allowlist, verificar Quick Reply real y prueba controlada con un único contacto `OPTED_IN`.
 
 ## 23. Política documental

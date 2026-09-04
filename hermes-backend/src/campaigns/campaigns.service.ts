@@ -18,6 +18,8 @@ import { MetaService } from '../meta/meta.service';
 import { CreateCampaignSourceDto } from './dto/create-campaign-source.dto';
 import { CreateAdsMetadataDto } from './dto/create-ads-metadata.dto';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
+import { UploadCampaignMediaDto } from './dto/upload-campaign-media.dto';
+import { RegisterCampaignMediaDto } from './dto/register-campaign-media.dto';
 import { CampaignContactImportRowDto } from './dto/import-campaign-contacts.dto';
 import {
   CAMPAIGN_IMPORT_MAX_ROWS,
@@ -30,6 +32,7 @@ export interface CampaignJobData {
   recipientId: string;
 }
 type Operator = { id: string };
+const MAX_CAMPAIGN_VIDEO_BYTES = 16 * 1024 * 1024;
 
 @Injectable()
 export class CampaignsService {
@@ -82,10 +85,80 @@ export class CampaignsService {
     return this.meta.getApprovedMessageTemplates();
   }
 
+  async findMedia() {
+    return this.prisma.campaignMedia.findMany({ orderBy: { createdAt: 'desc' } });
+  }
+
+  async uploadMedia(
+    file: Express.Multer.File | undefined,
+    dto: UploadCampaignMediaDto,
+    operator: Operator,
+  ) {
+    if (!file) throw new BadRequestException('Selecciona un video MP4');
+    if (file.mimetype !== 'video/mp4')
+      throw new BadRequestException('Solo se permiten videos MP4');
+    if (!file.size || file.size > MAX_CAMPAIGN_VIDEO_BYTES)
+      throw new BadRequestException('El video debe pesar como máximo 16 MB');
+    const uploaded = await this.meta.uploadCampaignVideo(file);
+    const media = await this.prisma.campaignMedia.create({
+      data: {
+        name: (dto.name || file.originalname).trim().slice(0, 160),
+        metaMediaId: uploaded.id,
+        mimeType: file.mimetype,
+        sizeBytes: file.size,
+        createdByUserId: operator.id,
+      },
+    });
+    await this.audit(operator.id, 'CAMPAIGN_MEDIA_UPLOADED', media.id, {
+      name: media.name,
+    });
+    return media;
+  }
+
+  async registerMedia(dto: RegisterCampaignMediaDto, operator: Operator) {
+    const metaMediaId = dto.metaMediaId.trim();
+    const existing = await this.prisma.campaignMedia.findUnique({
+      where: { metaMediaId },
+    });
+    if (existing) return existing;
+    const metadata = await this.meta.getCampaignMediaMetadata(metaMediaId);
+    if (metadata.mime_type !== 'video/mp4')
+      throw new BadRequestException('El Media ID debe corresponder a un video MP4');
+    const media = await this.prisma.campaignMedia.create({
+      data: {
+        name: dto.name.trim(),
+        metaMediaId,
+        mimeType: metadata.mime_type,
+        sizeBytes: Number(metadata.file_size) || 0,
+        createdByUserId: operator.id,
+      },
+    });
+    await this.audit(operator.id, 'CAMPAIGN_MEDIA_REGISTERED', media.id, {
+      name: media.name,
+    });
+    return media;
+  }
+
   async createCampaign(dto: CreateCampaignDto, operator: Operator) {
-    this.assertSafeHeader(dto.headerVideoMediaId, dto.headerVideoUrl);
+    const { headerVideoAssetId, ...campaignData } = dto;
+    if (headerVideoAssetId && (dto.headerVideoMediaId || dto.headerVideoUrl))
+      throw new BadRequestException('Selecciona un video de la biblioteca o usa un valor manual, no ambos');
+    const asset = headerVideoAssetId
+      ? await this.prisma.campaignMedia.findUnique({ where: { id: headerVideoAssetId } })
+      : null;
+    if (headerVideoAssetId && !asset)
+      throw new NotFoundException('El video seleccionado ya no está disponible');
+    const headerVideoMediaId = asset?.metaMediaId || dto.headerVideoMediaId?.trim() || undefined;
+    const headerVideoUrl = dto.headerVideoUrl?.trim() || undefined;
+    this.assertSafeHeader(headerVideoMediaId, headerVideoUrl);
     const campaign = await this.prisma.campaign.create({
-      data: { ...dto, createdByUserId: operator.id },
+      data: {
+        ...campaignData,
+        headerVideoMediaId,
+        headerVideoUrl,
+        headerVideoAssetId: asset?.id,
+        createdByUserId: operator.id,
+      },
     });
     await this.audit(operator.id, 'CAMPAIGN_CREATED', campaign.id, {
       name: campaign.name,
