@@ -18,7 +18,7 @@ Esta actualización prevalece sobre las secciones anteriores que clasificaban co
 | Contenedor `hermes-app` | Sí | Arranque y `/api/docs` HTTP 200 | Sí, puerto 3003 | Sólo HTTP |
 | Proxy Undercodeec → Hermes | Sí | `/api/hermes/docs/` HTTP 200 | Sí | Sólo HTTP |
 | Solicitud OTP de Admin | Sí | Respuesta HTTP 200 reportada | Sí | Solicitud validada; canje completo no certificado aquí |
-| Campañas WhatsApp | Sí, commits `44feef4` y `09d38bc` | Pruebas locales, build y Prisma validate | Código presente en el commit desplegado `09d38bc`; activación/envío no confirmado | No |
+| Campañas WhatsApp | Sí, commits `44feef4`, `09d38bc` y `26891a3` | Pruebas locales focalizadas y build | `26891a3` publicado en `origin/main`; despliegue VPS, activación y envío no confirmados | No |
 
 El despliegue observado usa `/var/www/hermes/hermes-backend`, rama `main`, servicio Compose `app` y contenedor `hermes-app`. La aplicación quedó operativa en el puerto 3003. PostgreSQL, Redis y n8n no fueron reconstruidos intencionalmente durante la recreación controlada de `app`.
 
@@ -40,7 +40,7 @@ El despliegue observado usa `/var/www/hermes/hermes-backend`, rama `main`, servi
 1. Certificar E2E el ciclo OTP completo: solicitud, verificación, canje de prueba Hermes, sesión CRM y rechazo de reuso.
 2. Ejecutar la aceptación funcional de WhatsApp, handoff, respuesta humana, n8n/Telegram y recuperación de BullMQ con evidencia enmascarada.
 3. Resolver la política de persistencia/alta disponibilidad de OTP y `jti`, y decidir el tratamiento del login por contraseña de emergencia.
-4. Desplegar y verificar por separado los commits de campañas y privacidad del login que no tengan evidencia VPS posterior.
+4. Desplegar y verificar `26891a3` para que las respuestas de campaña queden exclusivamente en atención humana; después ejecutar la prueba controlada de campañas.
 
 ## 1. Resumen ejecutivo
 
@@ -667,22 +667,22 @@ Al superar esa aceptación, Hermes pasará de **MVP implementado pendiente de de
 
 ## 22. Campañas oficiales de WhatsApp Cloud API — actualización 2026-09-03 (America/Guayaquil)
 
-Commit de implementación: `44feef4 feat(campaigns): add official WhatsApp template campaigns`.
+Commits relevantes: `44feef4 feat(campaigns): add official WhatsApp template campaigns`, `09d38bc fix(campaigns): prevent duplicate sends on ambiguous retries` y `26891a3 fix(campaigns): route campaign replies to human handoff`.
 
 ### Implementado localmente
 
 - Modelos Prisma `Campaign`, `CampaignRecipient` y consentimiento de marketing en `Contact`, con migraciones `20260903143000_whatsapp_campaigns` y `20260903160000_campaign_send_idempotency`.
 - Endpoints CRM protegidos para plantillas aprobadas de WABA, campañas, destinatarios, importación JSON por lotes y acciones explícitas de inicio, pausa, reanudación y cancelación.
 - Normalización E.164 para Ecuador, importación que no crea Leads, consentimiento explícito y baja por Quick Reply de Meta.
-- Una respuesta de un destinatario de campaña se guarda en Inbox y abre un handoff `CUSTOM` para atención humana; Hermes no genera ni envía respuesta automática. La baja por Quick Reply conserva su flujo de `OPTED_OUT` sin abrir el handoff.
+- Una respuesta de un destinatario de campaña se guarda en Inbox, se marca como `REPLIED` y abre un handoff `CUSTOM` para atención humana; Hermes no se invoca ni genera/envía una respuesta automática. La baja por Quick Reply conserva su flujo de `OPTED_OUT` sin abrir el handoff.
 - Cola BullMQ independiente, limitada por configuración; reclama atómicamente el destinatario antes de Meta y no reintenta resultados ambiguos para evitar duplicados.
 - Persistencia de `wamid`, estados de webhook idempotentes y métricas de campañas; Meta se usa solamente desde `MetaService`.
 
 ### Seguridad, validación y pendiente
 
 - Nuevas variables sin valores secretos: `META_WABA_ID`, `CAMPAIGNS_ENABLED=false`, `CAMPAIGN_SEND_RATE_PER_SECOND=2`, `CAMPAIGN_MEDIA_ALLOWED_HOSTS`.
-- `npm test -- --runInBand` (5 suites, 21 pruebas), `npm run test:e2e -- --runInBand` (1 suite, 10 pruebas), `npm run build` y `npx prisma validate`: aprobados localmente.
-- No se desplegó ni se envió ningún WhatsApp real. Pendiente: desplegar la regla de respuestas de campaña a atención humana, migración autorizada, WABA/allowlist, verificar Quick Reply real y prueba controlada con un único contacto OPTED_IN.
+- Verificación adicional de `26891a3`: `npm test -- --runInBand webhook.service.spec.ts campaigns.service.spec.ts` (2 suites, 5/5 pruebas) y `npm run build`: aprobados localmente. La nueva prueba confirma que una respuesta de campaña no llama a Hermes ni a `MetaService.sendTextMessage`.
+- `26891a3` fue publicado en `origin/main`; no existe evidencia VPS posterior de su despliegue. No se ha enviado ningún WhatsApp real. Pendiente: desplegarlo, migración autorizada, WABA/allowlist, verificar Quick Reply real y prueba controlada con un único contacto `OPTED_IN`.
 
 ## 23. Política documental
 
