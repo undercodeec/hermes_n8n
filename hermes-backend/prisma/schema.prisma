@@ -105,6 +105,7 @@ model Campaign {
   templateCategory String?
   headerVideoMediaId String?
   headerVideoUrl   String?
+  headerVideoAssetId String?
   status           CampaignStatus @default(DRAFT)
   totalRecipients  Int            @default(0)
   startedAt        DateTime?
@@ -115,10 +116,29 @@ model Campaign {
   updatedAt        DateTime       @updatedAt
 
   createdBy        User?              @relation("CampaignCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  headerVideoAsset CampaignMedia?     @relation(fields: [headerVideoAssetId], references: [id], onDelete: Restrict)
   recipients       CampaignRecipient[]
 
   @@index([status, createdAt])
   @@map("campaigns")
+}
+
+// A Media ID is not a secret. Keeping it here lets operators choose an
+// already-uploaded WhatsApp video without copying IDs or changing .env.
+model CampaignMedia {
+  id          String   @id @default(uuid())
+  name        String
+  metaMediaId String   @unique
+  mimeType    String
+  sizeBytes   Int
+  createdByUserId String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  campaigns   Campaign[]
+
+  @@index([createdAt])
+  @@map("campaign_media")
 }
 
 model CampaignRecipient {

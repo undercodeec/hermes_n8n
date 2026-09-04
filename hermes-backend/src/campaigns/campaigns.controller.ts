@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Param, Post, Query, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -8,6 +9,8 @@ import { CreateAdsMetadataDto } from './dto/create-ads-metadata.dto';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { ImportCampaignContactsDto } from './dto/import-campaign-contacts.dto';
 import { CampaignQueryDto } from './dto/campaign-query.dto';
+import { UploadCampaignMediaDto } from './dto/upload-campaign-media.dto';
+import { RegisterCampaignMediaDto } from './dto/register-campaign-media.dto';
 
 @ApiTags('Campaigns')
 @ApiBearerAuth()
@@ -25,6 +28,13 @@ export class CampaignsController {
 
   @Get('templates') @ApiOperation({ summary: 'List approved WhatsApp templates from the configured WABA' })
   templates() { return this.campaigns.getTemplates(); }
+  @Get('media') @ApiOperation({ summary: 'List campaign videos uploaded to Meta from Hermes' })
+  media() { return this.campaigns.findMedia(); }
+  @Post('media') @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 16 * 1024 * 1024 } }))
+  @ApiOperation({ summary: 'Upload an MP4 to Meta and add it to the Hermes campaign media library' })
+  uploadMedia(@UploadedFile() file: Express.Multer.File, @Body() dto: UploadCampaignMediaDto, @CurrentUser() user: { id: string }) { return this.campaigns.uploadMedia(file, dto, user); }
+  @Post('media/register') @ApiOperation({ summary: 'Verify and save an existing Meta Media ID in the Hermes library' })
+  registerMedia(@Body() dto: RegisterCampaignMediaDto, @CurrentUser() user: { id: string }) { return this.campaigns.registerMedia(dto, user); }
   @Get() @ApiOperation({ summary: 'List official WhatsApp campaigns' })
   findAll(@Query() query: CampaignQueryDto) { return this.campaigns.findAll(query.page, query.limit); }
   @Post() @ApiOperation({ summary: 'Create a draft official WhatsApp campaign' })

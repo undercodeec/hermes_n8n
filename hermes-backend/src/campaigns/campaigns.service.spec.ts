@@ -30,6 +30,22 @@ describe('CampaignsService send idempotency', () => {
     expect(prisma.campaignRecipient.findMany).toBeUndefined();
   });
 
+  it('uses the selected library video instead of requiring an operator to copy a Media ID', async () => {
+    const asset = { id: 'media-1', metaMediaId: 'meta-media-1' };
+    const create = jest.fn().mockResolvedValue({ id: 'campaign-2' });
+    const { service, prisma } = makeService({
+      campaign: { findUnique: jest.fn(), create, update: jest.fn() },
+      campaignMedia: { findUnique: jest.fn().mockResolvedValue(asset) },
+    });
+    await service.createCampaign({
+      name: 'Prueba', templateName: 'approved_template', templateLanguage: 'es', headerVideoAssetId: asset.id,
+    }, { id: 'user-1' });
+    expect(prisma.campaignMedia.findUnique).toHaveBeenCalledWith({ where: { id: asset.id } });
+    expect(create).toHaveBeenCalledWith(expect.objectContaining({
+      data: expect.objectContaining({ headerVideoAssetId: asset.id, headerVideoMediaId: asset.metaMediaId }),
+    }));
+  });
+
   it('does not call Meta when another job already claimed the recipient', async () => {
     const { service, prisma, meta } = makeService();
     prisma.campaignRecipient.updateMany.mockResolvedValue({ count: 0 });

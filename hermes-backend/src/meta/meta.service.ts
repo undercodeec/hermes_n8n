@@ -5,6 +5,8 @@ import axios, { AxiosError, AxiosInstance } from 'axios';
 export interface MetaSendResponse { messaging_product: string; contacts: { input: string; wa_id: string }[]; messages: { id: string }[]; }
 export interface MetaTemplate { id?: string; name: string; language: string; category?: string; status?: string; components?: unknown[]; }
 export interface TemplateSendOptions { headerVideoMediaId?: string; headerVideoUrl?: string; bodyParameters?: string[]; buttonParameters?: unknown[]; }
+export interface MetaUploadedMedia { id: string; }
+export interface MetaMediaMetadata { id: string; mime_type?: string; file_size?: number; }
 
 @Injectable()
 export class MetaService {
@@ -62,6 +64,53 @@ export class MetaService {
     const payload: Record<string, unknown> = { messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'template', template: { name: templateName, language: { code: languageCode }, ...(components.length ? { components } : {}) } };
     const response = await this.httpClient.post<MetaSendResponse>('/messages', payload);
     return response.data;
+  }
+
+  async uploadCampaignVideo(file: {
+    buffer: Buffer;
+    mimetype: string;
+    originalname: string;
+  }): Promise<MetaUploadedMedia> {
+    if (!this.phoneNumberId)
+      throw new ServiceUnavailableException('META_PHONE_NUMBER_ID no está configurado');
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    const bytes = file.buffer.buffer.slice(
+      file.buffer.byteOffset,
+      file.buffer.byteOffset + file.buffer.byteLength,
+    ) as ArrayBuffer;
+    form.append(
+      'file',
+      new Blob([bytes], { type: file.mimetype }),
+      file.originalname,
+    );
+    try {
+      const response = await this.httpClient.post<MetaUploadedMedia>('/media', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        maxBodyLength: Infinity,
+        maxContentLength: Infinity,
+      });
+      if (!response.data?.id) throw new Error('Meta no devolvió un Media ID');
+      return response.data;
+    } catch (error) {
+      const safe = this.toSafeError(error);
+      this.logger.error(`No se pudo cargar el video de campaña: ${safe.code || 'META_ERROR'} ${safe.message}`);
+      throw new ServiceUnavailableException('Meta no pudo cargar el video');
+    }
+  }
+
+  async getCampaignMediaMetadata(mediaId: string): Promise<MetaMediaMetadata> {
+    try {
+      const response = await this.graphClient.get<MetaMediaMetadata>(
+        `/${encodeURIComponent(mediaId)}`,
+        { params: { fields: 'id,mime_type,file_size' } },
+      );
+      return response.data;
+    } catch (error) {
+      const safe = this.toSafeError(error);
+      this.logger.error(`No se pudo verificar el Media ID: ${safe.code || 'META_ERROR'} ${safe.message}`);
+      throw new BadRequestException('El Media ID no es accesible desde el WABA configurado');
+    }
   }
 
   isSafeMediaUrl(value: string): boolean {

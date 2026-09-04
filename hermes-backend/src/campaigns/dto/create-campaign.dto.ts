@@ -23,6 +23,12 @@ export class CreateCampaignDto {
   @Length(1, 64)
   templateCategory?: string;
 
+  @ApiPropertyOptional({ description: 'Video selected from the Hermes campaign media library' })
+  @IsOptional()
+  @IsString()
+  @Length(1, 64)
+  headerVideoAssetId?: string;
+
   @ApiPropertyOptional({ description: 'Meta media ID for a video header' })
   @IsOptional()
   @IsString()
