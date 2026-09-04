@@ -674,6 +674,7 @@ Commit de implementación: `44feef4 feat(campaigns): add official WhatsApp templ
 - Modelos Prisma `Campaign`, `CampaignRecipient` y consentimiento de marketing en `Contact`, con migraciones `20260903143000_whatsapp_campaigns` y `20260903160000_campaign_send_idempotency`.
 - Endpoints CRM protegidos para plantillas aprobadas de WABA, campañas, destinatarios, importación JSON por lotes y acciones explícitas de inicio, pausa, reanudación y cancelación.
 - Normalización E.164 para Ecuador, importación que no crea Leads, consentimiento explícito y baja por Quick Reply de Meta.
+- Una respuesta de un destinatario de campaña se guarda en Inbox y abre un handoff `CUSTOM` para atención humana; Hermes no genera ni envía respuesta automática. La baja por Quick Reply conserva su flujo de `OPTED_OUT` sin abrir el handoff.
 - Cola BullMQ independiente, limitada por configuración; reclama atómicamente el destinatario antes de Meta y no reintenta resultados ambiguos para evitar duplicados.
 - Persistencia de `wamid`, estados de webhook idempotentes y métricas de campañas; Meta se usa solamente desde `MetaService`.
 
@@ -681,7 +682,7 @@ Commit de implementación: `44feef4 feat(campaigns): add official WhatsApp templ
 
 - Nuevas variables sin valores secretos: `META_WABA_ID`, `CAMPAIGNS_ENABLED=false`, `CAMPAIGN_SEND_RATE_PER_SECOND=2`, `CAMPAIGN_MEDIA_ALLOWED_HOSTS`.
 - `npm test -- --runInBand` (5 suites, 21 pruebas), `npm run test:e2e -- --runInBand` (1 suite, 10 pruebas), `npm run build` y `npx prisma validate`: aprobados localmente.
-- No se desplegó ni se envió ningún WhatsApp real. Pendiente: migración autorizada, WABA/allowlist, verificar Quick Reply real y prueba controlada con un único contacto OPTED_IN.
+- No se desplegó ni se envió ningún WhatsApp real. Pendiente: desplegar la regla de respuestas de campaña a atención humana, migración autorizada, WABA/allowlist, verificar Quick Reply real y prueba controlada con un único contacto OPTED_IN.
 
 ## 23. Política documental
 
