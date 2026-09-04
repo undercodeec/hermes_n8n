@@ -126,6 +126,8 @@ export class WebhookService {
       // Campaign attribution is deliberately separate from lead creation. The
       // established inbound flow below remains the sole place that creates a lead.
       await this.campaignsService.markReplied(contact.id);
+      const campaignRecipient =
+        await this.campaignsService.findHumanManagedRecipient(contact.id);
 
       // Paso 5: Obtener o crear conversación activa
       const conversation = await this.getOrCreateConversation(contact.id);
@@ -159,6 +161,20 @@ export class WebhookService {
       if (this.isCampaignOptOut(message)) {
         await this.campaignsService.optOut(contact.id);
         this.logger.log(`Contacto marcó baja de campañas`);
+        return;
+      }
+
+      // Campaign replies are never handled by Hermes. They remain visible in
+      // Inbox, but an explicit handoff gives the CRM operator sole control.
+      if (campaignRecipient) {
+        await this.handoffService.create({
+          conversationId: conversation.id,
+          reason: HandoffReason.CUSTOM,
+          reasonDetail: `Respuesta a campaña ${campaignRecipient.campaignId}; requiere atención humana desde CRM.`,
+        });
+        this.logger.log(
+          `Respuesta a campaña ${campaignRecipient.campaignId}; conversación ${conversation.id} derivada a humano sin respuesta de Hermes`,
+        );
         return;
       }
 
@@ -485,28 +501,54 @@ export class WebhookService {
    * Procesa estados de mensajes (delivered, read, failed)
    */
   private async processStatuses(
-    statuses: Array<{ status?: unknown; id?: unknown; timestamp?: unknown; errors?: unknown }>,
+    statuses: Array<{
+      status?: unknown;
+      id?: unknown;
+      timestamp?: unknown;
+      errors?: unknown;
+    }>,
   ): Promise<void> {
     for (const status of statuses) {
-      if (typeof status.id !== 'string' || typeof status.status !== 'string') continue;
-      const firstError = Array.isArray(status.errors) ? status.errors[0] as { code?: unknown; message?: unknown } : undefined;
+      if (typeof status.id !== 'string' || typeof status.status !== 'string')
+        continue;
+      const firstError = Array.isArray(status.errors)
+        ? (status.errors[0] as { code?: unknown; message?: unknown })
+        : undefined;
       await this.campaignsService.markRecipientStatus(
         status.id,
         status.status,
         typeof status.timestamp === 'string' ? status.timestamp : undefined,
-        firstError && typeof firstError === 'object' ? {
-          code: typeof firstError.code === 'number' ? firstError.code : undefined,
-          message: typeof firstError.message === 'string' ? firstError.message : undefined,
-        } : undefined,
+        firstError && typeof firstError === 'object'
+          ? {
+              code:
+                typeof firstError.code === 'number'
+                  ? firstError.code
+                  : undefined,
+              message:
+                typeof firstError.message === 'string'
+                  ? firstError.message
+                  : undefined,
+            }
+          : undefined,
       );
     }
   }
 
   private isCampaignOptOut(message: MetaWebhookMessage): boolean {
-    if (message.type !== 'interactive' || message.interactive?.type !== 'button_reply') return false;
+    if (
+      message.type !== 'interactive' ||
+      message.interactive?.type !== 'button_reply'
+    )
+      return false;
     const reply = message.interactive.button_reply;
-    const value = `${reply?.id || ''} ${reply?.title || ''}`.trim().toLocaleLowerCase('es');
-    return value === 'no recibir mensajes' || value.includes('no_recibir_mensajes') || value.includes('opt_out');
+    const value = `${reply?.id || ''} ${reply?.title || ''}`
+      .trim()
+      .toLocaleLowerCase('es');
+    return (
+      value === 'no recibir mensajes' ||
+      value.includes('no_recibir_mensajes') ||
+      value.includes('opt_out')
+    );
   }
 
   /**
