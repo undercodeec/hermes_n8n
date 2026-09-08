@@ -1,13 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsOptional, IsString, Length, Matches } from 'class-validator';
 
-export class CreateCampaignDto {
-  @ApiProperty({ maxLength: 160 })
+export class ConfigureTemplateMediaDto {
+  @ApiProperty()
   @IsString()
-  @Length(1, 160)
-  name: string;
+  @Length(1, 128)
+  templateId: string;
 
-  @ApiProperty({ maxLength: 512 })
+  @ApiProperty()
   @IsString()
   @Length(1, 512)
   templateName: string;
@@ -21,6 +21,11 @@ export class CreateCampaignDto {
   @IsOptional()
   @IsString()
   @Length(1, 64)
-  templateCategory?: string;
+  campaignMediaId?: string;
 
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  @Length(1, 2048)
+  mediaUrl?: string;
 }

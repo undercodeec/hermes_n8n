@@ -27,6 +27,12 @@ export class MetaService {
     this.graphClient = axios.create({ baseURL: `https://graph.facebook.com/${apiVersion}`, headers, timeout: 30000 });
   }
 
+  getConfiguredWabaId(): string {
+    if (!this.wabaId)
+      throw new ServiceUnavailableException('META_WABA_ID no está configurado');
+    return this.wabaId;
+  }
+
   async sendTextMessage(to: string, text: string): Promise<MetaSendResponse | null> {
     try {
       const response = await this.httpClient.post<MetaSendResponse>('/messages', { messaging_product: 'whatsapp', recipient_type: 'individual', to, type: 'text', text: { body: text } });

@@ -103,6 +103,8 @@ model Campaign {
   templateName     String
   templateLanguage String
   templateCategory String?
+  templateMetaId   String?
+  templateHeaderType String?
   headerVideoMediaId String?
   headerVideoUrl   String?
   headerVideoAssetId String?
@@ -136,9 +138,30 @@ model CampaignMedia {
   updatedAt   DateTime @updatedAt
 
   campaigns   Campaign[]
+  templateMediaConfigurations CampaignTemplateMedia[]
 
   @@index([createdAt])
   @@map("campaign_media")
+}
+
+model CampaignTemplateMedia {
+  id               String   @id @default(uuid())
+  wabaId           String
+  metaTemplateId   String?
+  templateName     String
+  templateLanguage String
+  headerType       String
+  campaignMediaId  String?
+  mediaUrl         String?
+  createdByUserId  String?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  campaignMedia CampaignMedia? @relation(fields: [campaignMediaId], references: [id], onDelete: Restrict)
+
+  @@unique([wabaId, templateName, templateLanguage, headerType])
+  @@index([metaTemplateId])
+  @@map("campaign_template_media")
 }
 
 model CampaignRecipient {

@@ -16,7 +16,9 @@ location /api/hermes/ {
     proxy_set_header X-Forwarded-Proto $scheme;
     proxy_set_header X-Forwarded-Prefix /api/hermes;
 
-    client_max_body_size 10M;
+    # 16 MiB MP4 allowed by Hermes plus multipart boundaries and headers.
+    # NestJS/Multer remains the authority for the file-content limit.
+    client_max_body_size 17m;
     proxy_connect_timeout 10s;
     proxy_send_timeout 60s;
     proxy_read_timeout 60s;
