@@ -23,6 +23,7 @@ prisma/migrations/dev/
 # IDE / OS
 .vscode/
 .idea/
+.worktrees/
 .DS_Store
 Thumbs.db
 *.swp
@@ -40,4 +41,3 @@ coverage/
 
 # Documentación interna (no se versiona)
 *.md
-
