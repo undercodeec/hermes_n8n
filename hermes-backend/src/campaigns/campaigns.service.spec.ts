@@ -30,20 +30,160 @@ describe('CampaignsService send idempotency', () => {
     expect(prisma.campaignRecipient.findMany).toBeUndefined();
   });
 
-  it('uses the selected library video instead of requiring an operator to copy a Media ID', async () => {
-    const asset = { id: 'media-1', metaMediaId: 'meta-media-1' };
-    const create = jest.fn().mockResolvedValue({ id: 'campaign-2' });
+  it('snapshots the video configured for the exact approved template language', async () => {
+    const create = jest.fn().mockResolvedValue({ id: 'campaign-3' });
+    const template = {
+      id: 'template-es', name: 'promo', language: 'es', status: 'APPROVED',
+      components: [{ type: 'HEADER', format: 'VIDEO' }],
+    };
+    const templateMedia = {
+      campaignMediaId: 'asset-1', mediaUrl: null,
+      campaignMedia: { id: 'asset-1', metaMediaId: 'meta-media-1', mimeType: 'video/mp4' },
+    };
     const { service, prisma } = makeService({
       campaign: { findUnique: jest.fn(), create, update: jest.fn() },
-      campaignMedia: { findUnique: jest.fn().mockResolvedValue(asset) },
+      campaignTemplateMedia: { findUnique: jest.fn().mockResolvedValue(templateMedia) },
     });
+    service['meta'].getApprovedMessageTemplates = jest.fn().mockResolvedValue([template]);
+    service['meta'].getConfiguredWabaId = jest.fn().mockReturnValue('waba-1');
+
     await service.createCampaign({
-      name: 'Prueba', templateName: 'approved_template', templateLanguage: 'es', headerVideoAssetId: asset.id,
+      name: 'Promoción', templateName: 'promo', templateLanguage: 'es',
     }, { id: 'user-1' });
-    expect(prisma.campaignMedia.findUnique).toHaveBeenCalledWith({ where: { id: asset.id } });
+
+    expect(prisma.campaignTemplateMedia.findUnique).toHaveBeenCalledWith({
+      where: { wabaId_templateName_templateLanguage_headerType: {
+        wabaId: 'waba-1', templateName: 'promo', templateLanguage: 'es', headerType: 'VIDEO',
+      } },
+      include: { campaignMedia: true },
+    });
     expect(create).toHaveBeenCalledWith(expect.objectContaining({
-      data: expect.objectContaining({ headerVideoAssetId: asset.id, headerVideoMediaId: asset.metaMediaId }),
+      data: expect.objectContaining({
+        templateMetaId: 'template-es', templateHeaderType: 'VIDEO',
+        headerVideoAssetId: 'asset-1', headerVideoMediaId: 'meta-media-1',
+      }),
     }));
+  });
+
+  it('rejects a VIDEO campaign when its template has no configured video', async () => {
+    const template = {
+      id: 'template-es', name: 'promo', language: 'es', status: 'APPROVED',
+      components: [{ type: 'HEADER', format: 'VIDEO' }],
+    };
+    const { service } = makeService({
+      campaign: { findUnique: jest.fn(), create: jest.fn().mockResolvedValue({ id: 'campaign-4' }), update: jest.fn() },
+      campaignTemplateMedia: { findUnique: jest.fn().mockResolvedValue(null) },
+    });
+    service['meta'].getApprovedMessageTemplates = jest.fn().mockResolvedValue([template]);
+    service['meta'].getConfiguredWabaId = jest.fn().mockReturnValue('waba-1');
+
+    await expect(service.createCampaign({
+      name: 'Promoción', templateName: 'promo', templateLanguage: 'es',
+    }, { id: 'user-1' })).rejects.toThrow('todavía no tiene un video configurado');
+  });
+
+  it('lists a VIDEO template with its reusable media configuration', async () => {
+    const template = {
+      id: 'template-es', name: 'promo', language: 'es', status: 'APPROVED',
+      components: [{ type: 'HEADER', format: 'VIDEO' }],
+    };
+    const configuration = {
+      templateName: 'promo', templateLanguage: 'es', headerType: 'VIDEO',
+      campaignMediaId: 'asset-1', mediaUrl: null,
+      campaignMedia: { id: 'asset-1', name: 'promo.mp4', mimeType: 'video/mp4', sizeBytes: 1024 },
+    };
+    const { service } = makeService({
+      campaignTemplateMedia: { findMany: jest.fn().mockResolvedValue([configuration]) },
+    });
+    service['meta'].getApprovedMessageTemplates = jest.fn().mockResolvedValue([template]);
+    service['meta'].getConfiguredWabaId = jest.fn().mockReturnValue('waba-1');
+
+    await expect(service.getTemplates()).resolves.toEqual([expect.objectContaining({
+      headerType: 'VIDEO',
+      mediaConfiguration: {
+        configured: true, mediaLibraryId: 'asset-1', mediaName: 'promo.mp4',
+        mimeType: 'video/mp4', sizeBytes: 1024, usesAdvancedUrl: false,
+      },
+    })]);
+  });
+
+  it('rejects an association whose language does not match the approved template', async () => {
+    const { service } = makeService();
+    service['meta'].getApprovedMessageTemplates = jest.fn().mockResolvedValue([{
+      id: 'template-es', name: 'promo', language: 'es', status: 'APPROVED',
+      components: [{ type: 'HEADER', format: 'VIDEO' }],
+    }]);
+    service['meta'].getConfiguredWabaId = jest.fn().mockReturnValue('waba-1');
+
+    await expect((service as any).configureTemplateMedia({
+      templateId: 'template-es', templateName: 'promo', templateLanguage: 'en', campaignMediaId: 'asset-1',
+    }, { id: 'user-1' })).rejects.toThrow('no coincide');
+  });
+
+  it('blocks a VIDEO campaign before reading recipients when its snapshot is missing', async () => {
+    const campaign = {
+      id: 'campaign-1', status: CampaignStatus.READY,
+      templateHeaderType: 'VIDEO', headerVideoMediaId: null, headerVideoUrl: null,
+    };
+    const findMany = jest.fn().mockResolvedValue([]);
+    const { service } = makeService({
+      campaign: { findUnique: jest.fn().mockResolvedValue(campaign), update: jest.fn() },
+      campaignRecipient: { findMany, findUnique: jest.fn(), updateMany: jest.fn(), update: jest.fn(), count: jest.fn() },
+    });
+    service['config'].get = jest.fn().mockReturnValue('true');
+
+    await expect(service.start('campaign-1', { id: 'user-1' }))
+      .rejects.toThrow('no tiene un video snapshot válido');
+    expect(findMany).not.toHaveBeenCalled();
+  });
+
+  it('sends the VIDEO media ID stored in the campaign snapshot', async () => {
+    const videoRecipient = {
+      ...recipient,
+      campaign: {
+        ...recipient.campaign,
+        templateHeaderType: 'VIDEO', headerVideoMediaId: 'snapshot-media-id', headerVideoUrl: null,
+      },
+    };
+    const { service, meta } = makeService({
+      campaignRecipient: {
+        findUnique: jest.fn().mockResolvedValue(videoRecipient), updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        update: jest.fn().mockResolvedValue({}), count: jest.fn().mockResolvedValue(0),
+      },
+    });
+    meta.sendTemplateMessage.mockResolvedValue({ messages: [{ id: 'wamid-1' }] });
+
+    await service.processSendJob({ campaignId: 'campaign-1', recipientId: 'recipient-1' });
+
+    expect(meta.sendTemplateMessage).toHaveBeenCalledWith(
+      '593991234567', 'approved_template', 'es',
+      { headerVideoMediaId: 'snapshot-media-id', headerVideoUrl: undefined },
+    );
+  });
+
+  it('replaces a template association without updating existing campaigns', async () => {
+    const upsert = jest.fn().mockResolvedValue({
+      id: 'configuration-2', campaignMediaId: 'asset-2', mediaUrl: null,
+      campaignMedia: { id: 'asset-2', metaMediaId: 'meta-media-2', mimeType: 'video/mp4' },
+    });
+    const update = jest.fn();
+    const { service, prisma } = makeService({
+      campaign: { findUnique: jest.fn(), update },
+      campaignMedia: { findUnique: jest.fn().mockResolvedValue({ id: 'asset-2', mimeType: 'video/mp4' }) },
+      campaignTemplateMedia: { findUnique: jest.fn().mockResolvedValue({ campaignMediaId: 'asset-1' }), upsert },
+    });
+    service['meta'].getApprovedMessageTemplates = jest.fn().mockResolvedValue([{
+      id: 'template-es', name: 'promo', language: 'es', status: 'APPROVED',
+      components: [{ type: 'HEADER', format: 'VIDEO' }],
+    }]);
+    service['meta'].getConfiguredWabaId = jest.fn().mockReturnValue('waba-1');
+
+    await (service as any).configureTemplateMedia({
+      templateId: 'template-es', templateName: 'promo', templateLanguage: 'es', campaignMediaId: 'asset-2',
+    }, { id: 'user-1' });
+
+    expect(upsert).toHaveBeenCalled();
+    expect(prisma.campaign.update).not.toHaveBeenCalled();
   });
 
   it('does not call Meta when another job already claimed the recipient', async () => {

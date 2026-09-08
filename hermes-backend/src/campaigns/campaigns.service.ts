@@ -20,6 +20,7 @@ import { CreateAdsMetadataDto } from './dto/create-ads-metadata.dto';
 import { CreateCampaignDto } from './dto/create-campaign.dto';
 import { UploadCampaignMediaDto } from './dto/upload-campaign-media.dto';
 import { RegisterCampaignMediaDto } from './dto/register-campaign-media.dto';
+import { ConfigureTemplateMediaDto } from './dto/configure-template-media.dto';
 import { CampaignContactImportRowDto } from './dto/import-campaign-contacts.dto';
 import {
   CAMPAIGN_IMPORT_MAX_ROWS,
@@ -82,7 +83,120 @@ export class CampaignsService {
   }
 
   async getTemplates() {
-    return this.meta.getApprovedMessageTemplates();
+    const templates = await this.meta.getApprovedMessageTemplates();
+    const wabaId = this.meta.getConfiguredWabaId();
+    const configurations = await this.prisma.campaignTemplateMedia.findMany({
+      where: { wabaId },
+      include: { campaignMedia: true },
+    });
+    return templates.map((template) => {
+      const headerType = this.getTemplateHeaderType(template.components);
+      const configuration = configurations.find((item) =>
+        item.templateName === template.name &&
+        item.templateLanguage === template.language &&
+        item.headerType === headerType,
+      );
+      return {
+        ...template,
+        headerType,
+        mediaConfiguration: {
+          configured: Boolean(configuration?.campaignMediaId || configuration?.mediaUrl),
+          mediaLibraryId: configuration?.campaignMediaId || null,
+          mediaName: configuration?.campaignMedia?.name || null,
+          mimeType: configuration?.campaignMedia?.mimeType || null,
+          sizeBytes: configuration?.campaignMedia?.sizeBytes || null,
+          usesAdvancedUrl: Boolean(configuration?.mediaUrl),
+        },
+      };
+    });
+  }
+
+  async configureTemplateMedia(
+    dto: ConfigureTemplateMediaDto,
+    operator: Operator,
+  ) {
+    const templates = await this.meta.getApprovedMessageTemplates();
+    const template = templates.find(
+      (item) =>
+        item.name === dto.templateName &&
+        item.language === dto.templateLanguage,
+    );
+    if (!template) {
+      const sameTemplate = templates.find(
+        (item) => item.id === dto.templateId || item.name === dto.templateName,
+      );
+      if (sameTemplate)
+        throw new BadRequestException(
+          'La identidad de plantilla no coincide con el idioma aprobado en Meta.',
+        );
+      throw new BadRequestException(
+        'La plantilla seleccionada no está aprobada o ya no está disponible en Meta.',
+      );
+    }
+    if (template.id !== dto.templateId)
+      throw new BadRequestException(
+        'La identidad de plantilla no coincide con la plantilla aprobada en Meta.',
+      );
+    if (this.getTemplateHeaderType(template.components) !== 'VIDEO')
+      throw new BadRequestException(
+        'Solo las plantillas con encabezado VIDEO admiten esta configuración.',
+      );
+    if (Boolean(dto.campaignMediaId) === Boolean(dto.mediaUrl))
+      throw new BadRequestException(
+        'Configura exactamente un video de biblioteca o una URL HTTPS permitida.',
+      );
+    const mediaUrl = dto.mediaUrl?.trim() || undefined;
+    const asset = dto.campaignMediaId
+      ? await this.prisma.campaignMedia.findUnique({
+          where: { id: dto.campaignMediaId },
+        })
+      : null;
+    if (dto.campaignMediaId && !asset)
+      throw new NotFoundException('El video seleccionado ya no está disponible.');
+    if (asset && asset.mimeType !== 'video/mp4')
+      throw new BadRequestException('El video configurado debe ser un MP4.');
+    if (mediaUrl && !this.meta.isSafeMediaUrl(mediaUrl))
+      throw new BadRequestException('La URL del video no está permitida.');
+    const wabaId = this.meta.getConfiguredWabaId();
+    const where = {
+      wabaId_templateName_templateLanguage_headerType: {
+        wabaId,
+        templateName: template.name,
+        templateLanguage: template.language,
+        headerType: 'VIDEO',
+      },
+    };
+    const previous = await this.prisma.campaignTemplateMedia.findUnique({
+      where,
+    });
+    const configuration = await this.prisma.campaignTemplateMedia.upsert({
+      where,
+      create: {
+        wabaId,
+        metaTemplateId: template.id,
+        templateName: template.name,
+        templateLanguage: template.language,
+        headerType: 'VIDEO',
+        campaignMediaId: asset?.id,
+        mediaUrl,
+        createdByUserId: operator.id,
+      },
+      update: {
+        metaTemplateId: template.id,
+        campaignMediaId: asset?.id || null,
+        mediaUrl: mediaUrl || null,
+        createdByUserId: operator.id,
+      },
+      include: { campaignMedia: true },
+    });
+    await this.audit(operator.id, 'CAMPAIGN_TEMPLATE_MEDIA_CONFIGURED', configuration.id, {
+      templateName: template.name,
+      templateLanguage: template.language,
+      previousCampaignMediaId: previous?.campaignMediaId || null,
+      campaignMediaId: configuration.campaignMediaId,
+      usesAdvancedUrl: Boolean(configuration.mediaUrl),
+    });
+    return configuration;
   }
 
   async findMedia() {
@@ -140,23 +254,55 @@ export class CampaignsService {
   }
 
   async createCampaign(dto: CreateCampaignDto, operator: Operator) {
-    const { headerVideoAssetId, ...campaignData } = dto;
-    if (headerVideoAssetId && (dto.headerVideoMediaId || dto.headerVideoUrl))
-      throw new BadRequestException('Selecciona un video de la biblioteca o usa un valor manual, no ambos');
-    const asset = headerVideoAssetId
-      ? await this.prisma.campaignMedia.findUnique({ where: { id: headerVideoAssetId } })
-      : null;
-    if (headerVideoAssetId && !asset)
-      throw new NotFoundException('El video seleccionado ya no está disponible');
-    const headerVideoMediaId = asset?.metaMediaId || dto.headerVideoMediaId?.trim() || undefined;
-    const headerVideoUrl = dto.headerVideoUrl?.trim() || undefined;
-    this.assertSafeHeader(headerVideoMediaId, headerVideoUrl);
+    const template = await this.requireApprovedTemplate(
+      dto.templateName,
+      dto.templateLanguage,
+    );
+    const templateHeaderType = this.getTemplateHeaderType(template.components);
+    let headerVideoAssetId: string | undefined;
+    let headerVideoMediaId: string | undefined;
+    let headerVideoUrl: string | undefined;
+    if (templateHeaderType === 'VIDEO') {
+      const association = await this.prisma.campaignTemplateMedia.findUnique({
+        where: {
+          wabaId_templateName_templateLanguage_headerType: {
+            wabaId: this.meta.getConfiguredWabaId(),
+            templateName: template.name,
+            templateLanguage: template.language,
+            headerType: 'VIDEO',
+          },
+        },
+        include: { campaignMedia: true },
+      });
+      if (!association)
+        throw new BadRequestException(
+          'Esta plantilla utiliza un encabezado de video pero todavía no tiene un video configurado.',
+        );
+      if (Boolean(association.campaignMediaId) === Boolean(association.mediaUrl))
+        throw new BadRequestException(
+          'La configuración multimedia de la plantilla es inválida.',
+        );
+      if (association.campaignMedia) {
+        if (association.campaignMedia.mimeType !== 'video/mp4')
+          throw new BadRequestException(
+            'El video configurado para la plantilla no es un MP4 válido.',
+          );
+        headerVideoAssetId = association.campaignMedia.id;
+        headerVideoMediaId = association.campaignMedia.metaMediaId;
+      } else if (association.mediaUrl) {
+        headerVideoUrl = association.mediaUrl;
+      }
+      this.assertSafeHeader(headerVideoMediaId, headerVideoUrl);
+    }
     const campaign = await this.prisma.campaign.create({
       data: {
-        ...campaignData,
+        ...dto,
+        templateCategory: template.category || dto.templateCategory,
+        templateMetaId: template.id,
+        templateHeaderType,
         headerVideoMediaId,
         headerVideoUrl,
-        headerVideoAssetId: asset?.id,
+        headerVideoAssetId,
         createdByUserId: operator.id,
       },
     });
@@ -328,6 +474,7 @@ export class CampaignsService {
       throw new BadRequestException(
         'La campaña no se puede iniciar en su estado actual',
       );
+    await this.assertCampaignMediaSnapshot(campaign);
     const recipients = await this.prisma.campaignRecipient.findMany({
       where: {
         campaignId: id,
@@ -703,6 +850,33 @@ export class CampaignsService {
     if (!campaign) throw new NotFoundException('Campaña no encontrada');
     return campaign;
   }
+  private async assertCampaignMediaSnapshot(campaign: {
+    templateHeaderType?: string | null;
+    headerVideoMediaId?: string | null;
+    headerVideoUrl?: string | null;
+  }) {
+    if (campaign.templateHeaderType !== 'VIDEO') return;
+    const mediaId = campaign.headerVideoMediaId || undefined;
+    const mediaUrl = campaign.headerVideoUrl || undefined;
+    if (!mediaId && !mediaUrl)
+      throw new BadRequestException(
+        'Esta campaña VIDEO no tiene un video snapshot válido. Configura la plantilla y crea una campaña nueva.',
+      );
+    this.assertSafeHeader(mediaId, mediaUrl);
+    if (!mediaId) return;
+    try {
+      const metadata = await this.meta.getCampaignMediaMetadata(mediaId);
+      if (metadata.mime_type && metadata.mime_type !== 'video/mp4')
+        throw new BadRequestException(
+          'El video snapshot de la campaña no es un MP4 válido.',
+        );
+    } catch (error) {
+      if (error instanceof BadRequestException) throw error;
+      throw new BadRequestException(
+        'El video snapshot de la campaña ya no está disponible en Meta. Configura la plantilla y crea una campaña nueva.',
+      );
+    }
+  }
   private async requireState(id: string, state: CampaignStatus) {
     const campaign = await this.requireCampaign(id);
     if (campaign.status !== state)
@@ -719,6 +893,25 @@ export class CampaignsService {
       throw new ForbiddenException(
         'Las campañas están deshabilitadas en este entorno',
       );
+  }
+  private async requireApprovedTemplate(name: string, language: string) {
+    const template = (await this.meta.getApprovedMessageTemplates()).find(
+      (item) => item.name === name && item.language === language,
+    );
+    if (!template)
+      throw new BadRequestException(
+        'La plantilla seleccionada no está aprobada o ya no está disponible en Meta.',
+      );
+    return template;
+  }
+  private getTemplateHeaderType(components?: unknown[]): string | null {
+    const header = components?.find(
+      (component) =>
+        typeof component === 'object' &&
+        component !== null &&
+        (component as { type?: string }).type?.toUpperCase() === 'HEADER',
+    ) as { format?: string } | undefined;
+    return header?.format?.toUpperCase() || null;
   }
   private assertSafeHeader(mediaId?: string, url?: string) {
     if (mediaId && url)

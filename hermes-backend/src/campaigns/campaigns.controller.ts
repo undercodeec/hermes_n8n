@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Param, Post, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, Put, Query, UploadedFile, UseGuards, UseInterceptors } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -11,6 +11,7 @@ import { ImportCampaignContactsDto } from './dto/import-campaign-contacts.dto';
 import { CampaignQueryDto } from './dto/campaign-query.dto';
 import { UploadCampaignMediaDto } from './dto/upload-campaign-media.dto';
 import { RegisterCampaignMediaDto } from './dto/register-campaign-media.dto';
+import { ConfigureTemplateMediaDto } from './dto/configure-template-media.dto';
 
 @ApiTags('Campaigns')
 @ApiBearerAuth()
@@ -28,6 +29,8 @@ export class CampaignsController {
 
   @Get('templates') @ApiOperation({ summary: 'List approved WhatsApp templates from the configured WABA' })
   templates() { return this.campaigns.getTemplates(); }
+  @Put('templates/media') @ApiOperation({ summary: 'Configure reusable media for an approved WhatsApp template' })
+  configureTemplateMedia(@Body() dto: ConfigureTemplateMediaDto, @CurrentUser() user: { id: string }) { return this.campaigns.configureTemplateMedia(dto, user); }
   @Get('media') @ApiOperation({ summary: 'List campaign videos uploaded to Meta from Hermes' })
   media() { return this.campaigns.findMedia(); }
   @Post('media') @UseInterceptors(FileInterceptor('file', { limits: { fileSize: 16 * 1024 * 1024 } }))
