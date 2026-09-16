@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import * as crypto from 'crypto';
 import { HandoffReason } from '@prisma/client';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { HandoffService } from '../handoff/handoff.service';
@@ -7,8 +8,37 @@ import { LeadsService } from '../leads/leads.service';
 import { MetaService } from '../meta/meta.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebhookService } from './webhook.service';
+import { AutoReplyService } from '../auto-replies/auto-reply.service';
+import { ConversationGuardService } from '../conversation-guard/conversation-guard.service';
 
 describe('WebhookService campaign replies', () => {
+  it('accepts only a valid Meta HMAC signature', () => {
+    const secret = 'test-meta-secret';
+    const payload = Buffer.from('{"object":"whatsapp_business_account"}');
+    const signature = `sha256=${crypto
+      .createHmac('sha256', secret)
+      .update(payload)
+      .digest('hex')}`;
+    const service = new WebhookService(
+      {
+        get: jest.fn((key: string) =>
+          key === 'META_APP_SECRET' ? secret : undefined,
+        ),
+      } as unknown as ConfigService,
+      {} as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      {} as CampaignsService,
+      {} as AutoReplyService,
+      {} as ConversationGuardService,
+    );
+
+    expect(service.validateSignature(payload, signature)).toBe(true);
+    expect(service.validateSignature(payload, 'sha256=bad')).toBe(false);
+  });
+
   it('sends a campaign reply to human handoff without invoking Hermes', async () => {
     const prisma = {
       contact: {
@@ -27,7 +57,10 @@ describe('WebhookService campaign replies', () => {
           .mockResolvedValue({ id: 'conversation-1', status: 'ACTIVE' }),
         update: jest.fn().mockResolvedValue({}),
       },
-      message: { create: jest.fn().mockResolvedValue({}) },
+      message: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'inbound-1' }),
+      },
     } as unknown as PrismaService;
     const meta = { sendTextMessage: jest.fn() } as unknown as MetaService;
     const hermes = { generateResponse: jest.fn() } as unknown as HermesService;
@@ -43,6 +76,8 @@ describe('WebhookService campaign replies', () => {
         .fn()
         .mockResolvedValue({ campaignId: 'campaign-1' }),
     } as unknown as CampaignsService;
+    const autoReplies = { enqueue: jest.fn() } as unknown as AutoReplyService;
+    const guard = { inspect: jest.fn() } as unknown as ConversationGuardService;
     const service = new WebhookService(
       { get: jest.fn() } as unknown as ConfigService,
       prisma,
@@ -51,6 +86,8 @@ describe('WebhookService campaign replies', () => {
       handoff,
       leads,
       campaigns,
+      autoReplies,
+      guard,
     );
 
     await (service as any).processIncomingMessage(
@@ -71,5 +108,6 @@ describe('WebhookService campaign replies', () => {
     });
     expect(hermes.generateResponse).not.toHaveBeenCalled();
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(autoReplies.enqueue).not.toHaveBeenCalled();
   });
 });

@@ -7,6 +7,8 @@ import { HermesService } from '../hermes/hermes.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { LeadsService } from '../leads/leads.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
+import { AutoReplyService } from '../auto-replies/auto-reply.service';
+import { ConversationGuardService } from '../conversation-guard/conversation-guard.service';
 import {
   MetaWebhookDto,
   MetaWebhookMessage,
@@ -33,6 +35,8 @@ export class WebhookService {
     private readonly handoffService: HandoffService,
     private readonly leadsService: LeadsService,
     private readonly campaignsService: CampaignsService,
+    private readonly autoReplies: AutoReplyService,
+    private readonly conversationGuard: ConversationGuardService,
   ) {}
 
   /**
@@ -56,13 +60,13 @@ export class WebhookService {
   /**
    * Valida la firma SHA256 del webhook de Meta
    */
-  validateSignature(payload: string, signature: string): boolean {
+  validateSignature(payload: Buffer, signature?: string): boolean {
     const appSecret = this.configService.get<string>('META_APP_SECRET');
     if (!appSecret) {
       this.logger.warn(
-        'META_APP_SECRET no configurado, omitiendo validación de firma',
+        'META_APP_SECRET no configurado; webhook rechazado',
       );
-      return true;
+      return false;
     }
 
     const expectedSignature = crypto
@@ -71,6 +75,7 @@ export class WebhookService {
       .digest('hex');
 
     const receivedSignature = signature?.replace('sha256=', '') || '';
+    if (!/^[a-f0-9]{64}$/i.test(receivedSignature)) return false;
     return crypto.timingSafeEqual(
       Buffer.from(expectedSignature, 'hex'),
       Buffer.from(receivedSignature, 'hex'),
@@ -120,6 +125,15 @@ export class WebhookService {
     const startTime = Date.now();
 
     try {
+      const alreadyProcessed = await this.prisma.message.findUnique({
+        where: { wamid: message.id },
+        select: { id: true },
+      });
+      if (alreadyProcessed) {
+        this.logger.debug(`Webhook duplicado ignorado: ${message.id}`);
+        return;
+      }
+
       // Paso 4: Identificar o crear contacto
       const contact = await this.upsertContact(metaContact);
 
@@ -141,7 +155,7 @@ export class WebhookService {
       const messageType = this.mapMessageType(message.type);
       const messageContent = this.extractMessageContent(message);
 
-      await this.prisma.message.create({
+      const inboundMessage = await this.prisma.message.create({
         data: {
           conversationId: conversation.id,
           contactId: contact.id,
@@ -190,11 +204,75 @@ export class WebhookService {
         return;
       }
 
-      // Paso 5: Obtener contexto completo
-      const context = await this.buildConversationContext(
+      const recentInbound = await this.prisma.message.findMany({
+        where: {
+          conversationId: conversation.id,
+          direction: MessageDirection.INBOUND,
+          sender: MessageSender.CONTACT,
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 3,
+        select: { content: true },
+      });
+      const supportContext = recentInbound
+        .reverse()
+        .map((item) => item.content || '')
+        .join(' ');
+      const guardDecision = await this.conversationGuard.inspect(
         contact.id,
-        conversation.id,
+        messageContent || '',
+        supportContext,
       );
+      if (guardDecision.action === 'SUPPORT') {
+        await this.handoffService.create({
+          conversationId: conversation.id,
+          reason: HandoffReason.SUPPORT,
+          reasonDetail: 'Solicitud de soporte: problema técnico reportado en un proyecto que el cliente atribuye explícitamente a la marca.',
+        });
+        await this.sendSystemMessage(
+          conversation.id,
+          contact.id,
+          contact.waId,
+          guardDecision.notice,
+          'SUPPORT_ROUTING',
+        );
+        return;
+      }
+      if (guardDecision.action === 'BLOCK') {
+        if (guardDecision.notice) {
+          await this.sendSystemMessage(
+            conversation.id,
+            contact.id,
+            contact.waId,
+            guardDecision.notice,
+            `GUARD_${guardDecision.category}`,
+          );
+        }
+        this.logger.warn(
+          `Mensaje bloqueado antes de Gemini (${guardDecision.category}) para contacto ${contact.id}`,
+        );
+        return;
+      }
+
+      // Paso 5: Obtener contexto completo
+      // La generación y el contexto completo se resuelven en el worker para
+      // que Meta reciba el webhook sin esperar a Gemini.
+      const context = {
+        recentMessages: [],
+        conversationSummary: undefined,
+        leadStage: undefined,
+        productOfInterest: undefined,
+      };
+
+      await this.autoReplies.enqueue(
+        {
+          conversationId: conversation.id,
+          contactId: contact.id,
+          inboundMessageId: inboundMessage.id,
+        },
+        (messageContent || '').length,
+      );
+      return;
 
       // Paso 6: Llamar a Hermes con prompt + contexto
       const hermesResponse = await this.hermesService.generateResponse({
@@ -284,6 +362,32 @@ export class WebhookService {
         error instanceof Error ? error.stack : undefined,
       );
     }
+  }
+
+  private async sendSystemMessage(
+    conversationId: string,
+    contactId: string,
+    waId: string,
+    content: string,
+    action: string,
+  ): Promise<void> {
+    const sentMessage = await this.metaService.sendTextMessage(waId, content);
+    await this.prisma.message.create({
+      data: {
+        conversationId,
+        contactId,
+        direction: MessageDirection.OUTBOUND,
+        sender: MessageSender.SYSTEM,
+        type: MessageType.TEXT,
+        content,
+        wamid: sentMessage?.messages?.[0]?.id,
+        metadata: { action } as Prisma.InputJsonValue,
+      },
+    });
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: { updatedAt: new Date() },
+    });
   }
 
   /**

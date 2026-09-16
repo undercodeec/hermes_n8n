@@ -691,3 +691,16 @@ Commits relevantes: `44feef4 feat(campaigns): add official WhatsApp template cam
 Cada actualización debe incluir fecha/zona, commits, evidencia confirmada vs reportada, comandos/conteos, cambios productivos sin secretos y pendientes priorizados.
 
 **No crear nuevos Markdown en esta carpeta. Actualizar este archivo y eliminar información superada.**
+
+## 24. Protección de conversaciones y ruta de soporte — actualización 2026-09-16 (America/Guayaquil)
+
+Estado: **implementado localmente, sin commit ni despliegue VPS confirmado**.
+
+- Antes de Gemini, Hermes valida la firma HMAC SHA-256 de Meta sobre el cuerpo crudo; un secreto o firma ausente/inválida rechaza el webhook. También ignora `wamid` ya procesados.
+- `ConversationGuard` usa Redis para limitar mensajes por contacto, enfriar spam, limitar longitud/enlaces y aplicar cuotas diaria por contacto y horaria global antes de invocar Gemini. Si Redis no está disponible, `AI_GUARD_FAIL_CLOSED=true` evita el consumo de IA.
+- La moderación determinista bloquea mensajes sexuales, ofensivos, amenazas e intentos de alterar instrucciones; emite como máximo un aviso comercial por período de enfriamiento. La salida de Gemini se valida antes de enviarse a Meta.
+- Soporte se deriva sólo si hay problema técnico y el cliente atribuye explícitamente el proyecto a la marca, incluso si ambas señales están en los últimos tres mensajes. Se crea `HumanHandoff` con razón `SUPPORT`, se pausa Hermes y se informa una vez el número configurado `SUPPORT_PHONE_E164=+593979046329`.
+- Nueva migración pendiente de aplicar en producción: `20260916170000_conversation_guard_support`, que agrega `SUPPORT` a `HandoffReason`.
+- Verificaciones locales: `npm test -- --runInBand` (9 suites, 38/38); `npm run build`; `npx prisma validate`: aprobados el 2026-09-16.
+
+Pendiente prioritario: revisar las variables nuevas sin exponer secretos, aplicar la migración autorizada, desplegar y realizar una prueba controlada de firma Meta, spam, contenido inadecuado, consulta comercial normal y soporte atribuido/no atribuido.

@@ -10,6 +10,7 @@ import {
   HttpStatus,
   Logger,
   BadRequestException,
+  UnauthorizedException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
 import { WebhookService } from './webhook.service';
@@ -49,10 +50,15 @@ export class WebhookController {
     // con decoradores). Meta es un tercero que puede añadir campos en cualquier
     // momento, por lo que aceptamos el body tal cual y lo casteamos al DTO.
     @Body() body: Record<string, unknown>,
+    @RawBody() rawBody: Buffer | undefined,
     @Headers('x-hub-signature-256') signature: string,
   ): Promise<string> {
     // Validar firma (en producción se debería usar RawBody para esto)
     // La validación de firma completa requiere acceso al body crudo
+    if (!rawBody || !this.webhookService.validateSignature(rawBody, signature)) {
+      this.logger.warn('Webhook rechazado: firma de Meta inválida');
+      throw new UnauthorizedException('Firma de webhook inválida');
+    }
     this.logger.debug('Webhook recibido de Meta');
 
     // Procesar el webhook de forma asíncrona para responder rápido a Meta
