@@ -13,10 +13,11 @@ Estado por entregas:
 - Entrega 1: backend de referencias y atribucion WhatsApp IMPLEMENTADO y PROBADO;
   captura web y prueba entre repositorios PENDIENTES.
 - Entrega 2: modelo e hitos comerciales IMPLEMENTADOS y PROBADOS con mocks.
-- Entrega 3: Data Manager API IMPLEMENTADO y PROBADO con mocks; NO VALIDADO CON
-  GOOGLE y NO DESPLEGADO.
-- Entrega 4: sincronizacion/cache y API de dashboard IMPLEMENTADOS; interfaz web,
-  credenciales y validacion real PENDIENTES.
+- Entrega 3: Data Manager API IMPLEMENTADO, PROBADO con mocks y DESPLEGADO; la
+  primera validacion real contra Data Manager sigue PENDIENTE.
+- Entrega 4: sincronizacion/cache y API de dashboard IMPLEMENTADOS y
+  DESPLEGADOS; interfaz web, identidad ADC de produccion y validacion real
+  PENDIENTES.
 
 ## Estado de la configuracion Google Cloud (2026-09-17)
 
@@ -46,6 +47,29 @@ El acceso de la identidad local ya quedo demostrado. Aun falta crear o preparar
 una identidad no personal para el servidor de produccion (identidad adjunta,
 Workload Identity o impersonacion), concederle acceso dentro de Google Ads y
 probarla separadamente.
+
+## Estado del despliegue de Hermes (2026-09-17)
+
+El despliegue de la funcionalidad de atribucion fue completado en la VPS. La
+version publicada contiene los commits `92c834f` (atribucion e integraciones) y
+`38e890a` (lockfile compatible con la imagen Node 20).
+
+- La imagen Docker se construyo correctamente con `npm ci`, `prisma generate` y
+  `npm run build`.
+- Se aplicaron correctamente las migraciones
+  `20260916170000_conversation_guard_support` y
+  `20260917123000_advertising_attribution` sobre `hermes_db`.
+- El contenedor `hermes-app` quedo estable y el registro confirma que
+  `AdvertisingModule` y las rutas `/api/advertising/*` estan cargados.
+- La comprobacion local de `/api/advertising/status` devolvio `401 Unauthorized`
+  sin JWT, que confirma que la ruta esta disponible y protegida.
+- Los flags de envio y metricas de Google permanecen desactivados. No se envio
+  ningun evento real ni se modificaron pujas o conversiones de Google Ads.
+
+Antes de activar datos reales, restringir PostgreSQL (`5432`) y Redis (`6379`) al
+host o a la red interna de Docker, salvo que un firewall ya limite expresamente
+el acceso externo. Ambos puertos aparecian publicados por Docker durante la
+verificacion.
 
 ## Auditoria del backend
 
