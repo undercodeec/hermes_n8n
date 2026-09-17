@@ -9,6 +9,7 @@ import { LeadsService } from '../leads/leads.service';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { AutoReplyService } from '../auto-replies/auto-reply.service';
 import { ConversationGuardService } from '../conversation-guard/conversation-guard.service';
+import { AdvertisingService } from '../advertising/advertising.service';
 import {
   MetaWebhookDto,
   MetaWebhookMessage,
@@ -37,6 +38,7 @@ export class WebhookService {
     private readonly campaignsService: CampaignsService,
     private readonly autoReplies: AutoReplyService,
     private readonly conversationGuard: ConversationGuardService,
+    private readonly advertisingService: AdvertisingService,
   ) {}
 
   /**
@@ -171,6 +173,25 @@ export class WebhookService {
         where: { id: conversation.id },
         data: { updatedAt: new Date() },
       });
+
+      // Best-effort: an attribution outage must not interrupt the existing
+      // WhatsApp, AI or human-handoff flow.
+      try {
+        await this.advertisingService.claimReference({
+          messageContent,
+          contactId: contact.id,
+          conversationId: conversation.id,
+          inboundMessageId: inboundMessage.id,
+        });
+      } catch (attributionError) {
+        this.logger.warn(
+          `Attribution failed for message ${message.id}: ${
+            attributionError instanceof Error
+              ? attributionError.message
+              : 'unknown error'
+          }`,
+        );
+      }
 
       if (this.isCampaignOptOut(message)) {
         await this.campaignsService.optOut(contact.id);

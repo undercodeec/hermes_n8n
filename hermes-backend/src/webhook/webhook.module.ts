@@ -8,6 +8,7 @@ import { LeadsModule } from '../leads/leads.module';
 import { CampaignsModule } from '../campaigns/campaigns.module';
 import { AutoReplyModule } from '../auto-replies/auto-reply.module';
 import { ConversationGuardModule } from '../conversation-guard/conversation-guard.module';
+import { AdvertisingModule } from '../advertising/advertising.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { ConversationGuardModule } from '../conversation-guard/conversation-guar
     CampaignsModule,
     AutoReplyModule,
     ConversationGuardModule,
+    AdvertisingModule,
   ],
   controllers: [WebhookController],
   providers: [WebhookService],

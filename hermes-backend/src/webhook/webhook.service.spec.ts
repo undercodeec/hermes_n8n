@@ -10,6 +10,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { WebhookService } from './webhook.service';
 import { AutoReplyService } from '../auto-replies/auto-reply.service';
 import { ConversationGuardService } from '../conversation-guard/conversation-guard.service';
+import { AdvertisingService } from '../advertising/advertising.service';
 
 describe('WebhookService campaign replies', () => {
   it('accepts only a valid Meta HMAC signature', () => {
@@ -33,6 +34,7 @@ describe('WebhookService campaign replies', () => {
       {} as CampaignsService,
       {} as AutoReplyService,
       {} as ConversationGuardService,
+      {} as AdvertisingService,
     );
 
     expect(service.validateSignature(payload, signature)).toBe(true);
@@ -42,13 +44,11 @@ describe('WebhookService campaign replies', () => {
   it('sends a campaign reply to human handoff without invoking Hermes', async () => {
     const prisma = {
       contact: {
-        upsert: jest
-          .fn()
-          .mockResolvedValue({
-            id: 'contact-1',
-            waId: '593991234567',
-            name: 'Contacto de prueba',
-          }),
+        upsert: jest.fn().mockResolvedValue({
+          id: 'contact-1',
+          waId: '593991234567',
+          name: 'Contacto de prueba',
+        }),
       },
       conversation: {
         findFirst: jest.fn().mockResolvedValue(null),
@@ -78,6 +78,9 @@ describe('WebhookService campaign replies', () => {
     } as unknown as CampaignsService;
     const autoReplies = { enqueue: jest.fn() } as unknown as AutoReplyService;
     const guard = { inspect: jest.fn() } as unknown as ConversationGuardService;
+    const advertising = {
+      claimReference: jest.fn().mockResolvedValue({ status: 'missing' }),
+    } as unknown as AdvertisingService;
     const service = new WebhookService(
       { get: jest.fn() } as unknown as ConfigService,
       prisma,
@@ -88,6 +91,7 @@ describe('WebhookService campaign replies', () => {
       campaigns,
       autoReplies,
       guard,
+      advertising,
     );
 
     await (service as any).processIncomingMessage(
@@ -109,5 +113,11 @@ describe('WebhookService campaign replies', () => {
     expect(hermes.generateResponse).not.toHaveBeenCalled();
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
     expect(autoReplies.enqueue).not.toHaveBeenCalled();
+    expect(advertising.claimReference).toHaveBeenCalledWith({
+      messageContent: 'Necesito información',
+      contactId: 'contact-1',
+      conversationId: 'conversation-1',
+      inboundMessageId: 'inbound-1',
+    });
   });
 });

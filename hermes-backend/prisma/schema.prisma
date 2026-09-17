@@ -47,6 +47,46 @@ enum CampaignRecipientStatus {
   SKIPPED
 }
 
+enum AdvertisingProvider {
+  GOOGLE_ADS
+}
+
+enum AdvertisingAttributionStatus {
+  UNCONFIRMED
+  CONFIRMED
+  EXPIRED
+  REVOKED
+}
+
+enum AdvertisingConsentChoice {
+  UNSPECIFIED
+  GRANTED
+  DENIED
+}
+
+enum AdvertisingEventType {
+  WHATSAPP_CLICK
+  CONVERSATION_STARTED
+  LEAD_QUALIFIED
+  MEETING_CONFIRMED
+  PROPOSAL_SENT
+  CONTRACT_WON
+  CONTRACT_LOST
+}
+
+enum AdvertisingSyncStatus {
+  NOT_ELIGIBLE
+  PENDING
+  QUEUED
+  VALIDATED
+  SUBMITTED
+  ACCEPTED
+  PARTIAL
+  RETRYING
+  FAILED
+  CANCELLED
+}
+
 model User {
   id        String   @id @default(uuid())
   email     String   @unique
@@ -62,7 +102,7 @@ model User {
   assignedTasks    Task[]         @relation("AssignedUser")
   sentMessages     Message[]      @relation("HumanSender")
   auditLogs        AuditLog[]
-  createdCampaigns Campaign[] @relation("CampaignCreator")
+  createdCampaigns Campaign[]     @relation("CampaignCreator")
 
   @@map("users")
 }
@@ -72,53 +112,55 @@ model User {
 // ─────────────────────────────────────────────
 
 model Contact {
-  id        String   @id @default(uuid())
-  waId      String   @unique // WhatsApp ID (número de teléfono)
-  phone     String?
-  name      String?
-  email     String?
-  company   String?
-  position  String? // Cargo
-  notes     String?
-  metadata  Json? // Datos extra flexibles
+  id                     String                 @id @default(uuid())
+  waId                   String                 @unique // WhatsApp ID (número de teléfono)
+  phone                  String?
+  name                   String?
+  email                  String?
+  company                String?
+  position               String? // Cargo
+  notes                  String?
+  metadata               Json? // Datos extra flexibles
   marketingConsentStatus MarketingConsentStatus @default(UNKNOWN)
   marketingConsentAt     DateTime?
   marketingConsentSource String?
   marketingOptOutAt      DateTime?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt              DateTime               @default(now())
+  updatedAt              DateTime               @updatedAt
 
   // Relaciones
-  leads         Lead[]
-  conversations Conversation[]
-  messages      Message[]
-  campaignRecipients CampaignRecipient[]
+  leads                   Lead[]
+  conversations           Conversation[]
+  messages                Message[]
+  campaignRecipients      CampaignRecipient[]
+  advertisingAttributions AdvertisingAttribution[]
+  advertisingConversions  AdvertisingConversion[]
 
   @@map("contacts")
 }
 
 model Campaign {
-  id               String         @id @default(uuid())
-  name             String
-  templateName     String
-  templateLanguage String
-  templateCategory String?
-  templateMetaId   String?
+  id                 String         @id @default(uuid())
+  name               String
+  templateName       String
+  templateLanguage   String
+  templateCategory   String?
+  templateMetaId     String?
   templateHeaderType String?
   headerVideoMediaId String?
-  headerVideoUrl   String?
+  headerVideoUrl     String?
   headerVideoAssetId String?
-  status           CampaignStatus @default(DRAFT)
-  totalRecipients  Int            @default(0)
-  startedAt        DateTime?
-  completedAt      DateTime?
-  pausedAt         DateTime?
-  createdByUserId  String?
-  createdAt        DateTime       @default(now())
-  updatedAt        DateTime       @updatedAt
+  status             CampaignStatus @default(DRAFT)
+  totalRecipients    Int            @default(0)
+  startedAt          DateTime?
+  completedAt        DateTime?
+  pausedAt           DateTime?
+  createdByUserId    String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
 
-  createdBy        User?              @relation("CampaignCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
-  headerVideoAsset CampaignMedia?     @relation(fields: [headerVideoAssetId], references: [id], onDelete: Restrict)
+  createdBy        User?               @relation("CampaignCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  headerVideoAsset CampaignMedia?      @relation(fields: [headerVideoAssetId], references: [id], onDelete: Restrict)
   recipients       CampaignRecipient[]
 
   @@index([status, createdAt])
@@ -128,16 +170,16 @@ model Campaign {
 // A Media ID is not a secret. Keeping it here lets operators choose an
 // already-uploaded WhatsApp video without copying IDs or changing .env.
 model CampaignMedia {
-  id          String   @id @default(uuid())
-  name        String
-  metaMediaId String   @unique
-  mimeType    String
-  sizeBytes   Int
+  id              String   @id @default(uuid())
+  name            String
+  metaMediaId     String   @unique
+  mimeType        String
+  sizeBytes       Int
   createdByUserId String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
 
-  campaigns   Campaign[]
+  campaigns                   Campaign[]
   templateMediaConfigurations CampaignTemplateMedia[]
 
   @@index([createdAt])
@@ -165,26 +207,26 @@ model CampaignTemplateMedia {
 }
 
 model CampaignRecipient {
-  id           String                  @id @default(uuid())
-  campaignId   String
-  contactId    String
-  phone        String
-  status       CampaignRecipientStatus @default(PENDING)
-  wamid        String?                 @unique
+  id              String                  @id @default(uuid())
+  campaignId      String
+  contactId       String
+  phone           String
+  status          CampaignRecipientStatus @default(PENDING)
+  wamid           String?                 @unique
   sendAttemptedAt DateTime?
-  metaTimestamp DateTime?
-  sentAt       DateTime?
-  deliveredAt  DateTime?
-  readAt       DateTime?
-  repliedAt    DateTime?
-  failedAt     DateTime?
-  errorCode    String?
-  errorMessage String?
-  createdAt    DateTime                @default(now())
-  updatedAt    DateTime                @updatedAt
+  metaTimestamp   DateTime?
+  sentAt          DateTime?
+  deliveredAt     DateTime?
+  readAt          DateTime?
+  repliedAt       DateTime?
+  failedAt        DateTime?
+  errorCode       String?
+  errorMessage    String?
+  createdAt       DateTime                @default(now())
+  updatedAt       DateTime                @updatedAt
 
-  campaign     Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
-  contact      Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  campaign Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact  Contact  @relation(fields: [contactId], references: [id], onDelete: Cascade)
 
   @@unique([campaignId, contactId])
   @@index([campaignId, status])
@@ -203,29 +245,38 @@ enum LeadStage {
 }
 
 model Lead {
-  id                String    @id @default(uuid())
-  contactId         String
-  conversationId    String?   @unique
-  stage             LeadStage @default(NEW)
-  score             Int       @default(0)
-  productOfInterest String?
-  estimatedBudget   Float?
-  lastObjection     String?
-  nextAction        String?
-  closeProbability  Float? // 0.0 a 1.0
-  lostReason        String?
-  wonAt             DateTime?
-  lostAt            DateTime?
-  metadata          Json?
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
+  id                 String    @id @default(uuid())
+  contactId          String
+  conversationId     String?   @unique
+  stage              LeadStage @default(NEW)
+  score              Int       @default(0)
+  productOfInterest  String?
+  estimatedBudget    Float?
+  serviceRequested   String?
+  proposalValue      Decimal?  @db.Decimal(18, 2)
+  contractedAmount   Decimal?  @db.Decimal(18, 2)
+  revenueReceived    Decimal?  @db.Decimal(18, 2)
+  commercialCurrency String?   @db.VarChar(3)
+  contractReference  String?
+  commercialOwnerId  String?
+  lastObjection      String?
+  nextAction         String?
+  closeProbability   Float? // 0.0 a 1.0
+  lostReason         String?
+  wonAt              DateTime?
+  lostAt             DateTime?
+  metadata           Json?
+  createdAt          DateTime  @default(now())
+  updatedAt          DateTime  @updatedAt
 
   // Relaciones
-  contact          Contact         @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  conversation     Conversation?   @relation(fields: [conversationId], references: [id], onDelete: SetNull)
-  tasks            Task[]
-  campaignSource   CampaignSource? @relation(fields: [campaignSourceId], references: [id])
-  campaignSourceId String?
+  contact                 Contact                  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  conversation            Conversation?            @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  tasks                   Task[]
+  campaignSource          CampaignSource?          @relation(fields: [campaignSourceId], references: [id])
+  campaignSourceId        String?
+  advertisingAttributions AdvertisingAttribution[]
+  advertisingConversions  AdvertisingConversion[]
 
   @@index([contactId, createdAt])
   @@index([stage, updatedAt])
@@ -254,12 +305,13 @@ model Conversation {
   updatedAt DateTime           @updatedAt
 
   // Relaciones
-  contact  Contact            @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  messages Message[]
-  state    ConversationState?
-  lead     Lead?
-  handoffs HumanHandoff[]
-  tasks    Task[]
+  contact                 Contact                  @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  messages                Message[]
+  state                   ConversationState?
+  lead                    Lead?
+  handoffs                HumanHandoff[]
+  tasks                   Task[]
+  advertisingAttributions AdvertisingAttribution[]
 
   @@index([contactId, updatedAt])
   @@index([status, updatedAt])
@@ -329,9 +381,10 @@ model Message {
   createdAt      DateTime         @default(now())
 
   // Relaciones
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  contact      Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  sentByUser   User?        @relation("HumanSender", fields: [sentByUserId], references: [id], onDelete: SetNull)
+  conversation           Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  contact                Contact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  sentByUser             User?                   @relation("HumanSender", fields: [sentByUserId], references: [id], onDelete: SetNull)
+  advertisingAttribution AdvertisingAttribution?
 
   @@index([conversationId, createdAt])
   @@index([contactId])
@@ -568,6 +621,187 @@ model AdsMetadata {
 // ─────────────────────────────────────────────
 // Audit
 // ─────────────────────────────────────────────
+
+// Publicidad de adquisicion. Estas entidades son independientes de las
+// campanas masivas de WhatsApp y no almacenan conversaciones completas.
+model AdvertisingIntegration {
+  id                    String              @id @default(uuid())
+  provider              AdvertisingProvider @unique
+  conversionSyncEnabled Boolean             @default(false)
+  metricsSyncEnabled    Boolean             @default(false)
+  accountId             String?
+  loginAccountId        String?
+  accountCurrency       String?             @db.VarChar(3)
+  accountTimeZone       String?
+  lastMetricsSyncAt     DateTime?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  mappings     AdvertisingConversionMapping[]
+  dailyMetrics AdvertisingDailyMetric[]
+
+  @@map("advertising_integrations")
+}
+
+model AdvertisingTouch {
+  id                String                   @id @default(uuid())
+  provider          AdvertisingProvider      @default(GOOGLE_ADS)
+  channel           String                   @default("paid_search")
+  source            String                   @default("google")
+  referenceHash     String                   @unique @db.VarChar(64)
+  referenceLast4    String                   @db.VarChar(4)
+  expiresAt         DateTime
+  consumedAt        DateTime?
+  useCount          Int                      @default(0)
+  maxUses           Int                      @default(1)
+  gclid             String?
+  gbraid            String?
+  wbraid            String?
+  utmSource         String?
+  utmMedium         String?
+  utmCampaign       String?
+  utmContent        String?
+  utmTerm           String?
+  landingPage       String?
+  visitedAt         DateTime                 @default(now())
+  adStorage         AdvertisingConsentChoice @default(UNSPECIFIED)
+  analyticsStorage  AdvertisingConsentChoice @default(UNSPECIFIED)
+  adUserData        AdvertisingConsentChoice @default(UNSPECIFIED)
+  adPersonalization AdvertisingConsentChoice @default(UNSPECIFIED)
+  consentSource     String?
+  consentRecordedAt DateTime?
+  metadata          Json?
+  createdAt         DateTime                 @default(now())
+
+  attributions AdvertisingAttribution[]
+  conversions  AdvertisingConversion[]
+
+  @@index([expiresAt, consumedAt])
+  @@index([gclid])
+  @@index([gbraid])
+  @@index([wbraid])
+  @@index([utmCampaign, createdAt])
+  @@map("advertising_touches")
+}
+
+model AdvertisingAttribution {
+  id               String                       @id @default(uuid())
+  touchId          String
+  contactId        String?
+  leadId           String?
+  conversationId   String?
+  inboundMessageId String?                      @unique
+  status           AdvertisingAttributionStatus @default(UNCONFIRMED)
+  attributedAt     DateTime?
+  revokedAt        DateTime?
+  revocationReason String?
+  createdAt        DateTime                     @default(now())
+  updatedAt        DateTime                     @updatedAt
+
+  touch          AdvertisingTouch        @relation(fields: [touchId], references: [id], onDelete: Cascade)
+  contact        Contact?                @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  lead           Lead?                   @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  conversation   Conversation?           @relation(fields: [conversationId], references: [id], onDelete: SetNull)
+  inboundMessage Message?                @relation(fields: [inboundMessageId], references: [id], onDelete: SetNull)
+  conversions    AdvertisingConversion[]
+
+  @@unique([touchId, contactId])
+  @@index([contactId, attributedAt])
+  @@index([leadId, attributedAt])
+  @@index([status, createdAt])
+  @@map("advertising_attributions")
+}
+
+model AdvertisingConversion {
+  id                  String               @id @default(uuid())
+  idempotencyKey      String               @unique
+  eventType           AdvertisingEventType
+  attributionId       String?
+  touchId             String?
+  contactId           String?
+  leadId              String?
+  occurredAt          DateTime
+  source              String
+  verified            Boolean              @default(false)
+  verifiedByUserId    String?
+  value               Decimal?             @db.Decimal(18, 2)
+  currency            String?              @db.VarChar(3)
+  commercialReference String?
+  metadata            Json?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  attribution AdvertisingAttribution? @relation(fields: [attributionId], references: [id], onDelete: SetNull)
+  touch       AdvertisingTouch?       @relation(fields: [touchId], references: [id], onDelete: SetNull)
+  contact     Contact?                @relation(fields: [contactId], references: [id], onDelete: SetNull)
+  lead        Lead?                   @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  syncJob     AdvertisingSyncJob?
+
+  @@unique([leadId, eventType])
+  @@index([eventType, occurredAt])
+  @@index([touchId, occurredAt])
+  @@map("advertising_conversions")
+}
+
+model AdvertisingConversionMapping {
+  id                 String               @id @default(uuid())
+  integrationId      String
+  eventType          AdvertisingEventType @unique
+  conversionActionId String
+  exportEnabled      Boolean              @default(false)
+  isPrimary          Boolean              @default(false)
+  createdAt          DateTime             @default(now())
+  updatedAt          DateTime             @updatedAt
+
+  integration AdvertisingIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@index([integrationId, exportEnabled])
+  @@map("advertising_conversion_mappings")
+}
+
+model AdvertisingSyncJob {
+  id              String                @id @default(uuid())
+  conversionId    String                @unique
+  status          AdvertisingSyncStatus @default(PENDING)
+  attempts        Int                   @default(0)
+  validateOnly    Boolean               @default(true)
+  googleRequestId String?
+  warnings        Json?
+  errorCode       String?
+  errorMessage    String?
+  nextAttemptAt   DateTime?
+  submittedAt     DateTime?
+  diagnosedAt     DateTime?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
+
+  conversion AdvertisingConversion @relation(fields: [conversionId], references: [id], onDelete: Cascade)
+
+  @@index([status, nextAttemptAt])
+  @@index([googleRequestId])
+  @@map("advertising_sync_jobs")
+}
+
+model AdvertisingDailyMetric {
+  id              String   @id @default(uuid())
+  integrationId   String
+  campaignId      String
+  campaignName    String
+  campaignStatus  String
+  metricDate      DateTime @db.Date
+  impressions     BigInt
+  clicks          BigInt
+  costMicros      BigInt
+  currency        String   @db.VarChar(3)
+  accountTimeZone String
+  syncedAt        DateTime @default(now())
+
+  integration AdvertisingIntegration @relation(fields: [integrationId], references: [id], onDelete: Cascade)
+
+  @@unique([integrationId, campaignId, metricDate])
+  @@index([metricDate, campaignStatus])
+  @@map("advertising_daily_metrics")
+}
 
 model AuditLog {
   id        String   @id @default(uuid())
