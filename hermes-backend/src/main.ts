@@ -60,6 +60,10 @@ async function bootstrap() {
     .addTag('Tasks', 'Tareas y seguimiento')
     .addTag('Campaigns', 'Fuentes de campaña y ads')
     .addTag('Analytics', 'KPIs y métricas')
+    .addTag(
+      'Advertising and attribution',
+      'Atribución y resultados publicitarios',
+    )
     .build();
 
   const document = SwaggerModule.createDocument(app, swaggerConfig);

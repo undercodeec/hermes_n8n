@@ -21,6 +21,7 @@ import { HandoffModule } from './handoff/handoff.module';
 import { TasksModule } from './tasks/tasks.module';
 import { CampaignsModule } from './campaigns/campaigns.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { AdvertisingModule } from './advertising/advertising.module';
 
 @Module({
   imports: [
@@ -80,7 +81,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
     HandoffModule,
     TasksModule,
     CampaignsModule,
-
+    AdvertisingModule,
     // Analytics y métricas
     AnalyticsModule,
   ],

@@ -21,6 +21,12 @@
   <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
   [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
 
+## Publicidad y atribución
+
+La arquitectura, el contrato server-to-server con UnderCodeEC y el procedimiento
+de activación de Google Ads están documentados en
+[`docs/advertising-attribution.md`](docs/advertising-attribution.md).
+
 ## Description
 
 [Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
