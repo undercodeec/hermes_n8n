@@ -99,6 +99,11 @@ describe('LeadsService', () => {
       conversationId: 'conversation-1',
       detectedIntent: 'cotizacion',
       productOfInterest: 'Hermes',
+      commercialProfile: {
+        service: 'Software a medida',
+        need: 'Centralizar los pedidos',
+        company: 'Distribuidora Ejemplo',
+      },
     });
 
     expect(lead.stage).toBe(LeadStage.QUALIFIED);

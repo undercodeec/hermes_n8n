@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -21,6 +22,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { QueryLeadsDto } from './dto/query-leads.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
+import { CommercialProfile } from '../hermes/dto/hermes-request.dto';
 
 const OPEN_HANDOFF_STATUSES: HandoffStatus[] = [
   HandoffStatus.PENDING,
@@ -33,6 +35,18 @@ const AUTOMATICALLY_PROMOTABLE_STAGES: LeadStage[] = [
   LeadStage.CONTACTED,
 ];
 const TERMINAL_LEAD_STAGES: LeadStage[] = [LeadStage.WON, LeadStage.LOST];
+
+const ALLOWED_STAGE_TRANSITIONS: Partial<Record<LeadStage, LeadStage[]>> = {
+  [LeadStage.NEW]: [LeadStage.CONTACTED, LeadStage.QUALIFIED, LeadStage.LOST],
+  [LeadStage.CONTACTED]: [LeadStage.QUALIFIED, LeadStage.LOST],
+  [LeadStage.QUALIFIED]: [
+    LeadStage.PROPOSAL,
+    LeadStage.NEGOTIATION,
+    LeadStage.LOST,
+  ],
+  [LeadStage.PROPOSAL]: [LeadStage.NEGOTIATION, LeadStage.WON, LeadStage.LOST],
+  [LeadStage.NEGOTIATION]: [LeadStage.PROPOSAL, LeadStage.WON, LeadStage.LOST],
+};
 
 @Injectable()
 export class LeadsService {
@@ -325,6 +339,15 @@ export class LeadsService {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lead.contactId}))`;
         if (
           dto.stage &&
+          dto.stage !== lead.stage &&
+          !ALLOWED_STAGE_TRANSITIONS[lead.stage]?.includes(dto.stage)
+        ) {
+          throw new BadRequestException(
+            `Transición no permitida: ${lead.stage} → ${dto.stage}`,
+          );
+        }
+        if (
+          dto.stage &&
           !TERMINAL_LEAD_STAGES.includes(dto.stage) &&
           TERMINAL_LEAD_STAGES.includes(lead.stage)
         ) {
@@ -392,6 +415,7 @@ export class LeadsService {
     conversationId: string;
     detectedIntent?: string;
     productOfInterest?: string;
+    commercialProfile?: CommercialProfile;
   }): Promise<Lead> {
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.contactId}))`;
@@ -414,6 +438,16 @@ export class LeadsService {
       }
 
       if (!AUTOMATICALLY_PROMOTABLE_STAGES.includes(existing.stage)) {
+        const contact = await tx.contact.findUniqueOrThrow({
+          where: { id: params.contactId },
+          select: { name: true, waId: true },
+        });
+        return { lead: existing, contact, created, qualified: false };
+      }
+
+      // Una intención de compra aislada no basta: la promoción automática exige
+      // una necesidad concreta, el servicio y al menos un dato para evaluación.
+      if (!this.hasQualificationContext(params.commercialProfile)) {
         const contact = await tx.contact.findUniqueOrThrow({
           where: { id: params.contactId },
           select: { name: true, waId: true },
@@ -457,6 +491,98 @@ export class LeadsService {
     }
 
     return result.lead;
+  }
+
+  /**
+   * Guarda hechos extraídos de la conversación sin convertir una sugerencia de
+   * IA en un hito comercial. Solo NEW -> CONTACTED se deriva de una necesidad.
+   */
+  async recordCommercialProfileFromConversation(params: {
+    contactId: string;
+    conversationId: string;
+    profile?: CommercialProfile;
+  }): Promise<Lead | undefined> {
+    const inputProfile = params.profile;
+    if (!inputProfile) return undefined;
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.contactId}))`;
+      const lead = await tx.lead.findFirst({
+        where: { contactId: params.contactId },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!lead) return undefined;
+
+      const commercialProfile = this.mergeCommercialProfile(
+        lead.metadata,
+        inputProfile,
+      );
+      const metadata = this.mergeLeadMetadata(lead.metadata, commercialProfile);
+      const hasNeed = Boolean(
+        commercialProfile.need && commercialProfile.service,
+      );
+      const stage =
+        lead.stage === LeadStage.NEW && hasNeed
+          ? LeadStage.CONTACTED
+          : lead.stage;
+
+      if (inputProfile.company) {
+        await tx.contact.update({
+          where: { id: params.contactId },
+          data: { company: inputProfile.company },
+        });
+      }
+
+      return tx.lead.update({
+        where: { id: lead.id },
+        data: {
+          conversationId: params.conversationId,
+          stage,
+          productOfInterest: inputProfile.service ?? lead.productOfInterest,
+          serviceRequested: inputProfile.service ?? lead.serviceRequested,
+          nextAction: inputProfile.nextStep ?? lead.nextAction,
+          metadata: metadata as Prisma.InputJsonValue,
+        },
+      });
+    });
+  }
+
+  private hasQualificationContext(profile?: CommercialProfile): boolean {
+    if (!profile?.service || !profile.need) return false;
+    return Boolean(
+      profile.company ||
+      profile.sector ||
+      profile.location ||
+      profile.users ||
+      profile.budget ||
+      profile.timeline,
+    );
+  }
+
+  private mergeCommercialProfile(
+    metadata: Prisma.JsonValue | null,
+    profile: CommercialProfile,
+  ): CommercialProfile {
+    const existing =
+      metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        ? (metadata as Record<string, unknown>).commercialProfile
+        : undefined;
+    const previous =
+      existing && typeof existing === 'object' && !Array.isArray(existing)
+        ? (existing as CommercialProfile)
+        : {};
+    return { ...previous, ...profile };
+  }
+
+  private mergeLeadMetadata(
+    metadata: Prisma.JsonValue | null,
+    commercialProfile: CommercialProfile,
+  ): Record<string, unknown> {
+    const previous =
+      metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        ? (metadata as Record<string, unknown>)
+        : {};
+    return { ...previous, commercialProfile };
   }
 
   async remove(id: string) {
