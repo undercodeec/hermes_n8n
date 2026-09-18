@@ -16,6 +16,7 @@ import { LeadsService } from '../leads/leads.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUTO_REPLY_QUEUE, AutoReplyJobData } from './auto-reply.constants';
 import { ConversationGuardService } from '../conversation-guard/conversation-guard.service';
+import { CommercialProfile } from '../hermes/dto/hermes-request.dto';
 
 @Injectable()
 export class AutoReplyService {
@@ -88,6 +89,7 @@ export class AutoReplyService {
       leadStage: context.leadStage,
       productOfInterest: context.productOfInterest,
       conversationSummary: context.conversationSummary,
+      commercialProfile: context.commercialProfile,
     });
 
     if (!this.conversationGuard.isSafeGeneratedResponse(response.response)) {
@@ -140,6 +142,13 @@ export class AutoReplyService {
       data: { updatedAt: new Date() },
     });
 
+    const persistedLead =
+      await this.leads.recordCommercialProfileFromConversation({
+        contactId: data.contactId,
+        conversationId: data.conversationId,
+        profile: response.commercialProfile,
+      });
+
     if (shouldHandoff) {
       await this.handoffs.create({
         conversationId: data.conversationId,
@@ -171,6 +180,10 @@ export class AutoReplyService {
         conversationId: data.conversationId,
         detectedIntent: response.detectedIntent,
         productOfInterest: context.productOfInterest,
+        commercialProfile:
+          this.commercialProfileFromMetadata(persistedLead?.metadata) ??
+          response.commercialProfile ??
+          context.commercialProfile,
       });
     }
 
@@ -241,7 +254,20 @@ export class AutoReplyService {
       conversationSummary: state?.summary || undefined,
       leadStage: lead?.stage || state?.leadStage || undefined,
       productOfInterest: lead?.productOfInterest || undefined,
+      commercialProfile: this.commercialProfileFromMetadata(lead?.metadata),
     };
+  }
+
+  private commercialProfileFromMetadata(
+    metadata: unknown,
+  ): CommercialProfile | undefined {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+      return undefined;
+    }
+    const profile = (metadata as Record<string, unknown>).commercialProfile;
+    return profile && typeof profile === 'object' && !Array.isArray(profile)
+      ? (profile as CommercialProfile)
+      : undefined;
   }
 
   private checkHandoffSignals(message: string, detectedIntent?: string): boolean {
