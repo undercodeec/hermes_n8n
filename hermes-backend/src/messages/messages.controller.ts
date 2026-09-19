@@ -1,5 +1,10 @@
 import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiBearerAuth, ApiQuery } from '@nestjs/swagger';
+import {
+  ApiTags,
+  ApiOperation,
+  ApiBearerAuth,
+  ApiQuery,
+} from '@nestjs/swagger';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { MessagesService } from './messages.service';
 
@@ -19,7 +24,11 @@ export class MessagesController {
     @Query('page') page?: number,
     @Query('limit') limit?: number,
   ) {
-    return this.messagesService.findByConversation(conversationId, page || 1, limit || 50);
+    return this.messagesService.findByConversation(
+      conversationId,
+      page || 1,
+      limit || 50,
+    );
   }
 
   @Get(':id')

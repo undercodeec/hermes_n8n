@@ -55,7 +55,10 @@ export class WebhookController {
   ): Promise<string> {
     // Validar firma (en producción se debería usar RawBody para esto)
     // La validación de firma completa requiere acceso al body crudo
-    if (!rawBody || !this.webhookService.validateSignature(rawBody, signature)) {
+    if (
+      !rawBody ||
+      !this.webhookService.validateSignature(rawBody, signature)
+    ) {
       this.logger.warn('Webhook rechazado: firma de Meta inválida');
       throw new UnauthorizedException('Firma de webhook inválida');
     }
@@ -65,8 +68,11 @@ export class WebhookController {
     this.webhookService
       .processWebhook(body as unknown as MetaWebhookDto)
       .catch((error) => {
-      this.logger.error(`Error procesando webhook: ${error.message}`, error.stack);
-    });
+        this.logger.error(
+          `Error procesando webhook: ${error.message}`,
+          error.stack,
+        );
+      });
 
     // Meta espera un 200 OK rápido
     return 'OK';

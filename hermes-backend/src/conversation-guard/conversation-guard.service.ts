@@ -4,7 +4,11 @@ import Redis from 'ioredis';
 
 export type GuardDecision =
   | { action: 'ALLOW' }
-  | { action: 'BLOCK'; category: 'SPAM' | 'MODERATION' | 'OUT_OF_SCOPE'; notice?: string }
+  | {
+      action: 'BLOCK';
+      category: 'SPAM' | 'MODERATION' | 'OUT_OF_SCOPE';
+      notice?: string;
+    }
   | { action: 'SUPPORT'; notice: string };
 
 @Injectable()
@@ -29,7 +33,7 @@ export class ConversationGuardService implements OnModuleDestroy {
       return {
         action: moderation.category === 'OUT_OF_SCOPE' ? 'BLOCK' : 'BLOCK',
         category: moderation.category,
-        notice: await this.claimNotice(contactId, moderation.category)
+        notice: (await this.claimNotice(contactId, moderation.category))
           ? moderation.notice
           : undefined,
       };
@@ -55,7 +59,9 @@ export class ConversationGuardService implements OnModuleDestroy {
         key,
         this.positiveInteger('AI_CONTACT_MESSAGES_WINDOW_SECONDS', 600),
       );
-      if (count > this.positiveInteger('AI_CONTACT_MAX_MESSAGES_PER_WINDOW', 15)) {
+      if (
+        count > this.positiveInteger('AI_CONTACT_MAX_MESSAGES_PER_WINDOW', 15)
+      ) {
         await this.setCooldown(contactId);
         return {
           action: 'BLOCK',
@@ -66,12 +72,17 @@ export class ConversationGuardService implements OnModuleDestroy {
         };
       }
 
-      const cooldown = await (await this.redis()).get(
-        `hermes:guard:cooldown:${contactId}`,
-      );
-      return cooldown ? { action: 'BLOCK', category: 'SPAM' } : { action: 'ALLOW' };
+      const cooldown = await (
+        await this.redis()
+      ).get(`hermes:guard:cooldown:${contactId}`);
+      return cooldown
+        ? { action: 'BLOCK', category: 'SPAM' }
+        : { action: 'ALLOW' };
     } catch (error) {
-      this.logger.error('No se pudo evaluar el límite anti-spam', error instanceof Error ? error.stack : undefined);
+      this.logger.error(
+        'No se pudo evaluar el límite anti-spam',
+        error instanceof Error ? error.stack : undefined,
+      );
       return this.failClosed()
         ? { action: 'BLOCK', category: 'SPAM' }
         : { action: 'ALLOW' };
@@ -87,8 +98,14 @@ export class ConversationGuardService implements OnModuleDestroy {
         this.incrementWithExpiry(contactKey, 26 * 3600),
         this.incrementWithExpiry(globalKey, 2 * 3600),
       ]);
-      const contactLimit = this.positiveInteger('AI_CONTACT_DAILY_REPLY_LIMIT', 60);
-      const globalLimit = this.positiveInteger('AI_GLOBAL_HOURLY_REPLY_LIMIT', 500);
+      const contactLimit = this.positiveInteger(
+        'AI_CONTACT_DAILY_REPLY_LIMIT',
+        60,
+      );
+      const globalLimit = this.positiveInteger(
+        'AI_GLOBAL_HOURLY_REPLY_LIMIT',
+        500,
+      );
       if (contactCount > contactLimit || globalCount > globalLimit) {
         this.logger.warn(
           `Cuota de IA excedida para ${contactCount > contactLimit ? 'contacto' : 'instancia'}; no se invocará Gemini`,
@@ -97,49 +114,72 @@ export class ConversationGuardService implements OnModuleDestroy {
       }
       return true;
     } catch (error) {
-      this.logger.error('No se pudo evaluar la cuota de IA', error instanceof Error ? error.stack : undefined);
+      this.logger.error(
+        'No se pudo evaluar la cuota de IA',
+        error instanceof Error ? error.stack : undefined,
+      );
       return !this.failClosed();
     }
   }
 
   isSafeGeneratedResponse(content: string): boolean {
-    if (!content || content.length > this.positiveInteger('AI_MAX_OUTPUT_CHARS', 900)) {
+    if (
+      !content ||
+      content.length > this.positiveInteger('AI_MAX_OUTPUT_CHARS', 900)
+    ) {
       return false;
     }
+    if (this.looksLikeStructuredPayload(content)) return false;
     return !this.moderationNotice(this.normalize(content));
   }
 
-  private moderationNotice(normalized: string):
-    | { category: 'MODERATION' | 'OUT_OF_SCOPE'; notice: string }
-    | undefined {
-    if (this.matches(normalized, [
-      /\b(porno|pornografia|sexo explicito|desnuda|desnudo|onlyfans|nudes?)\b/,
-      /\b(te voy a matar|amenaza|matarte|violacion|violar)\b/,
-      /\b(puta|puto|mierda|imbecil|idiota|estupido|pendejo)\b/,
-    ])) {
+  private looksLikeStructuredPayload(content: string): boolean {
+    const trimmed = content.trim();
+    if (/^```(?:json)?\s*/i.test(trimmed)) return true;
+    return /^\{\s*["']?(response|detectedIntent|detected_intent|suggestedTags|suggested_tags|nextAction|next_action)\b/i.test(
+      trimmed,
+    );
+  }
+
+  private moderationNotice(
+    normalized: string,
+  ): { category: 'MODERATION' | 'OUT_OF_SCOPE'; notice: string } | undefined {
+    if (
+      this.matches(normalized, [
+        /\b(porno|pornografia|sexo explicito|desnuda|desnudo|onlyfans|nudes?)\b/,
+        /\b(te voy a matar|amenaza|matarte|violacion|violar)\b/,
+        /\b(puta|puto|mierda|imbecil|idiota|estupido|pendejo)\b/,
+      ])
+    ) {
       return {
         category: 'MODERATION',
-        notice: 'Podemos atenderte únicamente sobre nuestros servicios. Si tienes una consulta comercial, cuéntanos en qué podemos ayudarte.',
+        notice:
+          'Podemos atenderte únicamente sobre nuestros servicios. Si tienes una consulta comercial, cuéntanos en qué podemos ayudarte.',
       };
     }
-    if (this.matches(normalized, [
-      /\b(ignora|olvida|revela|muestra).{0,50}\b(instrucciones|prompt|sistema|reglas)\b/,
-      /\b(actua como|comportate como).{0,40}\b(sistema|administrador|desarrollador)\b/,
-    ])) {
+    if (
+      this.matches(normalized, [
+        /\b(ignora|olvida|revela|muestra).{0,50}\b(instrucciones|prompt|sistema|reglas)\b/,
+        /\b(actua como|comportate como).{0,40}\b(sistema|administrador|desarrollador)\b/,
+      ])
+    ) {
       return {
         category: 'OUT_OF_SCOPE',
-        notice: 'Por este canal atendemos consultas sobre nuestros servicios. ¿En qué podemos ayudarte?',
+        notice:
+          'Por este canal atendemos consultas sobre nuestros servicios. ¿En qué podemos ayudarte?',
       };
     }
     return undefined;
   }
 
   private isSupportRequest(normalized: string): boolean {
-    const reportsTechnicalProblem = this.matches(normalized, [
-      /\b(no funciona|no carga|se cayo|caido|error|problema|fall[ao]|lento|no abre|sin acceso|no llega)\b/,
-    ]) && this.matches(normalized, [
-      /\b(web|pagina|sitio|dominio|hosting|formulario|correo|sistema|proyecto)\b/,
-    ]);
+    const reportsTechnicalProblem =
+      this.matches(normalized, [
+        /\b(no funciona|no carga|se cayo|caido|error|problema|fall[ao]|lento|no abre|sin acceso|no llega)\b/,
+      ]) &&
+      this.matches(normalized, [
+        /\b(web|pagina|sitio|dominio|hosting|formulario|correo|sistema|proyecto)\b/,
+      ]);
     const confirmsOurWork = this.matches(normalized, [
       /\b(ustedes|su equipo|undercodeec|hermes)\b.{0,60}\b(hicieron|desarrollaron|crearon|realizaron|implementaron)\b/,
       /\b(web|pagina|sitio|proyecto|sistema)\b.{0,60}\b(que ustedes|que su equipo|que undercodeec|que hermes)\b.{0,30}\b(hicieron|desarrollaron|crearon|realizaron|implementaron)\b/,
@@ -148,7 +188,10 @@ export class ConversationGuardService implements OnModuleDestroy {
   }
 
   private supportNotice(): string {
-    const phone = this.config.get<string>('SUPPORT_PHONE_E164', '+593979046329');
+    const phone = this.config.get<string>(
+      'SUPPORT_PHONE_E164',
+      '+593979046329',
+    );
     const digits = phone.replace(/\D/g, '');
     return `Entiendo. Para que soporte lo revise, escríbenos al ${phone} con la URL y el detalle del problema. También puedes abrir https://wa.me/${digits}.`;
   }
@@ -170,10 +213,18 @@ export class ConversationGuardService implements OnModuleDestroy {
     return patterns.some((pattern) => pattern.test(value));
   }
 
-  private async claimNotice(contactId: string, category: string): Promise<boolean> {
+  private async claimNotice(
+    contactId: string,
+    category: string,
+  ): Promise<boolean> {
     try {
-      const seconds = this.positiveInteger('AI_GUARD_NOTICE_COOLDOWN_SECONDS', 1800);
-      const result = await (await this.redis()).set(
+      const seconds = this.positiveInteger(
+        'AI_GUARD_NOTICE_COOLDOWN_SECONDS',
+        1800,
+      );
+      const result = await (
+        await this.redis()
+      ).set(
         `hermes:guard:notice:${category}:${contactId}`,
         '1',
         'EX',
@@ -182,13 +233,18 @@ export class ConversationGuardService implements OnModuleDestroy {
       );
       return result === 'OK';
     } catch (error) {
-      this.logger.error('No se pudo registrar aviso de moderación', error instanceof Error ? error.stack : undefined);
+      this.logger.error(
+        'No se pudo registrar aviso de moderación',
+        error instanceof Error ? error.stack : undefined,
+      );
       return false;
     }
   }
 
   private async setCooldown(contactId: string): Promise<void> {
-    await (await this.redis()).set(
+    await (
+      await this.redis()
+    ).set(
       `hermes:guard:cooldown:${contactId}`,
       '1',
       'EX',
@@ -196,20 +252,25 @@ export class ConversationGuardService implements OnModuleDestroy {
     );
   }
 
-  private async incrementWithExpiry(key: string, seconds: number): Promise<number> {
+  private async incrementWithExpiry(
+    key: string,
+    seconds: number,
+  ): Promise<number> {
     const transaction = (await this.redis()).multi();
     transaction.incr(key);
     transaction.expire(key, seconds, 'NX');
     const results = await transaction.exec();
     const count = results?.[0]?.[1];
-    if (typeof count !== 'number') throw new Error('Redis no devolvió un contador válido');
+    if (typeof count !== 'number')
+      throw new Error('Redis no devolvió un contador válido');
     return count;
   }
 
   private async redis(): Promise<Redis> {
     if (!this.client) {
       const url = this.config.get<string>('REDIS_URL');
-      if (!url) throw new Error('REDIS_URL es obligatorio para ConversationGuard');
+      if (!url)
+        throw new Error('REDIS_URL es obligatorio para ConversationGuard');
       this.client = new Redis(url, {
         lazyConnect: true,
         maxRetriesPerRequest: 1,

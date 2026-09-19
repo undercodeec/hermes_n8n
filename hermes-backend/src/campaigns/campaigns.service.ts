@@ -91,16 +91,19 @@ export class CampaignsService {
     });
     return templates.map((template) => {
       const headerType = this.getTemplateHeaderType(template.components);
-      const configuration = configurations.find((item) =>
-        item.templateName === template.name &&
-        item.templateLanguage === template.language &&
-        item.headerType === headerType,
+      const configuration = configurations.find(
+        (item) =>
+          item.templateName === template.name &&
+          item.templateLanguage === template.language &&
+          item.headerType === headerType,
       );
       return {
         ...template,
         headerType,
         mediaConfiguration: {
-          configured: Boolean(configuration?.campaignMediaId || configuration?.mediaUrl),
+          configured: Boolean(
+            configuration?.campaignMediaId || configuration?.mediaUrl,
+          ),
           mediaLibraryId: configuration?.campaignMediaId || null,
           mediaName: configuration?.campaignMedia?.name || null,
           mimeType: configuration?.campaignMedia?.mimeType || null,
@@ -152,7 +155,9 @@ export class CampaignsService {
         })
       : null;
     if (dto.campaignMediaId && !asset)
-      throw new NotFoundException('El video seleccionado ya no está disponible.');
+      throw new NotFoundException(
+        'El video seleccionado ya no está disponible.',
+      );
     if (asset && asset.mimeType !== 'video/mp4')
       throw new BadRequestException('El video configurado debe ser un MP4.');
     if (mediaUrl && !this.meta.isSafeMediaUrl(mediaUrl))
@@ -189,18 +194,25 @@ export class CampaignsService {
       },
       include: { campaignMedia: true },
     });
-    await this.audit(operator.id, 'CAMPAIGN_TEMPLATE_MEDIA_CONFIGURED', configuration.id, {
-      templateName: template.name,
-      templateLanguage: template.language,
-      previousCampaignMediaId: previous?.campaignMediaId || null,
-      campaignMediaId: configuration.campaignMediaId,
-      usesAdvancedUrl: Boolean(configuration.mediaUrl),
-    });
+    await this.audit(
+      operator.id,
+      'CAMPAIGN_TEMPLATE_MEDIA_CONFIGURED',
+      configuration.id,
+      {
+        templateName: template.name,
+        templateLanguage: template.language,
+        previousCampaignMediaId: previous?.campaignMediaId || null,
+        campaignMediaId: configuration.campaignMediaId,
+        usesAdvancedUrl: Boolean(configuration.mediaUrl),
+      },
+    );
     return configuration;
   }
 
   async findMedia() {
-    return this.prisma.campaignMedia.findMany({ orderBy: { createdAt: 'desc' } });
+    return this.prisma.campaignMedia.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   async uploadMedia(
@@ -237,7 +249,9 @@ export class CampaignsService {
     if (existing) return existing;
     const metadata = await this.meta.getCampaignMediaMetadata(metaMediaId);
     if (metadata.mime_type !== 'video/mp4')
-      throw new BadRequestException('El Media ID debe corresponder a un video MP4');
+      throw new BadRequestException(
+        'El Media ID debe corresponder a un video MP4',
+      );
     const media = await this.prisma.campaignMedia.create({
       data: {
         name: dto.name.trim(),
@@ -278,7 +292,9 @@ export class CampaignsService {
         throw new BadRequestException(
           'Esta plantilla utiliza un encabezado de video pero todavía no tiene un video configurado.',
         );
-      if (Boolean(association.campaignMediaId) === Boolean(association.mediaUrl))
+      if (
+        Boolean(association.campaignMediaId) === Boolean(association.mediaUrl)
+      )
         throw new BadRequestException(
           'La configuración multimedia de la plantilla es inválida.',
         );

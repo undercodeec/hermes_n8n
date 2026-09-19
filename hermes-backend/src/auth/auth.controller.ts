@@ -54,7 +54,10 @@ export class AuthController {
     summary: 'Canjear una prueba OTP de Undercodeec por un JWT de Hermes CRM',
   })
   @ApiResponse({ status: 200, description: 'Acceso CRM concedido' })
-  @ApiResponse({ status: 401, description: 'Prueba inválida, vencida o reutilizada' })
+  @ApiResponse({
+    status: 401,
+    description: 'Prueba inválida, vencida o reutilizada',
+  })
   async loginWithCrmProof(@Body() dto: CrmProofDto) {
     return this.authService.loginWithCrmProof(dto.proof);
   }

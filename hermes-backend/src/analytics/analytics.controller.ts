@@ -18,7 +18,10 @@ import { UserRole } from '@prisma/client';
 @Roles(UserRole.ADMIN, UserRole.SALES_AGENT)
 @Controller('api/analytics')
 export class AnalyticsController {
-  constructor(private readonly analyticsService: AnalyticsService, private readonly campaignsService: CampaignsService) {}
+  constructor(
+    private readonly analyticsService: AnalyticsService,
+    private readonly campaignsService: CampaignsService,
+  ) {}
 
   @Get('crm-overview')
   @ApiOperation({

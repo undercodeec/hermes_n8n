@@ -14,8 +14,19 @@ import { MetaModule } from '../meta/meta.module';
       name: CAMPAIGN_QUEUE,
       inject: [ConfigService],
       useFactory: (config: ConfigService) => ({
-        limiter: { max: Math.max(1, Number(config.get('CAMPAIGN_SEND_RATE_PER_SECOND') || 2)), duration: 1000 },
-        defaultJobOptions: { attempts: 4, backoff: { type: 'exponential', delay: 1500, jitter: 0.25 }, removeOnComplete: { age: 24 * 3600, count: 1000 }, removeOnFail: false },
+        limiter: {
+          max: Math.max(
+            1,
+            Number(config.get('CAMPAIGN_SEND_RATE_PER_SECOND') || 2),
+          ),
+          duration: 1000,
+        },
+        defaultJobOptions: {
+          attempts: 4,
+          backoff: { type: 'exponential', delay: 1500, jitter: 0.25 },
+          removeOnComplete: { age: 24 * 3600, count: 1000 },
+          removeOnFail: false,
+        },
       }),
     }),
   ],

@@ -7,9 +7,9 @@ const secret = 'a-shared-secret-with-at-least-thirty-two-characters';
 const now = Math.floor(Date.now() / 1000);
 
 function proof(overrides: Record<string, unknown> = {}) {
-  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString(
-    'base64url',
-  );
+  const header = Buffer.from(
+    JSON.stringify({ alg: 'HS256', typ: 'JWT' }),
+  ).toString('base64url');
   const payload = Buffer.from(
     JSON.stringify({
       iss: 'undercodeec-admin',
@@ -57,22 +57,27 @@ describe('AuthService CRM proof', () => {
   });
 
   it('canjea una prueba válida y prepara al operador ADMIN', async () => {
-    const result = await service.loginWithCrmProof(proof({ jti: 'valid-proof-id-00000001' }));
+    const result = await service.loginWithCrmProof(
+      proof({ jti: 'valid-proof-id-00000001' }),
+    );
 
     expect(result.accessToken).toBe('hermes-jwt');
     expect(upsert).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { email: 'gerencia@undercodeec.com' },
         create: expect.objectContaining({ role: UserRole.ADMIN }),
-        update: expect.objectContaining({ role: UserRole.ADMIN, isActive: true }),
+        update: expect.objectContaining({
+          role: UserRole.ADMIN,
+          isActive: true,
+        }),
       }),
     );
   });
 
   it('rechaza una prueba cuya firma fue alterada', async () => {
-    await expect(service.loginWithCrmProof(`${proof() }x`)).rejects.toBeInstanceOf(
-      UnauthorizedException,
-    );
+    await expect(
+      service.loginWithCrmProof(`${proof()}x`),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(upsert).not.toHaveBeenCalled();
   });
 

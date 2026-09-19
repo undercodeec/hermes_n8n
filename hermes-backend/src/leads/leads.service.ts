@@ -501,6 +501,7 @@ export class LeadsService {
     contactId: string;
     conversationId: string;
     profile?: CommercialProfile;
+    sourceMessageId?: string;
   }): Promise<Lead | undefined> {
     const inputProfile = params.profile;
     if (!inputProfile) return undefined;
@@ -517,7 +518,12 @@ export class LeadsService {
         lead.metadata,
         inputProfile,
       );
-      const metadata = this.mergeLeadMetadata(lead.metadata, commercialProfile);
+      const metadata = this.mergeLeadMetadata(
+        lead.metadata,
+        commercialProfile,
+        inputProfile,
+        params.sourceMessageId,
+      );
       const hasNeed = Boolean(
         commercialProfile.need && commercialProfile.service,
       );
@@ -571,18 +577,44 @@ export class LeadsService {
       existing && typeof existing === 'object' && !Array.isArray(existing)
         ? (existing as CommercialProfile)
         : {};
-    return { ...previous, ...profile };
+    const definedEntries = Object.entries(profile).filter(
+      ([, value]) => value !== undefined && value !== null && value !== '',
+    );
+    return { ...previous, ...Object.fromEntries(definedEntries) };
   }
 
   private mergeLeadMetadata(
     metadata: Prisma.JsonValue | null,
     commercialProfile: CommercialProfile,
+    changes: CommercialProfile,
+    sourceMessageId?: string,
   ): Record<string, unknown> {
     const previous =
       metadata && typeof metadata === 'object' && !Array.isArray(metadata)
         ? (metadata as Record<string, unknown>)
         : {};
-    return { ...previous, commercialProfile };
+    const previousHistory = Array.isArray(previous.commercialProfileHistory)
+      ? previous.commercialProfileHistory
+      : [];
+    const definedChanges = Object.fromEntries(
+      Object.entries(changes).filter(
+        ([, value]) => value !== undefined && value !== null && value !== '',
+      ),
+    );
+    const historyEntry = Object.keys(definedChanges).length
+      ? {
+          recordedAt: new Date().toISOString(),
+          sourceMessageId,
+          changes: definedChanges,
+        }
+      : undefined;
+    return {
+      ...previous,
+      commercialProfile,
+      commercialProfileHistory: historyEntry
+        ? [...previousHistory, historyEntry].slice(-20)
+        : previousHistory,
+    };
   }
 
   async remove(id: string) {

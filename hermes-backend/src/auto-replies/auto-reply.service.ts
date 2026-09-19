@@ -7,6 +7,8 @@ import {
   MessageDirection,
   MessageSender,
   MessageType,
+  Prisma,
+  TaskStatus,
 } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { HermesService } from '../hermes/hermes.service';
@@ -17,6 +19,8 @@ import { PrismaService } from '../prisma/prisma.service';
 import { AUTO_REPLY_QUEUE, AutoReplyJobData } from './auto-reply.constants';
 import { ConversationGuardService } from '../conversation-guard/conversation-guard.service';
 import { CommercialProfile } from '../hermes/dto/hermes-request.dto';
+import { CommercialPolicyService } from '../hermes/commercial-policy.service';
+import { TasksService } from '../tasks/tasks.service';
 
 @Injectable()
 export class AutoReplyService {
@@ -29,6 +33,8 @@ export class AutoReplyService {
     private readonly hermes: HermesService,
     private readonly handoffs: HandoffService,
     private readonly leads: LeadsService,
+    private readonly tasks: TasksService,
+    private readonly commercialPolicy: CommercialPolicyService,
     private readonly conversationGuard: ConversationGuardService,
     @InjectQueue(AUTO_REPLY_QUEUE)
     private readonly queue: Queue<AutoReplyJobData>,
@@ -52,6 +58,8 @@ export class AutoReplyService {
         id: true,
         content: true,
         createdAt: true,
+        rawPayload: true,
+        wamid: true,
         conversationId: true,
         contactId: true,
       },
@@ -62,13 +70,93 @@ export class AutoReplyService {
       where: { id: data.conversationId },
       include: { contact: true },
     });
-    if (!conversation || conversation.status === ConversationStatus.HANDED_OFF) {
+    if (
+      !conversation ||
+      conversation.status === ConversationStatus.HANDED_OFF
+    ) {
       return;
     }
 
     // Si el cliente escribió de nuevo durante la pausa, el job más reciente
     // contestará con todo el contexto y este se descarta para no fragmentar el chat.
-    if (await this.hasNewerInbound(data.conversationId, inbound.id)) return;
+    if (await this.hasNewerInbound(data.conversationId, inbound)) return;
+
+    const context = await this.buildConversationContext(
+      data.contactId,
+      data.conversationId,
+      inbound.id,
+    );
+    const receivedAt =
+      this.providerTimestamp(inbound.rawPayload) ?? inbound.createdAt;
+    const policy = this.commercialPolicy.analyze(
+      inbound.content || '',
+      receivedAt,
+      context.commercialProfile?.pendingQuestions,
+    );
+
+    if (policy.requestsHuman) {
+      await this.handoffs.create({
+        conversationId: data.conversationId,
+        reason: HandoffReason.CUSTOM,
+        reasonDetail:
+          'El cliente solicitó expresamente hablar con una persona.',
+      });
+      await this.sendAndPersist({
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        waId: conversation.contact.waId,
+        inboundWamid: inbound.wamid,
+        content:
+          'He registrado tu solicitud para que continúes con una persona del equipo. La conversación queda pendiente de asignación.',
+        metadata: { action: 'HUMAN_HANDOFF_CREATED' },
+      });
+      await this.persistConversationState(data.conversationId, {
+        detectedIntent: 'solicitud_humano',
+        nextAction: 'derivar_humano',
+      });
+      return;
+    }
+
+    if (policy.requestsCall) {
+      const callback = await this.tasks.requestCallback({
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        leadId: context.leadId,
+        sourceMessageId: inbound.id,
+        requestedAt: policy.requestedCallAt,
+      });
+      const content = policy.requestedCallAt
+        ? 'He registrado la solicitud de llamada usando este mismo número de WhatsApp para el horario indicado. Está pendiente de confirmación por el equipo; todavía no está agendada.'
+        : 'Claro, podemos coordinar una llamada usando este mismo número de WhatsApp. ¿Qué horario te viene bien?';
+      await this.sendAndPersist({
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        waId: conversation.contact.waId,
+        inboundWamid: inbound.wamid,
+        content,
+        metadata: {
+          action: 'CALLBACK_TASK_PENDING',
+          taskId: callback.id,
+          requestedAt: policy.requestedCallAt?.toISOString(),
+        },
+      });
+      await this.leads.recordCommercialProfileFromConversation({
+        contactId: data.contactId,
+        conversationId: data.conversationId,
+        profile: {
+          contactPreference: 'CALL',
+          requestedContactTime: policy.requestedCallAt?.toISOString(),
+          pendingQuestions: policy.pendingQuestions,
+          nextStep: 'Solicitud de llamada pendiente de confirmación',
+        },
+        sourceMessageId: inbound.id,
+      });
+      await this.persistConversationState(data.conversationId, {
+        detectedIntent: 'agendar_cita',
+        nextAction: 'solicitar_confirmacion_reunion',
+      });
+      return;
+    }
 
     if (!(await this.conversationGuard.consumeAiQuota(data.contactId))) {
       this.logger.warn(
@@ -77,11 +165,8 @@ export class AutoReplyService {
       return;
     }
 
-    const context = await this.buildConversationContext(
-      data.contactId,
-      data.conversationId,
-    );
     const startedAt = Date.now();
+    await this.showTypingIndicator(inbound.wamid);
     const response = await this.hermes.generateResponse({
       contactName: conversation.contact.name || 'Cliente',
       messageContent: inbound.content || '',
@@ -90,7 +175,30 @@ export class AutoReplyService {
       productOfInterest: context.productOfInterest,
       conversationSummary: context.conversationSummary,
       commercialProfile: context.commercialProfile,
+      contact: {
+        id: data.contactId,
+        hasUsablePhone: Boolean(conversation.contact.waId),
+        hasEmail: Boolean(conversation.contact.email),
+      },
+      conversationId: data.conversationId,
+      currentIntent: policy.intent,
+      pendingQuestions: policy.pendingQuestions,
+      contactPreference: context.commercialProfile?.contactPreference,
+      pendingActions: context.pendingActions,
+      actionCapabilities: {
+        callbackTasks: true,
+        calendarBooking: false,
+        humanHandoff: true,
+      },
     });
+    response.commercialProfile = {
+      ...context.commercialProfile,
+      ...response.commercialProfile,
+      pendingQuestions: this.commercialPolicy.remainingPendingQuestions(
+        policy.pendingQuestions,
+        response.response,
+      ),
+    };
 
     if (!this.conversationGuard.isSafeGeneratedResponse(response.response)) {
       this.logger.error(
@@ -108,15 +216,69 @@ export class AutoReplyService {
     if (
       !currentConversation ||
       currentConversation.status === ConversationStatus.HANDED_OFF ||
-      (await this.hasNewerInbound(data.conversationId, inbound.id))
+      (await this.hasNewerInbound(data.conversationId, inbound))
     ) {
       return;
+    }
+
+    const pendingQuestions = response.commercialProfile?.pendingQuestions || [];
+    const requestedPriceWithoutAuthorizedValue =
+      policy.pendingQuestions.includes('price') &&
+      !/\b\d[\d.,]*\s*(?:EUR|euros?|USD|dólares?)\b|[€$]\s*\d/i.test(
+        response.response,
+      );
+    const requestedTimelineWithoutAuthorizedValue =
+      policy.pendingQuestions.includes('timeline') &&
+      !/\b\d+\s*(?:días?|semanas?|meses?)\b/i.test(response.response);
+    if (
+      (requestedPriceWithoutAuthorizedValue ||
+        requestedTimelineWithoutAuthorizedValue) &&
+      this.hasEnoughScopeForQuote(response.commercialProfile)
+    ) {
+      const quote = await this.tasks.requestQuote({
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        leadId: context.leadId,
+        sourceMessageId: inbound.id,
+        scopeSummary: [
+          response.commercialProfile?.service,
+          response.commercialProfile?.need,
+          response.commercialProfile?.sector,
+          response.commercialProfile?.users,
+          response.commercialProfile?.timeline,
+        ]
+          .filter(Boolean)
+          .join('; '),
+      });
+      response.response = requestedTimelineWithoutAuthorizedValue
+        ? 'Con el alcance que ya has descrito, no tengo una cifra ni un plazo autorizados para confirmarte por este canal. He registrado una solicitud de cotización para que el equipo prepare la valoración; queda pendiente de revisión.'
+        : 'Con el alcance que ya has descrito, no tengo una cifra autorizada para confirmarte por este canal. He registrado una solicitud de cotización para que el equipo prepare la valoración; queda pendiente de revisión.';
+      response.detectedIntent = 'cotizacion';
+      response.nextAction = 'solicitar_cotizacion_humana';
+      response.commercialProfile = {
+        ...response.commercialProfile,
+        pendingQuestions: pendingQuestions.filter(
+          (question) => question !== 'price' && question !== 'timeline',
+        ),
+        nextStep: `Cotización ${quote.id} pendiente de revisión`,
+      };
     }
 
     const shouldHandoff = this.checkHandoffSignals(
       inbound.content || '',
       response.detectedIntent,
     );
+    if (shouldHandoff) {
+      await this.handoffs.create({
+        conversationId: data.conversationId,
+        reason: this.handoffReason(response.detectedIntent),
+        reasonDetail: `Handoff automático. Mensaje trigger: ${(inbound.content || '').substring(0, 200)}`,
+      });
+      if (response.detectedIntent === 'error') {
+        response.response =
+          'No pude procesar tu solicitud correctamente. He registrado una derivación al equipo y queda pendiente de asignación.';
+      }
+    }
     const sentMessage = await this.meta.sendTextMessage(
       conversation.contact.waId,
       response.response,
@@ -147,31 +309,11 @@ export class AutoReplyService {
         contactId: data.contactId,
         conversationId: data.conversationId,
         profile: response.commercialProfile,
+        sourceMessageId: inbound.id,
       });
-
-    if (shouldHandoff) {
-      await this.handoffs.create({
-        conversationId: data.conversationId,
-        reason: this.handoffReason(response.detectedIntent),
-        reasonDetail: `Handoff automático. Mensaje trigger: ${(inbound.content || '').substring(0, 200)}`,
-      });
-    }
 
     if (response.suggestedTags || response.detectedIntent) {
-      await this.prisma.conversationState.upsert({
-        where: { conversationId: data.conversationId },
-        update: {
-          detectedIntent: response.detectedIntent,
-          nextSuggestedAction: response.nextAction,
-          commercialTags: response.suggestedTags || [],
-        },
-        create: {
-          conversationId: data.conversationId,
-          detectedIntent: response.detectedIntent,
-          nextSuggestedAction: response.nextAction,
-          commercialTags: response.suggestedTags || [],
-        },
-      });
+      await this.persistConversationState(data.conversationId, response);
     }
 
     if (this.shouldQualifyLead(response.detectedIntent)) {
@@ -188,27 +330,20 @@ export class AutoReplyService {
     }
 
     this.logger.log(
-      `Respuesta automática enviada a ${conversation.contact.waId} en ${latencyMs}ms`,
+      JSON.stringify({
+        event: 'auto_reply_sent',
+        conversationId: data.conversationId,
+        latencyMs,
+      }),
     );
   }
 
   private replyDelay(messageLength: number): number {
-    const isLong = messageLength >= this.positiveInteger(
-      'AI_REPLY_LONG_MESSAGE_THRESHOLD',
-      160,
-    );
-    const min = this.positiveInteger(
-      isLong ? 'AI_REPLY_LONG_DELAY_MIN_MS' : 'AI_REPLY_DELAY_MIN_MS',
-      isLong ? 4000 : 2000,
-    );
-    const max = Math.max(
-      min,
-      this.positiveInteger(
-        isLong ? 'AI_REPLY_LONG_DELAY_MAX_MS' : 'AI_REPLY_DELAY_MAX_MS',
-        isLong ? 8000 : 4000,
-      ),
-    );
-    return min + Math.floor(Math.random() * (max - min + 1));
+    void messageLength;
+    const configured = Number(this.config.get('AI_REPLY_DELAY_MS'));
+    return Number.isSafeInteger(configured) && configured >= 0
+      ? configured
+      : 2000;
   }
 
   private positiveInteger(key: string, fallback: number): number {
@@ -218,44 +353,177 @@ export class AutoReplyService {
 
   private async hasNewerInbound(
     conversationId: string,
-    inboundMessageId: string,
+    inbound: {
+      id: string;
+      createdAt: Date;
+      rawPayload: Prisma.JsonValue | null;
+    },
   ): Promise<boolean> {
-    const latest = await this.prisma.message.findFirst({
+    const candidates = await this.prisma.message.findMany({
       where: {
         conversationId,
         direction: MessageDirection.INBOUND,
         sender: MessageSender.CONTACT,
       },
       orderBy: { createdAt: 'desc' },
-      select: { id: true },
+      take: 30,
+      select: { id: true, createdAt: true, rawPayload: true },
     });
-    return Boolean(latest && latest.id !== inboundMessageId);
+    const inboundTime =
+      this.providerTimestamp(inbound.rawPayload) ?? inbound.createdAt;
+    return candidates.some((candidate) => {
+      if (candidate.id === inbound.id) return false;
+      const candidateTime =
+        this.providerTimestamp(candidate.rawPayload) ?? candidate.createdAt;
+      return candidateTime.getTime() > inboundTime.getTime();
+    });
   }
 
-  private async buildConversationContext(contactId: string, conversationId: string) {
-    const [recentMessages, state, lead] = await Promise.all([
+  private async buildConversationContext(
+    contactId: string,
+    conversationId: string,
+    excludedMessageId: string,
+  ) {
+    const [recentMessages, state, lead, pendingTasks] = await Promise.all([
       this.prisma.message.findMany({
-        where: { conversationId },
+        where: { conversationId, NOT: { id: excludedMessageId } },
         orderBy: { createdAt: 'desc' },
         take: 20,
-        select: { direction: true, content: true },
+        select: {
+          direction: true,
+          content: true,
+          createdAt: true,
+          rawPayload: true,
+        },
       }),
       this.prisma.conversationState.findUnique({ where: { conversationId } }),
       this.prisma.lead.findFirst({
         where: { contactId },
         orderBy: { createdAt: 'desc' },
       }),
+      this.prisma.task.findMany({
+        where: {
+          conversationId,
+          status: { in: [TaskStatus.PENDING, TaskStatus.IN_PROGRESS] },
+        },
+        orderBy: { createdAt: 'desc' },
+        take: 5,
+        select: { type: true, status: true, dueAt: true },
+      }),
     ]);
+    const orderedMessages = recentMessages.sort((left, right) => {
+      const leftTime =
+        this.providerTimestamp(left.rawPayload) ?? left.createdAt;
+      const rightTime =
+        this.providerTimestamp(right.rawPayload) ?? right.createdAt;
+      return leftTime.getTime() - rightTime.getTime();
+    });
     return {
-      recentMessages: recentMessages.reverse().map((message) => ({
-        role: message.direction === MessageDirection.INBOUND ? 'user' : 'assistant',
+      recentMessages: orderedMessages.map((message) => ({
+        role:
+          message.direction === MessageDirection.INBOUND ? 'user' : 'assistant',
         content: message.content || '',
       })),
       conversationSummary: state?.summary || undefined,
       leadStage: lead?.stage || state?.leadStage || undefined,
       productOfInterest: lead?.productOfInterest || undefined,
+      leadId: lead?.id,
       commercialProfile: this.commercialProfileFromMetadata(lead?.metadata),
+      pendingActions: pendingTasks.map((task) => ({
+        type: task.type,
+        status: task.status,
+        dueAt: task.dueAt?.toISOString(),
+      })),
     };
+  }
+
+  private providerTimestamp(
+    rawPayload: Prisma.JsonValue | null,
+  ): Date | undefined {
+    if (
+      !rawPayload ||
+      typeof rawPayload !== 'object' ||
+      Array.isArray(rawPayload)
+    ) {
+      return undefined;
+    }
+    const timestamp = (rawPayload as Record<string, unknown>).timestamp;
+    if (typeof timestamp !== 'string' || !/^\d{9,13}$/.test(timestamp))
+      return undefined;
+    const numeric = Number(timestamp);
+    const date = new Date(timestamp.length <= 10 ? numeric * 1000 : numeric);
+    return Number.isNaN(date.getTime()) ? undefined : date;
+  }
+
+  private hasEnoughScopeForQuote(profile?: CommercialProfile): boolean {
+    if (!profile?.service || !profile.need) return false;
+    return Boolean(
+      profile.sector ||
+      profile.company ||
+      profile.currentSituation ||
+      profile.users ||
+      profile.timeline ||
+      profile.location,
+    );
+  }
+
+  private async sendAndPersist(params: {
+    conversationId: string;
+    contactId: string;
+    waId: string;
+    inboundWamid?: string | null;
+    content: string;
+    metadata: Record<string, unknown>;
+  }): Promise<void> {
+    await this.showTypingIndicator(params.inboundWamid);
+    const sent = await this.meta.sendTextMessage(params.waId, params.content);
+    await this.prisma.message.create({
+      data: {
+        conversationId: params.conversationId,
+        contactId: params.contactId,
+        direction: MessageDirection.OUTBOUND,
+        sender: MessageSender.SYSTEM,
+        type: MessageType.TEXT,
+        content: params.content,
+        wamid: sent?.messages?.[0]?.id,
+        metadata: params.metadata as Prisma.InputJsonValue,
+      },
+    });
+    await this.prisma.conversation.update({
+      where: { id: params.conversationId },
+      data: { updatedAt: new Date() },
+    });
+  }
+
+  private async showTypingIndicator(
+    inboundWamid?: string | null,
+  ): Promise<void> {
+    if (!inboundWamid) return;
+    await this.meta.showTypingIndicator(inboundWamid);
+  }
+
+  private async persistConversationState(
+    conversationId: string,
+    response: {
+      detectedIntent?: string;
+      nextAction?: string;
+      suggestedTags?: string[];
+    },
+  ): Promise<void> {
+    await this.prisma.conversationState.upsert({
+      where: { conversationId },
+      update: {
+        detectedIntent: response.detectedIntent,
+        nextSuggestedAction: response.nextAction,
+        commercialTags: response.suggestedTags || [],
+      },
+      create: {
+        conversationId,
+        detectedIntent: response.detectedIntent,
+        nextSuggestedAction: response.nextAction,
+        commercialTags: response.suggestedTags || [],
+      },
+    });
   }
 
   private commercialProfileFromMetadata(
@@ -266,29 +534,52 @@ export class AutoReplyService {
     }
     const profile = (metadata as Record<string, unknown>).commercialProfile;
     return profile && typeof profile === 'object' && !Array.isArray(profile)
-      ? (profile as CommercialProfile)
+      ? profile
       : undefined;
   }
 
-  private checkHandoffSignals(message: string, detectedIntent?: string): boolean {
+  private checkHandoffSignals(
+    message: string,
+    detectedIntent?: string,
+  ): boolean {
     const keywords = this.csvConfig('HANDOFF_KEYWORDS', [
-      'hablar con humano', 'hablar con persona', 'agente real', 'quiero quejarme',
-      'reclamo', 'estoy molesto', 'no funciona', 'descuento especial',
-      'cotización compleja', 'precio corporativo',
+      'hablar con humano',
+      'hablar con persona',
+      'agente real',
+      'quiero quejarme',
+      'reclamo',
+      'estoy molesto',
+      'no funciona',
+      'descuento especial',
+      'cotización compleja',
+      'precio corporativo',
     ]);
     const intents = this.csvConfig('HANDOFF_INTENTS', [
-      'solicitud_humano', 'queja', 'reclamo', 'pago_fallido',
-      'negociacion_especial', 'error',
+      'solicitud_humano',
+      'queja',
+      'reclamo',
+      'pago_fallido',
+      'negociacion_especial',
+      'error',
     ]);
     const normalizedIntent = detectedIntent?.trim().toLocaleLowerCase('es');
-    return keywords.some((keyword) => message.toLocaleLowerCase('es').includes(keyword)) ||
-      Boolean(normalizedIntent && intents.includes(normalizedIntent));
+    return (
+      keywords.some((keyword) =>
+        message.toLocaleLowerCase('es').includes(keyword),
+      ) || Boolean(normalizedIntent && intents.includes(normalizedIntent))
+    );
   }
 
   private shouldQualifyLead(detectedIntent?: string): boolean {
-    return Boolean(detectedIntent && this.csvConfig('LEAD_QUALIFICATION_INTENTS', [
-      'consulta_precio', 'cotizacion', 'agendar_cita', 'pago',
-    ]).includes(detectedIntent.trim().toLowerCase()));
+    return Boolean(
+      detectedIntent &&
+      this.csvConfig('LEAD_QUALIFICATION_INTENTS', [
+        'consulta_precio',
+        'cotizacion',
+        'agendar_cita',
+        'pago',
+      ]).includes(detectedIntent.trim().toLowerCase()),
+    );
   }
 
   private csvConfig(key: string, defaults: string[]): string[] {
@@ -300,7 +591,8 @@ export class AutoReplyService {
 
   private handoffReason(detectedIntent?: string): HandoffReason {
     const intent = detectedIntent?.trim().toLocaleLowerCase('es');
-    if (intent === 'queja' || intent === 'reclamo') return HandoffReason.COMPLAINT;
+    if (intent === 'queja' || intent === 'reclamo')
+      return HandoffReason.COMPLAINT;
     if (intent === 'pago_fallido') return HandoffReason.PAYMENT_ISSUE;
     if (intent === 'negociacion_especial') return HandoffReason.B2B_NEGOTIATION;
     return HandoffReason.CUSTOM;

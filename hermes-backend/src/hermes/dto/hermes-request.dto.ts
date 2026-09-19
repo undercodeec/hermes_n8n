@@ -11,6 +11,11 @@ export type CommercialProfile = {
   budget?: string;
   timeline?: string;
   nextStep?: string;
+  /** Preguntas expresas del cliente que todavía requieren respuesta. */
+  pendingQuestions?: Array<'price' | 'timeline' | 'proposal' | 'availability'>;
+  contactPreference?: 'WHATSAPP' | 'CALL' | 'VIDEO_CALL' | 'EMAIL';
+  requestedContactTime?: string;
+  lastObjection?: string;
   /** Solo es una sugerencia: el backend decide si la transición es válida. */
   suggestedStage?: 'CONTACTED' | 'QUALIFIED';
 };
@@ -24,6 +29,26 @@ export class HermesRequestDto {
   conversationSummary?: string;
   /** Ficha persistida de mensajes anteriores; no depende del historial completo. */
   commercialProfile?: CommercialProfile;
+  contact?: {
+    id: string;
+    /** Indica que WhatsApp ya proporciona un número utilizable; no se expone en el prompt. */
+    hasUsablePhone: boolean;
+    hasEmail: boolean;
+  };
+  conversationId?: string;
+  currentIntent?: string;
+  pendingQuestions?: string[];
+  contactPreference?: string;
+  pendingActions?: Array<{
+    type: string;
+    status: string;
+    dueAt?: string;
+  }>;
+  actionCapabilities?: {
+    callbackTasks: boolean;
+    calendarBooking: boolean;
+    humanHandoff: boolean;
+  };
 }
 
 export class HermesResponseDto {
@@ -33,6 +58,7 @@ export class HermesResponseDto {
   suggestedTags?: string[];
   detectedIntent?: string;
   nextAction?: string;
+  decision?: string;
   /** Datos extraídos exclusivamente de información explícita del cliente. */
   commercialProfile?: CommercialProfile;
 }

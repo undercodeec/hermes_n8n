@@ -39,11 +39,26 @@ export class MetaWebhookMessage {
   type: string;
   text?: { body: string };
   image?: { id: string; mime_type: string; sha256: string; caption?: string };
-  document?: { id: string; mime_type: string; sha256: string; filename?: string; caption?: string };
+  document?: {
+    id: string;
+    mime_type: string;
+    sha256: string;
+    filename?: string;
+    caption?: string;
+  };
   audio?: { id: string; mime_type: string };
   video?: { id: string; mime_type: string };
-  location?: { latitude: number; longitude: number; name?: string; address?: string };
-  interactive?: { type: string; button_reply?: { id: string; title: string }; list_reply?: { id: string; title: string; description?: string } };
+  location?: {
+    latitude: number;
+    longitude: number;
+    name?: string;
+    address?: string;
+  };
+  interactive?: {
+    type: string;
+    button_reply?: { id: string; title: string };
+    list_reply?: { id: string; title: string; description?: string };
+  };
   reaction?: { message_id: string; emoji: string };
   sticker?: { id: string; mime_type: string };
   context?: { from: string; id: string };
@@ -54,5 +69,10 @@ export class MetaWebhookStatus {
   status: string; // 'sent' | 'delivered' | 'read' | 'failed'
   timestamp: string;
   recipient_id: string;
-  errors?: { code: number; title: string; message: string; error_data?: { details: string } }[];
+  errors?: {
+    code: number;
+    title: string;
+    message: string;
+    error_data?: { details: string };
+  }[];
 }

@@ -24,7 +24,9 @@ export class PlaybooksService {
   }
 
   async findOne(id: string) {
-    const playbook = await this.prisma.salesPlaybook.findUnique({ where: { id } });
+    const playbook = await this.prisma.salesPlaybook.findUnique({
+      where: { id },
+    });
     if (!playbook) throw new NotFoundException('Playbook no encontrado');
     return playbook;
   }

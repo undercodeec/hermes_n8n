@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
-import { TaskStatus } from '@prisma/client';
+import { Prisma, TaskStatus, TaskType } from '@prisma/client';
 
 @Injectable()
 export class TasksService {
@@ -18,9 +18,156 @@ export class TasksService {
     });
   }
 
-  async findAll(page = 1, limit = 20, status?: TaskStatus, assignedUserId?: string) {
+  /**
+   * Registra una solicitud real de llamada sin presentarla como una reserva.
+   * El bloqueo por conversación y los IDs de mensaje en metadata hacen que los
+   * reintentos del worker no dupliquen tareas.
+   */
+  async requestCallback(params: {
+    conversationId: string;
+    leadId?: string;
+    contactId: string;
+    sourceMessageId: string;
+    requestedAt?: Date;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.conversationId}))`;
+      const existing = await tx.task.findFirst({
+        where: {
+          conversationId: params.conversationId,
+          type: TaskType.CALLBACK,
+          status: { in: [TaskStatus.PENDING, TaskStatus.IN_PROGRESS] },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      const previousMetadata = this.objectMetadata(existing?.metadata);
+      const sourceMessageIds = Array.isArray(previousMetadata.sourceMessageIds)
+        ? previousMetadata.sourceMessageIds.filter(
+            (value): value is string => typeof value === 'string',
+          )
+        : [];
+      if (existing && sourceMessageIds.includes(params.sourceMessageId)) {
+        return existing;
+      }
+      const metadata = {
+        ...previousMetadata,
+        actionStatus: 'PENDING_CONFIRMATION',
+        requestedChannel: 'WHATSAPP_CALL',
+        phoneSource: 'WHATSAPP_CONTACT',
+        contactId: params.contactId,
+        sourceMessageIds: [...sourceMessageIds, params.sourceMessageId].slice(
+          -20,
+        ),
+      } as Prisma.InputJsonValue;
+
+      if (existing) {
+        return tx.task.update({
+          where: { id: existing.id },
+          data: {
+            leadId: params.leadId ?? existing.leadId,
+            dueAt: params.requestedAt ?? existing.dueAt,
+            description: params.requestedAt
+              ? `Llamada solicitada por WhatsApp para ${params.requestedAt.toISOString()}; pendiente de confirmación.`
+              : existing.description,
+            metadata,
+          },
+        });
+      }
+
+      return tx.task.create({
+        data: {
+          conversationId: params.conversationId,
+          leadId: params.leadId,
+          type: TaskType.CALLBACK,
+          status: TaskStatus.PENDING,
+          title: 'Confirmar solicitud de llamada por WhatsApp',
+          description: params.requestedAt
+            ? `Llamada solicitada por WhatsApp para ${params.requestedAt.toISOString()}; pendiente de confirmación.`
+            : 'El cliente solicitó una llamada por WhatsApp; falta acordar el horario.',
+          dueAt: params.requestedAt,
+          metadata,
+        },
+      });
+    });
+  }
+
+  /** Registra una cotización humana cuando el catálogo no resolvió precio/plazo. */
+  async requestQuote(params: {
+    conversationId: string;
+    leadId?: string;
+    contactId: string;
+    sourceMessageId: string;
+    scopeSummary?: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.conversationId}))`;
+      const existing = await tx.task.findFirst({
+        where: {
+          conversationId: params.conversationId,
+          type: TaskType.QUOTE,
+          status: { in: [TaskStatus.PENDING, TaskStatus.IN_PROGRESS] },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      const previousMetadata = this.objectMetadata(existing?.metadata);
+      const sourceMessageIds = Array.isArray(previousMetadata.sourceMessageIds)
+        ? previousMetadata.sourceMessageIds.filter(
+            (value): value is string => typeof value === 'string',
+          )
+        : [];
+      if (existing && sourceMessageIds.includes(params.sourceMessageId)) {
+        return existing;
+      }
+      const metadata = {
+        ...previousMetadata,
+        actionStatus: 'PENDING_REVIEW',
+        contactId: params.contactId,
+        sourceMessageIds: [...sourceMessageIds, params.sourceMessageId].slice(
+          -20,
+        ),
+      } as Prisma.InputJsonValue;
+      const description = params.scopeSummary
+        ? `Preparar valoración comercial. Alcance: ${params.scopeSummary.slice(0, 1000)}`
+        : 'Preparar valoración comercial con el contexto de la conversación.';
+
+      if (existing) {
+        return tx.task.update({
+          where: { id: existing.id },
+          data: {
+            leadId: params.leadId ?? existing.leadId,
+            description,
+            metadata,
+          },
+        });
+      }
+      return tx.task.create({
+        data: {
+          conversationId: params.conversationId,
+          leadId: params.leadId,
+          type: TaskType.QUOTE,
+          status: TaskStatus.PENDING,
+          title: 'Preparar cotización solicitada por WhatsApp',
+          description,
+          metadata,
+        },
+      });
+    });
+  }
+
+  private objectMetadata(value: Prisma.JsonValue | null | undefined) {
+    return value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : {};
+  }
+
+  async findAll(
+    page = 1,
+    limit = 20,
+    status?: TaskStatus,
+    assignedUserId?: string,
+  ) {
     const skip = (page - 1) * limit;
-    const where: any = {};
+    const where: Prisma.TaskWhereInput = {};
     if (status) where.status = status;
     if (assignedUserId) where.assignedUserId = assignedUserId;
 
@@ -41,7 +188,11 @@ export class TasksService {
   async findOne(id: string) {
     const task = await this.prisma.task.findUnique({
       where: { id },
-      include: { lead: { include: { contact: true } }, conversation: true, assignedUser: true },
+      include: {
+        lead: { include: { contact: true } },
+        conversation: true,
+        assignedUser: true,
+      },
     });
     if (!task) throw new NotFoundException('Tarea no encontrada');
     return task;
@@ -49,7 +200,7 @@ export class TasksService {
 
   async update(id: string, dto: UpdateTaskDto) {
     await this.findOne(id);
-    const data: any = { ...dto };
+    const data: Prisma.TaskUncheckedUpdateInput = { ...dto };
     if (dto.dueAt) data.dueAt = new Date(dto.dueAt);
     if (dto.status === TaskStatus.COMPLETED) data.completedAt = new Date();
 
