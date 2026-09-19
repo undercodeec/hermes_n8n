@@ -32,7 +32,9 @@ export class KnowledgeService {
   }
 
   async findOne(id: string) {
-    const doc = await this.prisma.knowledgeDocument.findUnique({ where: { id } });
+    const doc = await this.prisma.knowledgeDocument.findUnique({
+      where: { id },
+    });
     if (!doc) throw new NotFoundException('Documento no encontrado');
     return doc;
   }

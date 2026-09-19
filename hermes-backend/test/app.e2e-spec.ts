@@ -133,7 +133,7 @@ describe('Contratos HTTP del CRM (e2e aislado)', () => {
     await app.close();
   });
 
-    it('publica login como HTTP 200 y valida sus credenciales', async () => {
+  it('publica login como HTTP 200 y valida sus credenciales', async () => {
     authService.login.mockResolvedValue({
       accessToken: 'jwt',
       user: { id: 'user-1', role: UserRole.ADMIN },
@@ -151,25 +151,25 @@ describe('Contratos HTTP del CRM (e2e aislado)', () => {
       .send({ email: 'incorrecto', password: 'secret-value' })
       .expect(400);
 
-      expect(authService.login).toHaveBeenCalledTimes(1);
+    expect(authService.login).toHaveBeenCalledTimes(1);
+  });
+
+  it('canjea una prueba OTP del Admin por un JWT propio de Hermes', async () => {
+    authService.loginWithCrmProof.mockResolvedValue({
+      accessToken: 'hermes-crm-jwt',
+      user: { id: 'operator-1', role: UserRole.ADMIN },
     });
 
-    it('canjea una prueba OTP del Admin por un JWT propio de Hermes', async () => {
-      authService.loginWithCrmProof.mockResolvedValue({
-        accessToken: 'hermes-crm-jwt',
-        user: { id: 'operator-1', role: UserRole.ADMIN },
-      });
+    const response = await request(app.getHttpServer())
+      .post('/api/auth/crm-proof')
+      .send({ proof: 'header.payload.signature' })
+      .expect(200);
 
-      const response = await request(app.getHttpServer())
-        .post('/api/auth/crm-proof')
-        .send({ proof: 'header.payload.signature' })
-        .expect(200);
-
-      expect(response.body.accessToken).toBe('hermes-crm-jwt');
-      expect(authService.loginWithCrmProof).toHaveBeenCalledWith(
-        'header.payload.signature',
-      );
-    });
+    expect(response.body.accessToken).toBe('hermes-crm-jwt');
+    expect(authService.loginWithCrmProof).toHaveBeenCalledWith(
+      'header.payload.signature',
+    );
+  });
 
   it('restringe el registro a ADMIN y exige contraseña de 12 caracteres', async () => {
     authService.register.mockResolvedValue({

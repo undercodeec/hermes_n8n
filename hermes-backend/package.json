@@ -19,7 +19,9 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "admin:create": "node dist/scripts/create-admin.js",
-    "admin:create:dev": "ts-node src/scripts/create-admin.ts"
+    "admin:create:dev": "ts-node src/scripts/create-admin.ts",
+    "audit:hermes-data": "ts-node src/scripts/audit-hermes-data.ts",
+    "benchmark:hermes": "ts-node src/scripts/benchmark-hermes.ts"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",

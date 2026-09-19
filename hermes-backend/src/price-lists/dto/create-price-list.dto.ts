@@ -6,7 +6,10 @@ export class CreatePriceListDto {
   @IsString()
   productId: string;
 
-  @ApiProperty({ description: 'Nombre de la lista de precios', example: 'Precio general' })
+  @ApiProperty({
+    description: 'Nombre de la lista de precios',
+    example: 'Precio general',
+  })
   @IsString()
   name: string;
 

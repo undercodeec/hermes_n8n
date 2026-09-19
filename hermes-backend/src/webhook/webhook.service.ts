@@ -10,6 +10,7 @@ import { CampaignsService } from '../campaigns/campaigns.service';
 import { AutoReplyService } from '../auto-replies/auto-reply.service';
 import { ConversationGuardService } from '../conversation-guard/conversation-guard.service';
 import { AdvertisingService } from '../advertising/advertising.service';
+import { normalizeWhatsAppId } from '../campaigns/phone-normalizer';
 import {
   MetaWebhookDto,
   MetaWebhookMessage,
@@ -65,9 +66,7 @@ export class WebhookService {
   validateSignature(payload: Buffer, signature?: string): boolean {
     const appSecret = this.configService.get<string>('META_APP_SECRET');
     if (!appSecret) {
-      this.logger.warn(
-        'META_APP_SECRET no configurado; webhook rechazado',
-      );
+      this.logger.warn('META_APP_SECRET no configurado; webhook rechazado');
       return false;
     }
 
@@ -248,7 +247,8 @@ export class WebhookService {
         await this.handoffService.create({
           conversationId: conversation.id,
           reason: HandoffReason.SUPPORT,
-          reasonDetail: 'Solicitud de soporte: problema técnico reportado en un proyecto que el cliente atribuye explícitamente a la marca.',
+          reasonDetail:
+            'Solicitud de soporte: problema técnico reportado en un proyecto que el cliente atribuye explícitamente a la marca.',
         });
         await this.sendSystemMessage(
           conversation.id,
@@ -402,7 +402,7 @@ export class WebhookService {
         type: MessageType.TEXT,
         content,
         wamid: sentMessage?.messages?.[0]?.id,
-        metadata: { action } as Prisma.InputJsonValue,
+        metadata: { action },
       },
     });
     await this.prisma.conversation.update({
@@ -415,14 +415,16 @@ export class WebhookService {
    * Crea o actualiza un contacto desde los datos de Meta
    */
   private async upsertContact(metaContact: MetaWebhookContact) {
+    const waId = normalizeWhatsAppId(metaContact.wa_id);
+    if (!waId) throw new Error('Meta envió un wa_id inválido');
     return this.prisma.contact.upsert({
-      where: { waId: metaContact.wa_id },
+      where: { waId },
       update: {
         name: metaContact.profile.name || undefined,
       },
       create: {
-        waId: metaContact.wa_id,
-        phone: metaContact.wa_id,
+        waId,
+        phone: waId,
         name: metaContact.profile.name,
       },
     });

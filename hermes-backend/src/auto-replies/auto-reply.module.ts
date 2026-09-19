@@ -8,6 +8,7 @@ import { MetaModule } from '../meta/meta.module';
 import { HandoffModule } from '../handoff/handoff.module';
 import { LeadsModule } from '../leads/leads.module';
 import { ConversationGuardModule } from '../conversation-guard/conversation-guard.module';
+import { TasksModule } from '../tasks/tasks.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { ConversationGuardModule } from '../conversation-guard/conversation-guar
     HandoffModule,
     LeadsModule,
     ConversationGuardModule,
+    TasksModule,
     BullModule.registerQueue({
       name: AUTO_REPLY_QUEUE,
       defaultJobOptions: {

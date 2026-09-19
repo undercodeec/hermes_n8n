@@ -22,5 +22,4 @@ export class CreateCampaignDto {
   @IsString()
   @Length(1, 64)
   templateCategory?: string;
-
 }

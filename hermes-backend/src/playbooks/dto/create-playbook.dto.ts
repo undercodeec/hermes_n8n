@@ -1,9 +1,18 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsEnum, IsNumber, IsArray } from 'class-validator';
+import {
+  IsString,
+  IsOptional,
+  IsEnum,
+  IsNumber,
+  IsArray,
+} from 'class-validator';
 import { PlaybookType } from '@prisma/client';
 
 export class CreatePlaybookDto {
-  @ApiProperty({ description: 'Título del playbook', example: 'Manejo de objeción de precio' })
+  @ApiProperty({
+    description: 'Título del playbook',
+    example: 'Manejo de objeción de precio',
+  })
   @IsString()
   title: string;
 
@@ -16,12 +25,18 @@ export class CreatePlaybookDto {
   @IsEnum(PlaybookType)
   type?: PlaybookType;
 
-  @ApiPropertyOptional({ description: 'Triggers/condiciones para activar', type: [String] })
+  @ApiPropertyOptional({
+    description: 'Triggers/condiciones para activar',
+    type: [String],
+  })
   @IsOptional()
   @IsArray()
   triggers?: string[];
 
-  @ApiPropertyOptional({ description: 'Prioridad (mayor = más importante)', default: 0 })
+  @ApiPropertyOptional({
+    description: 'Prioridad (mayor = más importante)',
+    default: 0,
+  })
   @IsOptional()
   @IsNumber()
   priority?: number;

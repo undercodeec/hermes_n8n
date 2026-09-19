@@ -100,7 +100,10 @@ export class AuthService {
     }
     this.consumedCrmProofs.set(payload.jti, payload.exp);
 
-    const generatedPassword = await bcrypt.hash(randomBytes(32).toString('hex'), 12);
+    const generatedPassword = await bcrypt.hash(
+      randomBytes(32).toString('hex'),
+      12,
+    );
     const user = await this.prisma.user.upsert({
       where: { email: payload.sub },
       update: {
@@ -161,7 +164,9 @@ export class AuthService {
       .trim()
       .toLowerCase();
     if (!secret || secret.length < 32) {
-      throw new ServiceUnavailableException('La autenticación CRM no está configurada');
+      throw new ServiceUnavailableException(
+        'La autenticación CRM no está configurada',
+      );
     }
 
     const parts = proof.split('.');
@@ -175,14 +180,19 @@ export class AuthService {
     let header: { alg?: string; typ?: string };
     let payload: Partial<CrmProofPayload>;
     try {
-      header = JSON.parse(Buffer.from(encodedHeader, 'base64url').toString('utf8'));
-      payload = JSON.parse(Buffer.from(encodedPayload, 'base64url').toString('utf8'));
+      header = JSON.parse(
+        Buffer.from(encodedHeader, 'base64url').toString('utf8'),
+      );
+      payload = JSON.parse(
+        Buffer.from(encodedPayload, 'base64url').toString('utf8'),
+      );
     } catch {
       this.invalidCrmProof();
     }
 
     const now = Math.floor(Date.now() / 1000);
-    const email = typeof payload!.sub === 'string' ? payload!.sub.trim().toLowerCase() : '';
+    const email =
+      typeof payload!.sub === 'string' ? payload!.sub.trim().toLowerCase() : '';
     if (
       header!.alg !== 'HS256' ||
       header!.typ !== 'JWT' ||

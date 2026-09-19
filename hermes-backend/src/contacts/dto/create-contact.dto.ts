@@ -2,7 +2,10 @@ import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import { IsString, IsOptional, IsEmail } from 'class-validator';
 
 export class CreateContactDto {
-  @ApiProperty({ description: 'WhatsApp ID (número de teléfono)', example: '5491155556666' })
+  @ApiProperty({
+    description: 'WhatsApp ID (número de teléfono)',
+    example: '5491155556666',
+  })
   @IsString()
   waId: string;
 
@@ -11,7 +14,10 @@ export class CreateContactDto {
   @IsString()
   phone?: string;
 
-  @ApiPropertyOptional({ description: 'Nombre del contacto', example: 'Juan Pérez' })
+  @ApiPropertyOptional({
+    description: 'Nombre del contacto',
+    example: 'Juan Pérez',
+  })
   @IsOptional()
   @IsString()
   name?: string;

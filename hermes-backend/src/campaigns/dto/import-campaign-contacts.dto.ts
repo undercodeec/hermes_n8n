@@ -1,5 +1,12 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { ArrayMaxSize, IsArray, IsOptional, IsString, Length, ValidateNested } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsOptional,
+  IsString,
+  Length,
+  ValidateNested,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 import { CAMPAIGN_IMPORT_MAX_ROWS } from '../campaigns.constants';
 
@@ -21,7 +28,10 @@ export class CampaignContactImportRowDto {
 }
 
 export class ImportCampaignContactsDto {
-  @ApiProperty({ type: [CampaignContactImportRowDto], maxItems: CAMPAIGN_IMPORT_MAX_ROWS })
+  @ApiProperty({
+    type: [CampaignContactImportRowDto],
+    maxItems: CAMPAIGN_IMPORT_MAX_ROWS,
+  })
   @IsArray()
   @ArrayMaxSize(CAMPAIGN_IMPORT_MAX_ROWS)
   @ValidateNested({ each: true })

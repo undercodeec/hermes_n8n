@@ -13,19 +13,33 @@ describe('ConversationGuardService', () => {
     const guard = new ConversationGuardService(config);
 
     await expect(
-      guard.inspect('contact-1', 'La página que ustedes desarrollaron no carga y muestra un error.'),
-    ).resolves.toEqual(
-      expect.objectContaining({ action: 'SUPPORT' }),
-    );
+      guard.inspect(
+        'contact-1',
+        'La página que ustedes desarrollaron no carga y muestra un error.',
+      ),
+    ).resolves.toEqual(expect.objectContaining({ action: 'SUPPORT' }));
     expect(
-      (guard as any).isSupportRequest('mi sitio web no carga y muestra un error'),
+      (guard as any).isSupportRequest(
+        'mi sitio web no carga y muestra un error',
+      ),
     ).toBe(false);
   });
 
   it('rejects an unsafe generated response before it reaches WhatsApp', () => {
     const guard = new ConversationGuardService(config);
-    expect(guard.isSafeGeneratedResponse('Claro, podemos ayudarte con ese servicio.')).toBe(true);
-    expect(guard.isSafeGeneratedResponse('Te enviaré contenido porno.')).toBe(false);
+    expect(
+      guard.isSafeGeneratedResponse(
+        'Claro, podemos ayudarte con ese servicio.',
+      ),
+    ).toBe(true);
+    expect(guard.isSafeGeneratedResponse('Te enviaré contenido porno.')).toBe(
+      false,
+    );
+    expect(
+      guard.isSafeGeneratedResponse(
+        '{\n  "response": "Hola, Jonathan. ¡Claro que',
+      ),
+    ).toBe(false);
   });
 
   it('allows a normal commercial message when the Redis counters are below their limits', async () => {
@@ -33,7 +47,10 @@ describe('ConversationGuardService', () => {
     const transaction = {
       incr: jest.fn(),
       expire: jest.fn(),
-      exec: jest.fn().mockResolvedValue([[null, 1], [null, 1]]),
+      exec: jest.fn().mockResolvedValue([
+        [null, 1],
+        [null, 1],
+      ]),
     };
     jest.spyOn(guard as any, 'redis').mockResolvedValue({
       multi: jest.fn().mockReturnValue(transaction),

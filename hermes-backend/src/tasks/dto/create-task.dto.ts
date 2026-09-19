@@ -3,7 +3,10 @@ import { IsString, IsOptional, IsEnum, IsDateString } from 'class-validator';
 import { TaskType } from '@prisma/client';
 
 export class CreateTaskDto {
-  @ApiProperty({ description: 'Título de la tarea', example: 'Llamar para seguimiento' })
+  @ApiProperty({
+    description: 'Título de la tarea',
+    example: 'Llamar para seguimiento',
+  })
   @IsString()
   title: string;
 

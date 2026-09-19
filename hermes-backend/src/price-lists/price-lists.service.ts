@@ -32,7 +32,8 @@ export class PriceListsService {
       where: { id },
       include: { product: true },
     });
-    if (!priceList) throw new NotFoundException('Lista de precios no encontrada');
+    if (!priceList)
+      throw new NotFoundException('Lista de precios no encontrada');
     return priceList;
   }
 
