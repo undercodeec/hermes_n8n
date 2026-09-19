@@ -9,6 +9,7 @@ import { CampaignsModule } from '../campaigns/campaigns.module';
 import { AutoReplyModule } from '../auto-replies/auto-reply.module';
 import { ConversationGuardModule } from '../conversation-guard/conversation-guard.module';
 import { AdvertisingModule } from '../advertising/advertising.module';
+import { ConversationsModule } from '../conversations/conversations.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { AdvertisingModule } from '../advertising/advertising.module';
     AutoReplyModule,
     ConversationGuardModule,
     AdvertisingModule,
+    ConversationsModule,
   ],
   controllers: [WebhookController],
   providers: [WebhookService],

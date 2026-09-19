@@ -87,16 +87,65 @@ describe('HermesService commercial contract', () => {
     });
 
     const systemMessage = post.mock.calls[0][1].messages[0].content as string;
-    expect(systemMessage).toContain('¿A qué se dedica tu negocio?');
+    expect(systemMessage).toContain('¿A qué se dedica su negocio?');
     expect(systemMessage).toContain(
       'no abras otra ronda de descubrimiento sobre contacto o interacciones',
     );
     expect(systemMessage).toContain(
       'su petición ya autoriza iniciar la derivación',
     );
+    expect(systemMessage).toContain(
+      'Una pregunta de descubrimiento anterior no es una obligación',
+    );
+    expect(systemMessage).toContain(
+      'Distinga siempre dos conversaciones diferentes sobre pagos',
+    );
     expect(systemMessage).not.toContain(
       'Para una web, averigua primero su objetivo',
     );
+  });
+
+  it('passes the backend conversational policy and the two payment intents to the model', async () => {
+    const { service, post } = setup(
+      JSON.stringify({
+        response:
+          'El equipo debe confirmar las condiciones de pago del proyecto.',
+        detectedIntent: 'consulta_pago_proyecto',
+        suggestedTags: [],
+        nextAction: 'sin_accion',
+        commercialProfile: {},
+      }),
+    );
+
+    const guidance = {
+      currentTopic: 'project_payment',
+      directAnswerRequired: true,
+      allowDiscoveryQuestion: false,
+      topicShift: true,
+      recentQuestionTopics: ['store_payment'],
+      sufficientContext: true,
+      paymentContext: 'PROJECT_PAYMENT' as const,
+    };
+    const result = await service.generateResponse({
+      messageContent: '¿Puedo pagar 50/50?',
+      conversationHistory: [],
+      currentIntent: 'consulta_pago_proyecto',
+      conversationGuidance: guidance,
+    });
+
+    const body = post.mock.calls[0][1];
+    const systemMessage = body.messages[0].content as string;
+    expect(systemMessage).toContain('Política conversacional calculada');
+    expect(systemMessage).toContain('"allowDiscoveryQuestion":false');
+    expect(
+      body.response_format.json_schema.schema.properties.detectedIntent.enum,
+    ).toEqual(
+      expect.arrayContaining([
+        'consulta_cobro_tienda',
+        'consulta_pago_proyecto',
+      ]),
+    );
+    expect(result.detectedIntent).toBe('consulta_pago_proyecto');
   });
 
   it('does not ask again for a WhatsApp number already known by the backend', async () => {

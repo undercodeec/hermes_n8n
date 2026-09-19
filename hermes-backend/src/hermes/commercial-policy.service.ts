@@ -1,10 +1,12 @@
 import { Injectable } from '@nestjs/common';
+import {
+  CommercialProfile,
+  ConversationGuidance,
+  PaymentContext,
+} from './dto/hermes-request.dto';
 
 export type PendingQuestion =
-  | 'price'
-  | 'timeline'
-  | 'proposal'
-  | 'availability';
+  'price' | 'timeline' | 'proposal' | 'availability';
 
 export type CommercialPolicyDecision = {
   intent?: string;
@@ -13,6 +15,12 @@ export type CommercialPolicyDecision = {
   requestsCall: boolean;
   requestedCallAt?: Date;
   hasRelativeCallTime: boolean;
+  guidance: ConversationGuidance;
+};
+
+type PolicyContext = {
+  conversationHistory?: Array<{ role: string; content: string }>;
+  commercialProfile?: CommercialProfile;
 };
 
 @Injectable()
@@ -21,6 +29,7 @@ export class CommercialPolicyService {
     content: string,
     receivedAt: Date,
     previousPending: string[] = [],
+    context: PolicyContext = {},
   ): CommercialPolicyDecision {
     const normalized = this.normalize(content);
     const pending = new Set<PendingQuestion>(
@@ -56,21 +65,95 @@ export class CommercialPolicyService {
     const requestedCallAt = hasRelativeCallTime
       ? new Date(receivedAt.getTime() + relativeMinutes * 60_000)
       : undefined;
+    const paymentContext = this.paymentContext(normalized);
+    const currentTopic = this.currentTopic(normalized, paymentContext);
+    const recentQuestionTopics = this.recentQuestionTopics(
+      context.conversationHistory || [],
+    );
+    const previousQuestionTopic = recentQuestionTopics.at(-1);
+    const directAnswerRequired = [
+      'price',
+      'timeline',
+      'infrastructure',
+      'renewal',
+      'store_payment',
+      'project_payment',
+      'technical_explanation',
+    ].includes(currentTopic);
+    const topicShift = Boolean(
+      previousQuestionTopic &&
+      currentTopic !== 'general' &&
+      currentTopic !== previousQuestionTopic &&
+      !this.looksLikeAnswerTo(normalized, previousQuestionTopic),
+    );
+    const sufficientContext = this.hasSufficientContext(
+      context.commercialProfile,
+    );
+    const allowDiscoveryQuestion =
+      !requestsHuman &&
+      !(requestsCall || hasRelativeCallTime) &&
+      !directAnswerRequired &&
+      !topicShift &&
+      !sufficientContext;
 
     return {
       intent: requestsHuman
         ? 'solicitud_humano'
         : requestsCall || hasRelativeCallTime
           ? 'agendar_cita'
-          : pending.has('price')
-            ? 'consulta_precio'
-            : undefined,
+          : paymentContext === 'PROJECT_PAYMENT'
+            ? 'consulta_pago_proyecto'
+            : paymentContext === 'STORE_CHECKOUT'
+              ? 'consulta_cobro_tienda'
+              : pending.has('price')
+                ? 'consulta_precio'
+                : undefined,
       pendingQuestions: [...pending],
       requestsHuman,
       requestsCall: requestsCall || hasRelativeCallTime,
       requestedCallAt,
       hasRelativeCallTime,
+      guidance: {
+        currentTopic,
+        directAnswerRequired,
+        allowDiscoveryQuestion,
+        topicShift,
+        recentQuestionTopics,
+        sufficientContext,
+        ...(paymentContext ? { paymentContext } : {}),
+      },
     };
+  }
+
+  enforceQuestionPolicy(
+    response: string,
+    decision: CommercialPolicyDecision,
+  ): string {
+    const questions = response.match(/¿[^?]{2,300}\?/gu) || [];
+    if (!questions.length) return response;
+
+    const blocked = new Set<string>();
+    for (const question of questions) {
+      const topic = this.questionTopic(this.normalize(question));
+      const repeatsRecentTopic =
+        topic !== 'general' &&
+        decision.guidance.recentQuestionTopics.includes(topic);
+      const isDiscovery = this.isDiscoveryTopic(topic);
+      if (
+        repeatsRecentTopic ||
+        (!decision.guidance.allowDiscoveryQuestion && isDiscovery)
+      ) {
+        blocked.add(question);
+      }
+    }
+    if (!blocked.size) return response;
+
+    const filtered = [...blocked]
+      .reduce((text, question) => text.replace(question, ''), response)
+      .replace(/\s+([.,;:])/g, '$1')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    return filtered || response;
   }
 
   remainingPendingQuestions(
@@ -116,6 +199,151 @@ export class CommercialPolicyService {
     const amount = /^\d+$/.test(match[1]) ? Number(match[1]) : words[match[1]];
     if (!Number.isSafeInteger(amount) || amount <= 0) return undefined;
     return match[2].startsWith('hora') ? amount * 60 : amount;
+  }
+
+  private paymentContext(value: string): PaymentContext | undefined {
+    const projectPayment = this.matches(value, [
+      /\b(?:50\s*\/\s*50|50\s*%[^.]{0,35}50\s*%)\b/,
+      /\b(?:anticipo|abono inicial|entrada|cuotas?|saldo)\b.{0,70}\b(?:proyecto|plan|servicio|desarrollo|entrega|contrato)\b/,
+      /\b(?:pagar|pago|financiar)\b.{0,45}\b(?:proyecto|plan|servicio|desarrollo|ustedes|undercode)\b/,
+      /\b(?:proyecto|plan|servicio|desarrollo)\b.{0,45}\b(?:pagar|pago|anticipo|cuotas?|saldo)\b/,
+    ]);
+    if (projectPayment) return 'PROJECT_PAYMENT';
+
+    const storePayment = this.matches(value, [
+      /\b(?:mis clientes|compradores?|usuarios?)\b.{0,65}\b(?:pagar|pagos?|tarjeta|transferencia|paypal|stripe|pasarela)\b/,
+      /\b(?:pasarela|checkout|carrito|cobrar online|pago seguro)\b/,
+      /\b(?:tarjetas?|transferencias?|paypal|stripe)\b.{0,55}\b(?:tienda|web|compras?|clientes?)\b/,
+      /\b(?:tienda|web|compras?|clientes?)\b.{0,55}\b(?:tarjetas?|transferencias?|paypal|stripe|pagar)\b/,
+    ]);
+    if (storePayment) return 'STORE_CHECKOUT';
+    if (
+      /\b(?:forma|metodo|opcion) de pago\b|\bcomo (?:se )?paga\b/.test(value)
+    ) {
+      return 'UNDETERMINED';
+    }
+    return undefined;
+  }
+
+  private currentTopic(value: string, paymentContext?: PaymentContext): string {
+    if (paymentContext === 'PROJECT_PAYMENT') return 'project_payment';
+    if (paymentContext === 'STORE_CHECKOUT') return 'store_payment';
+    if (
+      /\b(?:renovacion|renovar|segundo ano|despues del primer ano)\b/.test(
+        value,
+      )
+    )
+      return 'renewal';
+    if (/\b(?:hosting|dominio|ssl|https|correo corporativo)\b/.test(value))
+      return 'infrastructure';
+    if (/\b(?:cuanto (?:cuesta|vale)|precio|coste|costo|cotiz)\b/.test(value))
+      return 'price';
+    if (
+      /\b(?:cuanto (?:tarda|demora)|plazo|tiempo de entrega|para cuando)\b/.test(
+        value,
+      )
+    )
+      return 'timeline';
+    if (/\b(?:que es|como funciona|que significa|para que sirve)\b/.test(value))
+      return 'technical_explanation';
+    if (/\b(?:catalogo|ver|mostrar)\b.{0,35}\bproductos?\b/.test(value))
+      return 'store_goal';
+    return 'general';
+  }
+
+  private recentQuestionTopics(
+    history: Array<{ role: string; content: string }>,
+  ): string[] {
+    const topics = history
+      .slice(-12)
+      .filter(
+        (message) =>
+          message.role === 'assistant' && /[?¿]/.test(message.content),
+      )
+      .map((message) => this.questionTopic(this.normalize(message.content)))
+      .filter((topic) => topic !== 'general');
+    return topics.slice(-6);
+  }
+
+  private questionTopic(value: string): string {
+    if (
+      /\b(?:forma|metodo|medio|pasarela).{0,30}\b(?:pago|cobro)|\bcomo.{0,25}cobrar/.test(
+        value,
+      )
+    )
+      return 'store_payment';
+    if (/\bcuantos?.{0,15}productos?\b/.test(value)) return 'product_count';
+    if (/\b(?:envios?|entregas?|zonas?)\b/.test(value)) return 'shipping';
+    if (/\b(?:inventario|stock)\b/.test(value)) return 'inventory';
+    if (/\b(?:dominio|hosting)\b/.test(value)) return 'domain';
+    if (/\b(?:presupuesto|inversion)\b/.test(value)) return 'budget';
+    if (/\b(?:plazo|cuando|tiempo)\b/.test(value)) return 'timeline';
+    if (/\b(?:correo|email)\b/.test(value)) return 'email';
+    if (/\b(?:telefono|numero|whatsapp)\b/.test(value)) return 'phone';
+    if (
+      /\b(?:que|cual).{0,25}(?:tipo de )?(?:proyecto|servicio|solucion)\b/.test(
+        value,
+      )
+    )
+      return 'service';
+    if (/\b(?:a que se dedica|actividad|sector|negocio)\b/.test(value))
+      return 'business';
+    if (/\b(?:objetivo|lograr|conseguir|necesita)\b/.test(value)) return 'goal';
+    if (/\b(?:vender online|comprar|catalogo)\b/.test(value))
+      return 'store_goal';
+    return 'general';
+  }
+
+  private isDiscoveryTopic(topic: string): boolean {
+    return [
+      'store_payment',
+      'product_count',
+      'shipping',
+      'inventory',
+      'domain',
+      'budget',
+      'timeline',
+      'email',
+      'phone',
+      'service',
+      'business',
+      'goal',
+      'store_goal',
+    ].includes(topic);
+  }
+
+  private looksLikeAnswerTo(value: string, topic: string): boolean {
+    const patterns: Record<string, RegExp> = {
+      store_payment:
+        /\b(?:tarjeta|transferencia|paypal|stripe|efectivo|contra entrega|aun no|todavia no)\b/,
+      product_count: /\b\d+\s*(?:productos?|articulos?)\b/,
+      shipping: /\b(?:envio|entrega|nacional|local|ciudad|provincia|pais)\b/,
+      inventory: /\b(?:inventario|stock|existencias)\b/,
+      domain: /\b(?:dominio|hosting|ya tengo|no tengo)\b/,
+      budget: /\b(?:usd|dolares?|euros?|presupuesto|no se|aun no)\b|[$€]\s*\d/,
+      timeline:
+        /\b\d+\s*(?:dias?|semanas?|meses?)\b|\b(?:urgente|sin prisa|fecha)\b/,
+      business: /\b(?:vendo|ofrezco|reparo|servicio|tienda|empresa|negocio)\b/,
+      goal: /\b(?:quiero|necesito|busco|objetivo|para)\b/,
+    };
+    return patterns[topic]?.test(value) ?? false;
+  }
+
+  private hasSufficientContext(profile?: CommercialProfile): boolean {
+    if (!profile?.service || !profile.need) return false;
+    return Boolean(
+      profile.sector ||
+      profile.company ||
+      profile.currentSituation ||
+      profile.users ||
+      profile.productCount ||
+      profile.paymentNeeds ||
+      profile.shippingNeeds ||
+      profile.inventoryNeeds ||
+      profile.integrations ||
+      profile.timeline ||
+      profile.location,
+    );
   }
 
   private matches(value: string, patterns: RegExp[]): boolean {

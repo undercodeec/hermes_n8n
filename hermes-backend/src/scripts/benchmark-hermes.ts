@@ -144,6 +144,72 @@ const scenarios: Scenario[] = [
     context: 'No hay precios autorizados.',
   },
   {
+    id: 'store_catalog_goal',
+    messages: [
+      {
+        role: 'user',
+        content: 'Quiero una página para que las personas vean mis productos.',
+      },
+    ],
+    context:
+      'Todavía no se sabe si desea vender y cobrar en línea o solo mostrar un catálogo.',
+  },
+  {
+    id: 'hosting_topic_shift',
+    messages: [
+      {
+        role: 'assistant',
+        content: '¿Qué método de pago usarán sus compradores?',
+      },
+      {
+        role: 'user',
+        content: 'Antes explíqueme qué es el hosting y qué incluye.',
+      },
+    ],
+    context:
+      'Responda la consulta actual. No repita la pregunta sobre métodos de pago.',
+  },
+  {
+    id: 'store_gateway',
+    messages: [
+      {
+        role: 'user',
+        content:
+          '¿Cómo recibiría el dinero cuando mis clientes paguen con tarjeta?',
+      },
+    ],
+    context:
+      'Explique el flujo general sin prometer proveedor, aprobación, liquidación ni comisiones. Responda sin abrir otra pregunta de descubrimiento.',
+  },
+  {
+    id: 'project_50_50',
+    messages: [
+      {
+        role: 'user',
+        content: '¿Puedo pagar el proyecto 50% al inicio y 50% al entregar?',
+      },
+    ],
+    context:
+      'No hay condiciones de pago del proyecto autorizadas. No confunda esta consulta con una pasarela de tienda y responda sin abrir otra pregunta de descubrimiento.',
+  },
+  {
+    id: 'washer_sufficient',
+    messages: [
+      {
+        role: 'user',
+        content: 'Necesito una web para promocionar mi negocio.',
+      },
+      { role: 'assistant', content: '¿A qué se dedica su negocio?' },
+      {
+        role: 'user',
+        content:
+          'Reparamos lavadoras, vamos a domicilio y también vendemos repuestos.',
+      },
+    ],
+    context:
+      'El alcance ya es suficiente para valorar. No abra otra ronda de descubrimiento.',
+  },
+  {
     id: 'provider_error',
     messages: [{ role: 'user', content: 'Necesito una web.' }],
     context:
@@ -154,6 +220,7 @@ const scenarios: Scenario[] = [
 const rates: Record<string, { input: number; output: number }> = {
   'gemini-2.5-flash': { input: 0.3, output: 2.5 },
   'gemini-2.5-pro': { input: 1.25, output: 10 },
+  'gemini-3.8-flash': { input: 0.75, output: 3.75 },
 };
 
 const expectedIntents: Record<string, string[]> = {
@@ -170,6 +237,11 @@ const expectedIntents: Record<string, string[]> = {
   changed_scope: ['consulta_servicio', 'cotizacion'],
   human: ['solicitud_humano'],
   unknown_price: ['consulta_precio', 'cotizacion'],
+  store_catalog_goal: ['consulta_servicio'],
+  hosting_topic_shift: ['info_general', 'consulta_servicio'],
+  store_gateway: ['consulta_cobro_tienda'],
+  project_50_50: ['consulta_pago_proyecto'],
+  washer_sufficient: ['consulta_servicio', 'cotizacion'],
 };
 
 function semanticPass(
@@ -230,6 +302,36 @@ function semanticPass(
       return (
         priceHandled && !/(?:si|correcto|confirmado).{0,20}500/.test(normalized)
       );
+    case 'store_catalog_goal':
+      return /(?:vender|cobrar|comprar).{0,50}(?:catalogo|mostrar|exhibir)|(?:catalogo|mostrar|exhibir).{0,50}(?:vender|cobrar|comprar)/.test(
+        normalized,
+      );
+    case 'hosting_topic_shift':
+      return (
+        /hosting|servidor|alojamiento/.test(normalized) &&
+        !/que metodo|forma de pago|como cobrar/.test(normalized)
+      );
+    case 'store_gateway':
+      return (
+        /cliente|comprador|pago|dinero|cuenta/.test(normalized) &&
+        !/sin comision|aprobacion garantizada|todos los paises/.test(
+          normalized,
+        ) &&
+        !response.includes('?')
+      );
+    case 'project_50_50':
+      return (
+        /confirm|equipo|condicion|anticipo|proyecto/.test(normalized) &&
+        !/pasarela|compradores|carrito/.test(normalized) &&
+        !response.includes('?')
+      );
+    case 'washer_sufficient':
+      return (
+        /lavadoras|domicilio|repuestos/.test(normalized) &&
+        !/(?:cual es su publico|en que zona|que presupuesto|que funcionalidades)/.test(
+          normalized,
+        )
+      );
     default:
       return true;
   }
@@ -276,6 +378,8 @@ function schema() {
               'info_general',
               'consulta_servicio',
               'consulta_precio',
+              'consulta_cobro_tienda',
+              'consulta_pago_proyecto',
               'cotizacion',
               'agendar_cita',
               'solicitud_humano',
@@ -390,6 +494,12 @@ async function run() {
     { cwd: resolve(process.cwd(), '..'), encoding: 'utf8' },
   );
   const profiles = [
+    {
+      name: 'E_recommended_model_improved',
+      model: 'gemini-3.8-flash',
+      prompt: promptFromSource(currentSource),
+      structured: true,
+    },
     {
       name: 'A_current_model_legacy',
       model: 'gemini-2.5-flash',

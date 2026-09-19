@@ -11,6 +11,7 @@ import { AutoReplyService } from '../auto-replies/auto-reply.service';
 import { ConversationGuardService } from '../conversation-guard/conversation-guard.service';
 import { AdvertisingService } from '../advertising/advertising.service';
 import { normalizeWhatsAppId } from '../campaigns/phone-normalizer';
+import { ConversationEventsService } from '../conversations/conversation-events.service';
 import {
   MetaWebhookDto,
   MetaWebhookMessage,
@@ -41,6 +42,7 @@ export class WebhookService {
     private readonly autoReplies: AutoReplyService,
     private readonly conversationGuard: ConversationGuardService,
     private readonly advertisingService: AdvertisingService,
+    private readonly conversationEvents: ConversationEventsService,
   ) {}
 
   /**
@@ -172,6 +174,15 @@ export class WebhookService {
       await this.prisma.conversation.update({
         where: { id: conversation.id },
         data: { updatedAt: new Date() },
+      });
+      this.conversationEvents.publishCustomerMessage({
+        messageId: inboundMessage.id,
+        conversationId: conversation.id,
+        contactId: contact.id,
+        contactName: contact.name || contact.waId || 'Cliente',
+        content: messageContent || `[${messageType}]`,
+        messageType,
+        createdAt: (inboundMessage.createdAt || new Date()).toISOString(),
       });
 
       // Best-effort: an attribution outage must not interrupt the existing
