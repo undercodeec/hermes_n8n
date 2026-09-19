@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import {
   CommercialProfile,
   ConversationGuidance,
+  HermesResponseDto,
   PaymentContext,
 } from './dto/hermes-request.dto';
 
@@ -89,12 +90,48 @@ export class CommercialPolicyService {
     const sufficientContext = this.hasSufficientContext(
       context.commercialProfile,
     );
+    const commercialScope = this.normalize(
+      [
+        context.commercialProfile?.service,
+        context.commercialProfile?.need,
+        content,
+      ]
+        .filter(Boolean)
+        .join(' '),
+    );
+    const complexValuation =
+      sufficientContext &&
+      /\b(?:software a medida|sistema personalizado|integracion(?:es)?|automatizacion(?:es)?|aplicacion movil)\b/.test(
+        commercialScope,
+      );
+    const requiredClarification = this.requiresCatalogClarification(
+      normalized,
+      context.conversationHistory || [],
+      context.commercialProfile,
+    )
+      ? 'CATALOG_VS_ONLINE_SALES'
+      : undefined;
+    const allowMeetingOffer =
+      requestsHuman ||
+      requestsCall ||
+      complexValuation ||
+      /\b(?:reunion|asesor(?:a|ia)?|especialista|videollamada|llamada)\b/.test(
+        normalized,
+      );
+    const allowPlanRecommendation =
+      !requiredClarification &&
+      this.hasPlanRecommendationBasis(
+        normalized,
+        context.conversationHistory || [],
+        context.commercialProfile,
+        sufficientContext,
+      );
     const allowDiscoveryQuestion =
       !requestsHuman &&
       !(requestsCall || hasRelativeCallTime) &&
       !directAnswerRequired &&
       !topicShift &&
-      !sufficientContext;
+      (!sufficientContext || Boolean(requiredClarification));
 
     return {
       intent: requestsHuman
@@ -120,8 +157,56 @@ export class CommercialPolicyService {
         topicShift,
         recentQuestionTopics,
         sufficientContext,
+        ...(requiredClarification ? { requiredClarification } : {}),
+        allowMeetingOffer,
+        allowPlanRecommendation,
         ...(paymentContext ? { paymentContext } : {}),
       },
+    };
+  }
+
+  enforceResponsePolicy(
+    response: HermesResponseDto,
+    decision: CommercialPolicyDecision,
+  ): HermesResponseDto {
+    if (decision.guidance.requiredClarification === 'CATALOG_VS_ONLINE_SALES') {
+      const profile = { ...response.commercialProfile };
+      delete profile.recommendedPlan;
+      delete profile.paymentNeeds;
+      if (
+        profile.service &&
+        /\b(?:tienda online|ecommerce|comercio electronico)\b/.test(
+          this.normalize(profile.service),
+        )
+      ) {
+        delete profile.service;
+      }
+      profile.need =
+        'Mostrar productos en internet; falta confirmar catálogo o venta online';
+      return {
+        ...response,
+        response:
+          'Para recomendarle la solución adecuada, necesito confirmar una diferencia importante: ¿desea que sus clientes solamente vean el catálogo o que también puedan comprar y pagar directamente en la página?',
+        detectedIntent: 'consulta_servicio',
+        nextAction: 'continuar_descubrimiento',
+        suggestedTags: undefined,
+        commercialProfile: profile,
+      };
+    }
+
+    let content = this.enforceQuestionPolicy(response.response, decision);
+    if (!decision.guidance.allowMeetingOffer) {
+      content = this.stripUnrequestedMeetingOffer(content);
+    }
+    return {
+      ...response,
+      response: content,
+      ...(!decision.guidance.allowMeetingOffer &&
+      ['proponer_reunion', 'solicitar_confirmacion_reunion'].includes(
+        response.nextAction || '',
+      )
+        ? { nextAction: 'sin_accion' }
+        : {}),
     };
   }
 
@@ -223,6 +308,95 @@ export class CommercialPolicyService {
       return 'UNDETERMINED';
     }
     return undefined;
+  }
+
+  private requiresCatalogClarification(
+    current: string,
+    history: Array<{ role: string; content: string }>,
+    profile?: CommercialProfile,
+  ): boolean {
+    const customerHistory = history
+      .filter((message) => message.role !== 'assistant')
+      .map((message) => this.normalize(message.content));
+    const discoveryEvidence = [
+      ...customerHistory,
+      current,
+      this.normalize(profile?.need || ''),
+    ].join(' ');
+    const wantsProductsVisible =
+      /\b(?:ver|mostrar|exhibir|publicar|catalogo)\b.{0,45}\bproductos?\b/.test(
+        discoveryEvidence,
+      ) ||
+      /\bproductos?\b.{0,45}\b(?:ver|mostrar|exhibir|publicar|catalogo)\b/.test(
+        discoveryEvidence,
+      );
+    if (!wantsProductsVisible) return false;
+
+    const customerEvidence = [...customerHistory, current].join(' ');
+    return !this.matches(customerEvidence, [
+      /\b(?:vender|comprar|cobrar|pagar|pago)\b.{0,45}\b(?:online|linea|pagina|web|tienda|productos?)\b/,
+      /\b(?:online|linea|pagina|web|tienda|productos?)\b.{0,45}\b(?:vender|comprar|cobrar|pagar|pago)\b/,
+      /\b(?:solo|unicamente)\b.{0,35}\b(?:catalogo|mostrar|exhibir|ver)\b/,
+      /\b(?:catalogo|mostrar|exhibir|ver)\b.{0,35}\b(?:sin pagos?|sin vender|solamente|unicamente)\b/,
+    ]);
+  }
+
+  private stripUnrequestedMeetingOffer(response: string): string {
+    const parts = response.match(/[^.!?¿]+(?:[.!?]|$)/gu) || [response];
+    const filtered = parts.filter(
+      (part) =>
+        !/\b(?:coordinar|agendar|programar)\b.{0,70}\b(?:reunion|llamada|conversacion)\b|\b(?:reunion|llamada|conversacion)\b.{0,70}\b(?:equipo|asesor|especialista)\b|\b(?:asesor|especialista)\b.{0,70}\b(?:revisar|contactar|conversar|propuesta)\b/i.test(
+          this.normalize(part),
+        ),
+    );
+    const content = filtered
+      .join(' ')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    return content || response;
+  }
+
+  private hasPlanRecommendationBasis(
+    current: string,
+    history: Array<{ role: string; content: string }>,
+    profile: CommercialProfile | undefined,
+    sufficientContext: boolean,
+  ): boolean {
+    const customerEvidence = [
+      ...history
+        .filter((message) => message.role !== 'assistant')
+        .map((message) => this.normalize(message.content)),
+      current,
+      this.normalize(profile?.service || ''),
+      this.normalize(profile?.need || ''),
+      this.normalize(profile?.productCount || ''),
+      this.normalize(profile?.paymentNeeds || ''),
+      this.normalize(profile?.shippingNeeds || ''),
+      this.normalize(profile?.inventoryNeeds || ''),
+      this.normalize(profile?.corporateEmailNeeds || ''),
+    ].join(' ');
+    const isStore =
+      /\b(?:tienda online|ecommerce|comercio electronico|carrito|checkout|vender online|venta online|cobrar online|pagar online)\b/.test(
+        customerEvidence,
+      );
+    if (!isStore) return sufficientContext;
+
+    const hasProductVolume =
+      Boolean(profile?.productCount) ||
+      /\b\d+(?:\s*(?:a|-|hasta)\s*\d+)?\s*(?:productos?|articulos?)\b/.test(
+        customerEvidence,
+      );
+    const hasSecondStoreRequirement =
+      Boolean(
+        profile?.paymentNeeds ||
+        profile?.shippingNeeds ||
+        profile?.inventoryNeeds ||
+        profile?.corporateEmailNeeds,
+      ) ||
+      /\b(?:cobrar|pagar|pagos?|tarjeta|transferencia|paypal|stripe|pasarela|envios?|entregas?|inventario|stock|correos? corporativos?)\b/.test(
+        customerEvidence,
+      );
+    return hasProductVolume && hasSecondStoreRequirement;
   }
 
   private currentTopic(value: string, paymentContext?: PaymentContext): string {

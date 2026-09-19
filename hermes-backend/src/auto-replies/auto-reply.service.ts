@@ -187,6 +187,7 @@ export class AutoReplyService {
         hasEmail: Boolean(conversation.contact.email),
       },
       conversationId: data.conversationId,
+      correlationId: inbound.id,
       currentIntent: policy.intent,
       conversationGuidance: policy.guidance,
       pendingQuestions: policy.pendingQuestions,
@@ -206,9 +207,9 @@ export class AutoReplyService {
         response.response,
       ),
     };
-    response.response = this.commercialPolicy.enforceQuestionPolicy(
-      response.response,
-      policy,
+    Object.assign(
+      response,
+      this.commercialPolicy.enforceResponsePolicy(response, policy),
     );
 
     if (!this.conversationGuard.isSafeGeneratedResponse(response.response)) {
@@ -354,6 +355,15 @@ export class AutoReplyService {
       JSON.stringify({
         event: 'auto_reply_sent',
         conversationId: data.conversationId,
+        correlationId: inbound.id,
+        detectedIntent: response.detectedIntent,
+        suggestedAction: response.nextAction,
+        executedAction: shouldHandoff
+          ? 'HUMAN_HANDOFF_CREATED_AND_MESSAGE_SENT'
+          : response.nextAction === 'solicitar_cotizacion_humana'
+            ? 'QUOTE_TASK_CREATED_AND_MESSAGE_SENT'
+            : 'MESSAGE_SENT',
+        outputValidation: 'passed',
         latencyMs,
       }),
     );

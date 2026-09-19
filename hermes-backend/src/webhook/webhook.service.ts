@@ -175,7 +175,7 @@ export class WebhookService {
         where: { id: conversation.id },
         data: { updatedAt: new Date() },
       });
-      this.conversationEvents.publishCustomerMessage({
+      await this.conversationEvents.publishCustomerMessage({
         messageId: inboundMessage.id,
         conversationId: conversation.id,
         contactId: contact.id,

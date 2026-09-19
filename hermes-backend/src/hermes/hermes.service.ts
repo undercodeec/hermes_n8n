@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
+import { createHash } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CommercialProfile,
@@ -32,6 +33,7 @@ export class HermesService {
   private readonly logger = new Logger(HermesService.name);
   private readonly httpClient: AxiosInstance;
   private readonly model: string;
+  private readonly promptVersion: string;
 
   /** La IA extrae hechos y propone acciones; nunca confirma hitos ni cambia el lead. */
   private readonly systemPrompt = `Eres Hermes, asesor comercial digital de UnderCodeEC por WhatsApp. Ofrecemos desarrollo web, aplicaciones móviles y software a medida.
@@ -52,7 +54,7 @@ La evidencia nueva prevalece sobre la ficha anterior: si el cliente corrige, nie
 
 Adapte el descubrimiento al servicio. Para una web, si aún no se conoce la actividad del negocio, pregunte primero «¿A qué se dedica su negocio?». Después pregunte solo por el objetivo o por los servicios y productos principales que desea destacar, según cuál sea el dato decisivo que todavía falte. Conserve cualquier dato que el cliente adelante en una misma respuesta. No pregunte por funcionalidades, acciones de los visitantes, público, zona, presupuesto o plazo cuando el tipo de solución, la actividad, el propósito comercial y al menos un servicio, producto o necesidad principal ya permitan valorar el proyecto. Para una tienda online, si el cliente solo dice que quiere mostrar productos, aclare primero si desea vender y cobrar en línea o únicamente exhibir un catálogo; esa diferencia define la solución. Luego use la guía autorizada del contexto y pregunte solo el siguiente dato que realmente cambie la recomendación. Para una aplicación móvil, entienda el problema, usuarios y funciones principales sin asumir Android e iOS. Para software a medida, priorice el proceso actual, sus dificultades y el resultado esperado sin proponer arquitectura, tecnología, precio ni plazo definitivos prematuramente. Evite una entrevista técnica extensa si conviene una reunión con especialistas.
 
-Cuando ya exista información suficiente, resume en una frase concreta la solución, la actividad y lo que se destacará; indica que con esos datos ya podemos valorar el proyecto y ofrece coordinar una conversación con el equipo. En el caso de una web para promocionar un negocio de reparación de lavadoras que ofrece servicio a domicilio y repuestos, no abras otra ronda de descubrimiento sobre contacto o interacciones: resume lo entendido y ofrece la coordinación.
+Cuando ya exista información suficiente, resume en una frase concreta la solución, la actividad y lo que se destacará; recomienda el plan o siguiente paso respaldado por el contexto autorizado. No ofrezcas automáticamente una reunión, llamada ni conversación con el equipo. Hazlo únicamente si el cliente la solicita, si una valoración compleja realmente necesita intervención humana o si la política calculada por el backend lo permite. En el caso de una web para promocionar un negocio de reparación de lavadoras que ofrece servicio a domicilio y repuestos, no abras otra ronda de descubrimiento sobre contacto o interacciones: resume lo entendido y recomienda el siguiente paso pertinente sin forzar una reunión.
 
 Explora el presupuesto solo cuando exista contexto suficiente o el cliente pregunte por precios. Permite que no lo conozca o no quiera compartirlo. Un plazo deseado del cliente nunca es un compromiso de entrega de UnderCodeEC.
 
@@ -103,6 +105,10 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       'HERMES_MODEL',
       'hermes-default',
     );
+    this.promptVersion = createHash('sha256')
+      .update(this.systemPrompt)
+      .digest('hex')
+      .slice(0, 12);
     this.httpClient = axios.create({
       baseURL: apiUrl,
       headers: {
@@ -148,6 +154,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           `Política conversacional calculada por el backend: ${JSON.stringify(request.conversationGuidance)}. ` +
             `Priorice currentTopic. Si directAnswerRequired es true, responda ese tema antes que cualquier descubrimiento. ` +
             `Si allowDiscoveryQuestion es false, no añada una pregunta comercial nueva. Si topicShift es true, abandone la pregunta anterior. ` +
+            `Si requiredClarification es CATALOG_VS_ONLINE_SALES, aclare si el cliente solo quiere exhibir el catálogo o también vender y cobrar en la página antes de recomendar un plan. ` +
+            `Si allowPlanRecommendation es false, no recomiende un plan ni un precio. Si allowMeetingOffer es false, no proponga reunión, llamada ni contacto con un asesor. ` +
             `No formule preguntas cuyos temas aparezcan en recentQuestionTopics salvo que el mensaje actual las responda y una aclaración sea imprescindible.`,
         );
       }
@@ -189,8 +197,10 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       const body: Record<string, unknown> = {
         model: this.model,
         messages,
-        temperature: this.numberConfig('HERMES_TEMPERATURE', 0.25),
       };
+      if (!this.model.startsWith('gemini-3')) {
+        body.temperature = this.numberConfig('HERMES_TEMPERATURE', 0.25);
+      }
       const reasoningEffort = this.reasoningEffort();
       if (reasoningEffort) body.reasoning_effort = reasoningEffort;
       if (this.structuredOutputEnabled()) {
@@ -207,12 +217,21 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       let parsedResponse: ParsedHermesResponse | undefined;
       let promptTokens = 0;
       let completionTokens = 0;
+      let retryInstruction: string | undefined;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        const attemptMessages = retryInstruction
+          ? [
+              ...messages.slice(0, -1),
+              { role: 'system', content: retryInstruction },
+              messages.at(-1)!,
+            ]
+          : messages;
         const response = await this.httpClient.post<ChatCompletionResponse>(
           '/chat/completions',
           {
             ...body,
+            messages: attemptMessages,
             max_tokens: attempt === 1 ? maxOutputTokens : retryMaxOutputTokens,
           },
         );
@@ -227,9 +246,20 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
               `El proveedor terminó la respuesta por límite de salida (${choice.finish_reason})`,
             );
           }
-          parsedResponse = this.parseHermesResponse(
+          const candidate = this.parseHermesResponse(
             choice.message?.content || '',
           );
+          const policyViolation = this.outputPolicyViolation(
+            candidate,
+            request,
+          );
+          if (policyViolation) {
+            retryInstruction =
+              `Corrija la respuesta anterior antes de contestar. Incumplimiento detectado: ${policyViolation}. ` +
+              'Devuelva un JSON nuevo que respete el trato formal de usted, evite aperturas prefabricadas y no ofrezca reuniones, llamadas, planes ni precios cuando la política no los autorice.';
+            throw new Error(`Política de salida: ${policyViolation}`);
+          }
+          parsedResponse = candidate;
           break;
         } catch (error) {
           if (attempt === maxAttempts) throw error;
@@ -254,7 +284,18 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       );
       const tokensUsed = promptTokens + completionTokens;
       this.logger.log(
-        `Hermes respondió en ${latencyMs}ms, tokens: ${tokensUsed}`,
+        JSON.stringify({
+          event: 'hermes_response_generated',
+          model: this.model,
+          promptVersion: this.promptVersion,
+          conversationId: request.conversationId,
+          correlationId: request.correlationId,
+          intent: constrainedResponse.detectedIntent,
+          nextAction: constrainedResponse.nextAction,
+          outputValidation: 'passed',
+          latencyMs,
+          tokensUsed,
+        }),
       );
       return {
         ...constrainedResponse,
@@ -353,6 +394,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         query,
         (product) =>
           `${product.name} ${product.category || ''} ${product.description || ''}`,
+        () => 0,
+        true,
       );
       if (rankedProducts.length) {
         for (const product of rankedProducts) {
@@ -382,6 +425,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           document.type === 'PRICING'
             ? 100
             : 0,
+        true,
       );
       for (const document of rankedDocuments) {
         sections.push(
@@ -392,12 +436,25 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         playbooks,
         query,
         (playbook) => `${playbook.title} ${playbook.type} ${playbook.content}`,
+        () => 0,
+        true,
       );
       for (const playbook of rankedPlaybooks) {
         sections.push(
           `Playbook vigente:\n### ${playbook.title} (${playbook.type})\n${playbook.content}`,
         );
       }
+
+      this.logger.log(
+        JSON.stringify({
+          event: 'hermes_context_loaded',
+          conversationId: request.conversationId,
+          correlationId: request.correlationId,
+          products: rankedProducts.map((product) => product.name),
+          documents: rankedDocuments.map((document) => document.title),
+          playbooks: rankedPlaybooks.map((playbook) => playbook.title),
+        }),
+      );
 
       return this.fitBusinessContext(sections, maxChars);
     } catch (error: unknown) {
@@ -581,6 +638,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     query: string,
     searchable: (item: T) => string,
     bonus: (item: T) => number = () => 0,
+    relevantOnly = false,
   ): T[] {
     const terms = [
       ...new Set(
@@ -603,6 +661,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
             ),
         };
       })
+      .filter(({ score }) => !relevantOnly || score > 0)
       .sort(
         (left, right) => right.score - left.score || left.index - right.index,
       )
@@ -614,7 +673,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       .toLocaleLowerCase('es')
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, ' ')
-      .replace(/[^a-z0-9]+/g, ' ');
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
   }
 
   private fitBusinessContext(sections: string[], maxChars: number): string {
@@ -791,6 +851,48 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     )
       profile.suggestedStage = source.suggestedStage;
     return Object.keys(profile).length ? profile : undefined;
+  }
+
+  private outputPolicyViolation(
+    response: ParsedHermesResponse,
+    request: HermesRequestDto,
+  ): string | undefined {
+    const normalized = this.normalizeSearch(response.response);
+    if (
+      /\b(?:tu|tus|te|ti|contigo|tienes|quieres|puedes|necesitas|cuentame|dime|ayudarte|orientarte|confirmarte|enviarte)\b/.test(
+        normalized,
+      )
+    ) {
+      return 'usa tuteo o formas informales dirigidas al cliente';
+    }
+    if (
+      /^(?:perfecto|excelente|entendido|genial|comprendo perfectamente)\b/.test(
+        normalized,
+      )
+    ) {
+      return 'abre con una muletilla o una aprobación prefabricada';
+    }
+    if (
+      request.conversationGuidance?.allowMeetingOffer === false &&
+      (['proponer_reunion', 'solicitar_confirmacion_reunion'].includes(
+        response.nextAction || '',
+      ) ||
+        /\b(?:coordinar|agendar|programar|reservar)\b.{0,70}\b(?:reunion|llamada|conversacion|cita)\b|\b(?:reunion|llamada|videollamada)\b.{0,70}\b(?:equipo|asesor|especialista)\b/.test(
+          normalized,
+        ))
+    ) {
+      return 'ofrece una reunión o llamada que la política no autoriza';
+    }
+    if (
+      request.conversationGuidance?.allowPlanRecommendation === false &&
+      (Boolean(response.commercialProfile?.recommendedPlan) ||
+        /\b(?:plan de (?:lanzamiento|crecimiento)|tienda (?:de )?(?:lanzamiento|crecimiento|elite))\b|\busd\s*\$?\s*\d/.test(
+          normalized,
+        ))
+    ) {
+      return 'recomienda un plan o precio antes de contar con criterios suficientes';
+    }
+    return undefined;
   }
 
   private applyDeterministicConstraints(

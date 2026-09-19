@@ -3,14 +3,14 @@ import { PrismaService } from '../prisma/prisma.service';
 import { HermesService } from './hermes.service';
 
 describe('HermesService commercial contract', () => {
-  function setup(content: string | string[]) {
+  function setup(content: string | string[], model = 'gemini-test') {
     const config = {
       get: jest.fn((key: string, fallback?: unknown) => {
         const values: Record<string, unknown> = {
           HERMES_API_URL:
             'https://generativelanguage.googleapis.com/v1beta/openai/',
           HERMES_API_KEY: 'test-key',
-          HERMES_MODEL: 'gemini-test',
+          HERMES_MODEL: model,
           HERMES_STRUCTURED_OUTPUT: 'true',
         };
         return values[key] ?? fallback;
@@ -39,7 +39,7 @@ describe('HermesService commercial contract', () => {
   it('sends the current inbound message exactly once and requests JSON schema', async () => {
     const { service, post } = setup(
       JSON.stringify({
-        response: 'Cuéntame qué necesitas.',
+        response: 'Cuénteme qué necesita.',
         detectedIntent: 'info_general',
         suggestedTags: [],
         nextAction: 'continuar_descubrimiento',
@@ -66,7 +66,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup(
       JSON.stringify({
         response:
-          'Perfecto, con esto ya podemos valorar tu proyecto. ¿Quieres que coordinemos una conversación con nuestro equipo?',
+          'Con estos datos podemos valorar una web enfocada en promocionar la reparación de lavadoras a domicilio y los repuestos.',
         detectedIntent: 'consulta_servicio',
         suggestedTags: [],
         nextAction: 'proponer_reunion',
@@ -124,6 +124,8 @@ describe('HermesService commercial contract', () => {
       topicShift: true,
       recentQuestionTopics: ['store_payment'],
       sufficientContext: true,
+      allowMeetingOffer: false,
+      allowPlanRecommendation: true,
       paymentContext: 'PROJECT_PAYMENT' as const,
     };
     const result = await service.generateResponse({
@@ -151,7 +153,7 @@ describe('HermesService commercial contract', () => {
   it('does not ask again for a WhatsApp number already known by the backend', async () => {
     const { service } = setup(
       JSON.stringify({
-        response: '¿Puedes confirmar tu número de teléfono?',
+        response: '¿Puede confirmar su número de teléfono?',
         detectedIntent: 'agendar_cita',
         suggestedTags: [],
         nextAction: 'solicitar_confirmacion_reunion',
@@ -174,7 +176,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup(
       JSON.stringify({
         response:
-          'Para orientarte mejor, ¿cuántos productos estimas publicar inicialmente?',
+          'Para orientarle mejor, ¿cuántos productos estima publicar inicialmente?',
         detectedIntent: 'consulta_servicio',
         suggestedTags: [],
         nextAction: 'continuar_descubrimiento',
@@ -229,7 +231,7 @@ describe('HermesService commercial contract', () => {
 
   it('retries an incomplete structured response and returns only the complete message', async () => {
     const complete = JSON.stringify({
-      response: 'Hola, Jonathan. Claro que podemos ayudarte.',
+      response: 'Hola, Jonathan. Claro que podemos ayudarle.',
       detectedIntent: 'info_general',
       suggestedTags: [],
       nextAction: 'continuar_descubrimiento',
@@ -249,7 +251,164 @@ describe('HermesService commercial contract', () => {
     expect(post).toHaveBeenCalledTimes(2);
     expect(post.mock.calls[0][1].max_tokens).toBe(2048);
     expect(post.mock.calls[1][1].max_tokens).toBe(4096);
-    expect(result.response).toBe('Hola, Jonathan. Claro que podemos ayudarte.');
+    expect(result.response).toBe('Hola, Jonathan. Claro que podemos ayudarle.');
     expect(result.tokensUsed).toBe(240);
+  });
+
+  it('retries a response that uses tuteo and adds a focused correction', async () => {
+    const informal = JSON.stringify({
+      response: 'Cuéntame qué necesitas y te ayudo.',
+      detectedIntent: 'info_general',
+      suggestedTags: [],
+      nextAction: 'continuar_descubrimiento',
+      commercialProfile: {},
+    });
+    const formal = JSON.stringify({
+      response: 'Cuénteme qué necesita y con gusto le ayudo.',
+      detectedIntent: 'info_general',
+      suggestedTags: [],
+      nextAction: 'continuar_descubrimiento',
+      commercialProfile: {},
+    });
+    const { service, post } = setup([informal, formal]);
+
+    const result = await service.generateResponse({
+      messageContent: 'Necesito información',
+      conversationHistory: [],
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result.response).toBe('Cuénteme qué necesita y con gusto le ayudo.');
+    expect(post.mock.calls[1][1].messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          role: 'system',
+          content: expect.stringContaining('usa tuteo'),
+        }),
+      ]),
+    );
+  });
+
+  it('retries an automatic meeting offer when backend policy forbids it', async () => {
+    const meeting = JSON.stringify({
+      response: 'Podemos coordinar una reunión con el equipo.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'proponer_reunion',
+      commercialProfile: {},
+    });
+    const recommendation = JSON.stringify({
+      response:
+        'Con estos datos podemos preparar una web enfocada en sus servicios.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: {},
+    });
+    const { service, post } = setup([meeting, recommendation]);
+
+    const result = await service.generateResponse({
+      messageContent: 'También ofrecemos repuestos.',
+      conversationHistory: [],
+      conversationGuidance: {
+        currentTopic: 'general',
+        directAnswerRequired: false,
+        allowDiscoveryQuestion: false,
+        topicShift: false,
+        recentQuestionTopics: [],
+        sufficientContext: true,
+        allowMeetingOffer: false,
+        allowPlanRecommendation: true,
+      },
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result.nextAction).toBe('sin_accion');
+    expect(result.response).not.toMatch(/reunión|llamada/i);
+  });
+
+  it('uses Gemini 3 defaults instead of forcing a low sampling temperature', async () => {
+    const { service, post } = setup(
+      JSON.stringify({
+        response: 'Cuénteme en qué podemos ayudarle.',
+        detectedIntent: 'info_general',
+        suggestedTags: [],
+        nextAction: 'continuar_descubrimiento',
+        commercialProfile: {},
+      }),
+      'gemini-3.8-flash',
+    );
+
+    await service.generateResponse({
+      messageContent: 'Buenos días',
+      conversationHistory: [],
+    });
+
+    expect(post.mock.calls[0][1].temperature).toBeUndefined();
+    expect(post.mock.calls[0][1].reasoning_effort).toBe('low');
+  });
+
+  it('retries a mechanical opening even when the rest is formally written', async () => {
+    const templated = JSON.stringify({
+      response: '¡Perfecto! Podemos ayudarle con su proyecto.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: {},
+    });
+    const natural = JSON.stringify({
+      response: 'Podemos ayudarle con su proyecto.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: {},
+    });
+    const { service, post } = setup([templated, natural]);
+
+    const result = await service.generateResponse({
+      messageContent: 'Necesito una web',
+      conversationHistory: [],
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result.response).toBe('Podemos ayudarle con su proyecto.');
+  });
+
+  it('retries a plan recommendation made before enough criteria are known', async () => {
+    const premature = JSON.stringify({
+      response: 'Le recomiendo la Tienda de Lanzamiento por USD $550.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: { recommendedPlan: 'Tienda de Lanzamiento' },
+    });
+    const discovery = JSON.stringify({
+      response:
+        'Antes de recomendarle un plan, ¿necesita que sus clientes paguen directamente en la página?',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'continuar_descubrimiento',
+      commercialProfile: {},
+    });
+    const { service, post } = setup([premature, discovery]);
+
+    const result = await service.generateResponse({
+      messageContent: 'Quiero mostrar unos 15 productos.',
+      conversationHistory: [],
+      conversationGuidance: {
+        currentTopic: 'store_goal',
+        directAnswerRequired: false,
+        allowDiscoveryQuestion: true,
+        topicShift: false,
+        recentQuestionTopics: [],
+        sufficientContext: false,
+        allowMeetingOffer: false,
+        allowPlanRecommendation: false,
+      },
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result.response).toContain('Antes de recomendarle un plan');
+    expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
   });
 });

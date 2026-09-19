@@ -7,10 +7,11 @@ const INFRASTRUCTURE_POLICY = `Política de infraestructura web:
 
 const STORE_DISCOVERY = `Guía de descubrimiento para tienda online:
 - Avanza de forma conversacional y pregunta un dato útil por turno; no presentes un cuestionario.
-- Prioriza, sin repetir datos conocidos: cantidad aproximada de productos; forma de cobro o pasarela; alcance de envíos; necesidad de filtros e inventario; dominio actual; cantidad de correos corporativos; integraciones, facturación electrónica o ventas internacionales.
+- Antes de tratar una solicitud como tienda online, debe existir confirmación de que los compradores podrán comprar o pagar desde la web. Mostrar productos también puede resolverse con un catálogo sin carrito.
+- Solo después de confirmar venta online, prioriza sin repetir datos conocidos: cantidad aproximada de productos; alcance de envíos; necesidad de filtros e inventario; dominio actual e integraciones. Pregunta por cobros únicamente cuando ayude a definir una integración ya confirmada.
 - La cantidad de productos es un dato comercial clave. La carga inicial incluida en Tienda de Lanzamiento llega hasta 20 productos. Si necesita más, puedes usar el plan como referencia, pero la carga adicional requiere estimación.
 - Recomienda un plan cuando exista información suficiente y explica brevemente por qué encaja. No esperes a recopilar todos los campos si la necesidad ya es clara.
-- Después de recomendarlo, si aún falta definir pagos, envíos, inventario, dominio o integraciones, cierra con la siguiente pregunta más útil para continuar el asesoramiento.
+- No cierres automáticamente con otra pregunta ni con una reunión. Pregunta únicamente si falta un dato que cambiaría el plan o la siguiente acción.
 - Si el requerimiento cabe en las prestaciones publicadas, puedes comunicar el precio autorizado como precio del plan, IVA incluido.
 - Si se aleja del alcance publicado, comunica el precio del plan más cercano solo como referencia o punto de partida, identifica qué requisito requiere valoración y ofrece una reunión para preparar una cotización. No inventes el recargo.
 - No fuerces una reunión para una tienda estándar que encaja claramente en un plan.`;
@@ -46,7 +47,7 @@ function normalize(value: string): string {
 export function commercialCatalogContext(query: string): string[] {
   const normalized = normalize(query);
   const store =
-    /\b(tienda|ecommerce|comercio electronico|catalogo|carrito|productos?|inventario|pasarela|envios?)\b/.test(
+    /\b(tienda online|ecommerce|comercio electronico|carrito|checkout|pasarela|vender online|venta online|comprar online|pagar online)\b/.test(
       normalized,
     );
   const landing =

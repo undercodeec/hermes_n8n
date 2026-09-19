@@ -23,4 +23,13 @@ describe('commercialCatalogContext', () => {
     expect(context).toContain('Plan de Lanzamiento — USD $360');
     expect(context).not.toContain('Tienda de Lanzamiento');
   });
+
+  it('does not assume ecommerce from a physical store that only wants to show products', () => {
+    const context = commercialCatalogContext(
+      'Tengo una tienda de ropa y quiero mostrar mis productos',
+    ).join('\n');
+
+    expect(context).not.toContain('Tienda de Lanzamiento');
+    expect(context).not.toContain('Tienda de Crecimiento');
+  });
 });

@@ -1,14 +1,14 @@
 import { ConversationEventsService } from './conversation-events.service';
 
 describe('ConversationEventsService', () => {
-  it('abre el stream y publica mensajes entrantes sin exponer el payload crudo', () => {
+  it('abre el stream y publica mensajes entrantes sin exponer el payload crudo', async () => {
     const service = new ConversationEventsService();
     const received: Array<{ type?: string; data: unknown }> = [];
     const subscription = service.stream().subscribe((event) => {
       received.push(event);
     });
 
-    service.publishCustomerMessage({
+    await service.publishCustomerMessage({
       messageId: 'message-1',
       conversationId: 'conversation-1',
       contactId: 'contact-1',

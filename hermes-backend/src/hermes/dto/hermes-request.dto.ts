@@ -45,6 +45,12 @@ export type ConversationGuidance = {
   recentQuestionTopics: string[];
   /** Ya existe alcance suficiente para recomendar o solicitar una valoración. */
   sufficientContext: boolean;
+  /** La necesidad sigue siendo ambigua entre catálogo y comercio electrónico. */
+  requiredClarification?: 'CATALOG_VS_ONLINE_SALES';
+  /** Solo se permite ofrecer reunión cuando el cliente la solicita o aporta valor real. */
+  allowMeetingOffer: boolean;
+  /** Impide recomendar un plan mientras falte una distinción esencial. */
+  allowPlanRecommendation: boolean;
   paymentContext?: PaymentContext;
 };
 
@@ -64,6 +70,8 @@ export class HermesRequestDto {
     hasEmail: boolean;
   };
   conversationId?: string;
+  /** Identificador interno del mensaje entrante para trazabilidad sin registrar su contenido. */
+  correlationId?: string;
   currentIntent?: string;
   conversationGuidance?: ConversationGuidance;
   pendingQuestions?: string[];

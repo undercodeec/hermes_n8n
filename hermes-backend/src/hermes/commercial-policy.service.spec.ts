@@ -132,4 +132,154 @@ describe('CommercialPolicyService', () => {
     expect(decision.guidance.sufficientContext).toBe(true);
     expect(decision.guidance.allowDiscoveryQuestion).toBe(false);
   });
+
+  it('requires clarification before treating a visible catalog as ecommerce', () => {
+    const decision = service.analyze(
+      'Tengo una tienda de ropa y quiero que mis clientes puedan ver mis productos.',
+      receivedAt,
+    );
+
+    expect(decision.guidance.requiredClarification).toBe(
+      'CATALOG_VS_ONLINE_SALES',
+    );
+    expect(decision.guidance.allowPlanRecommendation).toBe(false);
+    expect(decision.guidance.allowDiscoveryQuestion).toBe(true);
+  });
+
+  it('replaces a premature store-plan recommendation with the required distinction', () => {
+    const decision = service.analyze(
+      'Quiero mostrar los productos de mi tienda.',
+      receivedAt,
+    );
+
+    const result = service.enforceResponsePolicy(
+      {
+        response: 'Le recomiendo la Tienda de Lanzamiento por USD $550.',
+        detectedIntent: 'consulta_servicio',
+        nextAction: 'sin_accion',
+        suggestedTags: ['tienda_online'],
+        commercialProfile: {
+          service: 'Tienda Online',
+          recommendedPlan: 'Tienda de Lanzamiento',
+          paymentNeeds: 'Pago en línea',
+        },
+        tokensUsed: 10,
+        costEstimate: 0,
+      },
+      decision,
+    );
+
+    expect(result.response).toContain('solamente vean el catálogo');
+    expect(result.response).toContain('comprar y pagar directamente');
+    expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
+    expect(result.commercialProfile?.paymentNeeds).toBeUndefined();
+    expect(result.commercialProfile?.service).toBeUndefined();
+    expect(result.commercialProfile?.need).toContain('falta confirmar');
+    expect(result.suggestedTags).toBeUndefined();
+  });
+
+  it('keeps the catalog-versus-sales clarification pending after a product count answer', () => {
+    const decision = service.analyze(
+      'Unos 10 a 15 productos.',
+      receivedAt,
+      [],
+      {
+        conversationHistory: [
+          {
+            role: 'user',
+            content: 'Quiero que mis clientes puedan ver mis productos.',
+          },
+          {
+            role: 'assistant',
+            content:
+              '¿Desea solo exhibir el catálogo o también vender y cobrar en la página?',
+          },
+        ],
+        commercialProfile: {
+          need: 'Mostrar productos en internet; falta confirmar catálogo o venta online',
+        },
+      },
+    );
+
+    expect(decision.guidance.requiredClarification).toBe(
+      'CATALOG_VS_ONLINE_SALES',
+    );
+    expect(decision.guidance.allowPlanRecommendation).toBe(false);
+  });
+
+  it('recognizes explicit online selling but waits for enough plan criteria', () => {
+    const decision = service.analyze(
+      'Quiero vender mis productos y cobrar online en la página.',
+      receivedAt,
+    );
+
+    expect(decision.guidance.requiredClarification).toBeUndefined();
+    expect(decision.guidance.allowPlanRecommendation).toBe(false);
+  });
+
+  it('allows a store plan after product volume and checkout needs are known', () => {
+    const decision = service.analyze(
+      'Serán unos 15 productos y necesito cobrar con tarjeta.',
+      receivedAt,
+      [],
+      {
+        commercialProfile: {
+          service: 'Tienda Online',
+          need: 'Vender y cobrar en línea',
+        },
+      },
+    );
+
+    expect(decision.guidance.requiredClarification).toBeUndefined();
+    expect(decision.guidance.allowPlanRecommendation).toBe(true);
+  });
+
+  it('removes an unrequested meeting offer from a sufficient response', () => {
+    const decision = service.analyze(
+      'También ofrecemos repuestos.',
+      receivedAt,
+      [],
+      {
+        commercialProfile: {
+          service: 'sitio web',
+          need: 'promocionar reparación de lavadoras a domicilio',
+          sector: 'reparación de electrodomésticos',
+        },
+      },
+    );
+
+    const result = service.enforceResponsePolicy(
+      {
+        response:
+          'La web puede destacar el servicio a domicilio y los repuestos. Podemos coordinar una conversación con el equipo.',
+        detectedIntent: 'consulta_servicio',
+        nextAction: 'proponer_reunion',
+        tokensUsed: 10,
+        costEstimate: 0,
+      },
+      decision,
+    );
+
+    expect(result.response).toBe(
+      'La web puede destacar el servicio a domicilio y los repuestos.',
+    );
+    expect(result.nextAction).toBe('sin_accion');
+  });
+
+  it('allows a meeting offer when a sufficiently defined custom system needs valuation', () => {
+    const decision = service.analyze(
+      'Debe integrarse con nuestro inventario.',
+      receivedAt,
+      [],
+      {
+        commercialProfile: {
+          service: 'software a medida',
+          need: 'automatizar pedidos y facturación',
+          users: 'equipo comercial y bodega',
+        },
+      },
+    );
+
+    expect(decision.guidance.allowMeetingOffer).toBe(true);
+  });
 });
