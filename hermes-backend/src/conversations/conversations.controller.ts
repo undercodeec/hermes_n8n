@@ -71,4 +71,10 @@ export class ConversationsController {
   close(@Param('id') id: string, @CurrentUser('id') userId: string) {
     return this.conversationsService.close(id, userId);
   }
+
+  @Put(':id/reopen')
+  @ApiOperation({ summary: 'Reabrir conversación con Hermes' })
+  reopen(@Param('id') id: string, @CurrentUser('id') userId: string) {
+    return this.conversationsService.reopen(id, userId);
+  }
 }

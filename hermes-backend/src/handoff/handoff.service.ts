@@ -54,6 +54,11 @@ export class HandoffService {
       if (!conversation) {
         throw new NotFoundException('Conversación no encontrada');
       }
+      if (conversation.status === ConversationStatus.CLOSED) {
+        throw new ConflictException(
+          'No se puede abrir un handoff sobre una conversación cerrada',
+        );
+      }
 
       const existing = await tx.humanHandoff.findFirst({
         where: {

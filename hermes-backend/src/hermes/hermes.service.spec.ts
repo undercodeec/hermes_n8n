@@ -84,6 +84,44 @@ describe('HermesService commercial contract', () => {
     expect(result.response).not.toMatch(/confirmar tu número/i);
   });
 
+  it('adds the store plans to context and keeps ecommerce discovery facts', async () => {
+    const { service, post } = setup(
+      JSON.stringify({
+        response:
+          'Para orientarte mejor, ¿cuántos productos estimas publicar inicialmente?',
+        detectedIntent: 'consulta_servicio',
+        suggestedTags: [],
+        nextAction: 'continuar_descubrimiento',
+        commercialProfile: {
+          service: 'Tienda Online',
+          need: 'Vender productos por internet',
+          productCount: '30 productos',
+          corporateEmailNeeds: '3 cuentas',
+        },
+      }),
+    );
+
+    const result = await service.generateResponse({
+      contactName: 'Ana',
+      messageContent:
+        'Quiero una tienda online para unos 30 productos y necesito 3 correos corporativos',
+      conversationHistory: [],
+    });
+
+    const body = post.mock.calls[0][1];
+    const systemMessage = body.messages[0].content as string;
+    expect(systemMessage).toContain('Tienda de Lanzamiento — USD $550');
+    expect(systemMessage).toContain('Tienda de Crecimiento — USD $850');
+    expect(systemMessage).toContain('USD $40 al año');
+    expect(result.commercialProfile).toEqual(
+      expect.objectContaining({
+        service: 'Tienda Online',
+        productCount: '30 productos',
+        corporateEmailNeeds: '3 cuentas',
+      }),
+    );
+  });
+
   it('uses a safe handoff response when the provider returns invalid JSON', async () => {
     const { service, post } = setup([
       'respuesta sin JSON',

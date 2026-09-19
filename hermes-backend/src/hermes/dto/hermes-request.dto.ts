@@ -8,6 +8,15 @@ export type CommercialProfile = {
   need?: string;
   currentSituation?: string;
   users?: string;
+  /** Cantidad aproximada de productos indicada por el cliente. */
+  productCount?: string;
+  paymentNeeds?: string;
+  shippingNeeds?: string;
+  inventoryNeeds?: string;
+  domainStatus?: string;
+  corporateEmailNeeds?: string;
+  integrations?: string;
+  recommendedPlan?: string;
   budget?: string;
   timeline?: string;
   nextStep?: string;

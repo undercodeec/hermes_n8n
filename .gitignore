@@ -24,6 +24,8 @@ prisma/migrations/dev/
 .vscode/
 .idea/
 .worktrees/
+.tokensave/
+capturas/
 .DS_Store
 Thumbs.db
 *.swp

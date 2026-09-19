@@ -1,6 +1,7 @@
 import {
   BadGatewayException,
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -237,6 +238,14 @@ export class ConversationsService {
       throw new NotFoundException('Conversación no encontrada');
     }
 
+    if (conversation.status === ConversationStatus.CLOSED) {
+      throw new ConflictException({
+        code: 'CONVERSATION_CLOSED',
+        message:
+          'La conversación está cerrada. Reábrela antes de enviar una respuesta.',
+      });
+    }
+
     const lastInbound = await this.prisma.message.findFirst({
       where: { conversationId: id, sender: MessageSender.CONTACT },
       orderBy: { createdAt: 'desc' },
@@ -341,5 +350,57 @@ export class ConversationsService {
 
   async close(id: string, userId: string) {
     return this.updateStatus(id, ConversationStatus.CLOSED, userId);
+  }
+
+  async reopen(id: string, userId: string) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${id}))`;
+
+      const existing = await tx.conversation.findUnique({ where: { id } });
+      if (!existing) {
+        throw new NotFoundException('Conversación no encontrada');
+      }
+
+      const openHandoff = await tx.humanHandoff.findFirst({
+        where: {
+          conversationId: id,
+          status: { in: OPEN_HANDOFF_STATUSES },
+        },
+        select: { id: true },
+      });
+      if (openHandoff) {
+        throw new ConflictException({
+          code: 'OPEN_HANDOFF',
+          message:
+            'Resuelve el handoff abierto antes de devolver la conversación a Hermes.',
+          handoffId: openHandoff.id,
+        });
+      }
+
+      const conversation = await tx.conversation.update({
+        where: { id },
+        data: { status: ConversationStatus.ACTIVE, closedAt: null },
+      });
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'CONVERSATION_REOPENED',
+          entity: 'conversations',
+          entityId: id,
+          changes: {
+            source: 'CRM',
+            before: {
+              status: existing.status,
+              closedAt: existing.closedAt,
+            },
+            after: {
+              status: ConversationStatus.ACTIVE,
+              closedAt: null,
+            },
+          },
+        },
+      });
+      return conversation;
+    });
   }
 }
