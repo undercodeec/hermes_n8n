@@ -53,6 +53,7 @@ describe('Contratos HTTP del CRM (e2e aislado)', () => {
     findOne: jest.fn(),
     reply: jest.fn(),
     close: jest.fn(),
+    reopen: jest.fn(),
   };
   const handoffService = {
     create: jest.fn(),
@@ -297,6 +298,24 @@ describe('Contratos HTTP del CRM (e2e aislado)', () => {
     expect(conversationsService.reply).toHaveBeenCalledWith(
       'conversation-1',
       { content: 'Respuesta manual' },
+      'user-1',
+    );
+  });
+
+  it('expone la reapertura protegida con el actor autenticado', async () => {
+    conversationsService.reopen.mockResolvedValue({
+      id: 'conversation-1',
+      status: ConversationStatus.ACTIVE,
+      closedAt: null,
+    });
+
+    await request(app.getHttpServer())
+      .put('/api/conversations/conversation-1/reopen')
+      .send({})
+      .expect(200);
+
+    expect(conversationsService.reopen).toHaveBeenCalledWith(
+      'conversation-1',
       'user-1',
     );
   });

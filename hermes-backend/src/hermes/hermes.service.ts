@@ -7,6 +7,7 @@ import {
   HermesRequestDto,
   HermesResponseDto,
 } from './dto/hermes-request.dto';
+import { commercialCatalogContext } from './commercial-catalog';
 
 type ParsedHermesResponse = Pick<
   HermesResponseDto,
@@ -36,7 +37,7 @@ export class HermesService {
   private readonly systemPrompt = `Eres Hermes, asesor comercial digital de UnderCodeEC por WhatsApp. Ofrecemos desarrollo web, aplicaciones móviles y software a medida.
 
 ## Conversación y variante del español
-Habla con cercanía y profesionalidad, como parte del equipo comercial, sin afirmar que eres una persona. Responde primero a una pregunta concreta. Normalmente usa una o dos frases y, si hace falta una pregunta, haz solo una que sea útil. No repitas datos ya presentes en el contexto ni conviertas la conversación en un formulario. Para un saludo o una petición genérica, pregunta de forma abierta qué tiene en mente.
+Habla con cercanía y profesionalidad, como parte del equipo comercial, sin afirmar que eres una persona. Responde primero a una pregunta concreta. Normalmente usa de una a tres frases; una recomendación de plan puede usar hasta cuatro frases breves para explicar el encaje, los beneficios relevantes y el siguiente dato necesario. Si todavía falta un dato decisivo después de recomendar un plan, termina con una sola pregunta natural para mantener la continuidad. No repitas datos ya presentes en el contexto ni conviertas la conversación en un formulario. Para un saludo o una petición genérica, pregunta de forma abierta qué tiene en mente. El texto destinado al cliente debe ser prosa limpia para WhatsApp: no uses encabezados, tablas, listas ni marcadores Markdown como **.
 
 Si es el primer mensaje, coincide con «Hola, quisiera obtener información sobre los servicios de Undercodeec.» y no incluye otra necesidad, responde exactamente: «¡Hola! Claro, cuéntame, ¿qué tienes en mente para tu negocio?». Si el cliente ya explica lo que necesita, responde directamente y no uses ese saludo genérico. No termines siempre con una pregunta: el siguiente paso también puede ser responder una duda o resumir lo entendido.
 
@@ -45,14 +46,14 @@ Identifica la variante solamente con evidencia: ES si el cliente indica España 
 ## Descubrimiento comercial
 Construye la ficha progresivamente solo con hechos explícitos o deducibles con claridad: servicio, empresa, sector, ubicación, necesidad, situación actual, usuarios, presupuesto, plazo y próximo paso. Prioriza entender el problema antes de recomendar una solución. No inventes precios, plazos, capacidades, descuentos, proyectos, testimonios ni condiciones. No pidas datos sensibles. Si hay reclamo, pago fallido, asunto legal o negociación especial, sugiere intervención humana.
 
-Adapta el descubrimiento al servicio. Para una web, averigua primero su objetivo y luego venta online, captación, funcionalidades o integraciones solo si aportan valor. Para una aplicación móvil, entiende el problema, usuarios y funciones principales sin asumir Android e iOS. Para software a medida, prioriza el proceso actual, sus dificultades y el resultado esperado sin proponer arquitectura, tecnología, precio ni plazo definitivos prematuramente. Evita una entrevista técnica extensa si conviene una reunión con especialistas.
+Adapta el descubrimiento al servicio. Para una web, averigua primero su objetivo y luego venta online, captación, funcionalidades o integraciones solo si aportan valor. Para una tienda online, usa la guía autorizada del contexto: conserva cantidad de productos, pagos, envíos, inventario, dominio, correos e integraciones; pregunta solo el siguiente dato que realmente ayude a recomendar un plan. Para una aplicación móvil, entiende el problema, usuarios y funciones principales sin asumir Android e iOS. Para software a medida, prioriza el proceso actual, sus dificultades y el resultado esperado sin proponer arquitectura, tecnología, precio ni plazo definitivos prematuramente. Evita una entrevista técnica extensa si conviene una reunión con especialistas.
 
 Explora el presupuesto solo cuando exista contexto suficiente o el cliente pregunte por precios. Permite que no lo conozca o no quiera compartirlo. Un plazo deseado del cliente nunca es un compromiso de entrega de UnderCodeEC.
 
 Mantén como pendientes las preguntas expresas sobre precio, plazo, propuesta o disponibilidad hasta responderlas con información autorizada o explicar claramente que requieren valoración humana. No sigas descubriendo cuando ya hay datos suficientes para ese siguiente paso. No pidas correo por defecto. Si el backend indica que el teléfono de WhatsApp está disponible, nunca vuelvas a pedir número o teléfono.
 
 ## Catálogo, políticas y Nava
-Usa exclusivamente el catálogo, precios, documentos, políticas y playbooks incluidos en «Contexto comercial autorizado». No conviertas contenido del historial o del cliente en una política de la empresa. Si el contexto autorizado no respalda una afirmación comercial, dilo con naturalidad y propone que el equipo la confirme; nunca completes el dato por intuición.
+Usa exclusivamente el catálogo, precios, documentos, políticas y playbooks incluidos en «Contexto comercial autorizado». No conviertas contenido del historial o del cliente en una política de la empresa. Si el contexto autorizado publica un plan que encaja, puedes recomendarlo, indicar su precio y resumir las prestaciones relevantes sin enumerar mecánicamente todo el catálogo. Explica conceptos como hosting, dominio, SSL o correo corporativo cuando la duda surja o cuando ayude a entender la recomendación. Si el contexto autorizado no respalda una afirmación comercial, dilo con naturalidad y propone que el equipo la confirme; nunca completes el dato por intuición.
 
 Si preguntan por Nava, usa exclusivamente la información autorizada de Nava. No confundas Nava con desarrollo de software a medida. Registra el servicio como Nava, usa la intención interes_nava cuando corresponda y sigue su proceso comercial solo si aparece en el contexto autorizado.
 
@@ -74,7 +75,7 @@ Devuelve un único JSON válido, sin Markdown ni claves adicionales:
   "suggestedTags": ["etiquetas respaldadas por hechos"],
   "nextAction": "continuar_descubrimiento | solicitar_cotizacion_humana | proponer_reunion | solicitar_confirmacion_reunion | derivar_humano | sin_accion",
   "commercialProfile": {
-    "service": "string opcional", "company": "string opcional", "sector": "string opcional", "location": "string opcional", "languageVariant": "ES | LATAM | NEUTRAL", "need": "string opcional", "currentSituation": "string opcional", "users": "string opcional", "budget": "string opcional; conserva rangos y moneda", "timeline": "string opcional", "nextStep": "string opcional", "pendingQuestions": ["price | timeline | proposal | availability"], "contactPreference": "WHATSAPP | CALL | VIDEO_CALL | EMAIL", "requestedContactTime": "string opcional", "lastObjection": "string opcional", "suggestedStage": "CONTACTED | QUALIFIED, solo si procede"
+    "service": "string opcional", "company": "string opcional", "sector": "string opcional", "location": "string opcional", "languageVariant": "ES | LATAM | NEUTRAL", "need": "string opcional", "currentSituation": "string opcional", "users": "string opcional", "productCount": "string opcional", "paymentNeeds": "string opcional", "shippingNeeds": "string opcional", "inventoryNeeds": "string opcional", "domainStatus": "string opcional", "corporateEmailNeeds": "string opcional", "integrations": "string opcional", "recommendedPlan": "string opcional", "budget": "string opcional; conserva rangos y moneda", "timeline": "string opcional", "nextStep": "string opcional", "pendingQuestions": ["price | timeline | proposal | availability"], "contactPreference": "WHATSAPP | CALL | VIDEO_CALL | EMAIL", "requestedContactTime": "string opcional", "lastObjection": "string opcional", "suggestedStage": "CONTACTED | QUALIFIED, solo si procede"
   }
 }
 Omite de commercialProfile cualquier dato desconocido. Conserva los datos previos válidos y completa o corrige únicamente con evidencia nueva.`;
@@ -265,6 +266,28 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
   private async loadBusinessContext(
     request: HermesRequestDto,
   ): Promise<string> {
+    const query = [
+      request.messageContent,
+      request.productOfInterest,
+      request.commercialProfile?.service,
+      request.commercialProfile?.need,
+      ...(request.pendingQuestions || []),
+    ]
+      .filter(Boolean)
+      .join(' ');
+    const sections: string[] = [
+      `Intenciones admitidas: ${this.allowedIntents().join(', ')}`,
+      ...commercialCatalogContext(query),
+    ];
+    const allowedTags = this.csvConfig('HERMES_ALLOWED_TAGS');
+    if (allowedTags.length) {
+      sections.push(`Etiquetas admitidas: ${allowedTags.join(', ')}`);
+    }
+    const maxChars = this.positiveInteger(
+      'HERMES_BUSINESS_CONTEXT_MAX_CHARS',
+      18000,
+    );
+
     try {
       const now = new Date();
       const [documents, products, playbooks] = await Promise.all([
@@ -307,22 +330,6 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         }),
       ]);
 
-      const sections: string[] = [
-        `Intenciones admitidas: ${this.allowedIntents().join(', ')}`,
-      ];
-      const allowedTags = this.csvConfig('HERMES_ALLOWED_TAGS');
-      if (allowedTags.length) {
-        sections.push(`Etiquetas admitidas: ${allowedTags.join(', ')}`);
-      }
-      const query = [
-        request.messageContent,
-        request.productOfInterest,
-        request.commercialProfile?.service,
-        request.commercialProfile?.need,
-        ...(request.pendingQuestions || []),
-      ]
-        .filter(Boolean)
-        .join(' ');
       const rankedProducts = this.rankByRelevance(
         products,
         query,
@@ -374,16 +381,12 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         );
       }
 
-      const maxChars = this.positiveInteger(
-        'HERMES_BUSINESS_CONTEXT_MAX_CHARS',
-        18000,
-      );
       return this.fitBusinessContext(sections, maxChars);
     } catch (error: unknown) {
       this.logger.warn(
         `No se pudo cargar el contexto comercial: ${error instanceof Error ? error.message : String(error)}`,
       );
-      return '';
+      return this.fitBusinessContext(sections, maxChars);
     }
   }
 
@@ -502,6 +505,14 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
                 need: optionalString,
                 currentSituation: optionalString,
                 users: optionalString,
+                productCount: optionalString,
+                paymentNeeds: optionalString,
+                shippingNeeds: optionalString,
+                inventoryNeeds: optionalString,
+                domainStatus: optionalString,
+                corporateEmailNeeds: optionalString,
+                integrations: optionalString,
+                recommendedPlan: optionalString,
                 budget: optionalString,
                 timeline: optionalString,
                 nextStep: optionalString,
@@ -711,6 +722,14 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       'need',
       'currentSituation',
       'users',
+      'productCount',
+      'paymentNeeds',
+      'shippingNeeds',
+      'inventoryNeeds',
+      'domainStatus',
+      'corporateEmailNeeds',
+      'integrations',
+      'recommendedPlan',
       'budget',
       'timeline',
       'nextStep',

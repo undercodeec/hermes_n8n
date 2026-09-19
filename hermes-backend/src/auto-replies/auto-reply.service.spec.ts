@@ -1,5 +1,5 @@
 import { ConfigService } from '@nestjs/config';
-import { ConversationStatus } from '@prisma/client';
+import { ConversationStatus, MessageDirection } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { AutoReplyService } from './auto-reply.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -81,6 +81,51 @@ describe('AutoReplyService', () => {
       { requestCallback: jest.fn() } as unknown as TasksService,
       new CommercialPolicyService(),
       { consumeAiQuota: jest.fn() } as unknown as ConversationGuardService,
+      { add: jest.fn() } as unknown as Queue,
+    );
+
+    await service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-1',
+    });
+
+    expect(hermes.generateResponse).not.toHaveBeenCalled();
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not answer a queued job after the conversation was closed', async () => {
+    const prisma = {
+      message: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'inbound-1',
+          conversationId: 'conversation-1',
+          contactId: 'contact-1',
+          content: 'Hola',
+          createdAt: new Date(),
+          rawPayload: null,
+        }),
+      },
+      conversation: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'conversation-1',
+          status: ConversationStatus.CLOSED,
+          contact: { name: 'Ana', waId: '593991234567' },
+        }),
+      },
+    } as unknown as PrismaService;
+    const meta = { sendTextMessage: jest.fn() } as unknown as MetaService;
+    const hermes = { generateResponse: jest.fn() } as unknown as HermesService;
+    const service = new AutoReplyService(
+      { get: jest.fn() } as unknown as ConfigService,
+      prisma,
+      meta,
+      hermes,
+      {} as HandoffService,
+      {} as LeadsService,
+      {} as TasksService,
+      new CommercialPolicyService(),
+      {} as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
     );
 
@@ -270,7 +315,14 @@ describe('AutoReplyService', () => {
         findMany: jest
           .fn()
           .mockResolvedValueOnce([inbound])
-          .mockResolvedValueOnce([])
+          .mockResolvedValueOnce([
+            {
+              direction: MessageDirection.INBOUND,
+              content: 'Necesito una web para mi floristería',
+              createdAt: new Date('2026-09-18T19:55:00Z'),
+              rawPayload: { timestamp: '1789761300' },
+            },
+          ])
           .mockResolvedValueOnce([inbound]),
         create: jest.fn().mockResolvedValue({ id: 'outbound-1' }),
       },
@@ -282,7 +334,9 @@ describe('AutoReplyService', () => {
         update: jest.fn().mockResolvedValue({}),
       },
       conversationState: {
-        findUnique: jest.fn().mockResolvedValue(null),
+        findUnique: jest.fn().mockResolvedValue({
+          summary: 'Cliente busca vender flores por internet.',
+        }),
         upsert: jest.fn().mockResolvedValue({}),
       },
       lead: {
@@ -351,6 +405,21 @@ describe('AutoReplyService', () => {
 
     expect(tasks.requestQuote).toHaveBeenCalledWith(
       expect.objectContaining({ sourceMessageId: 'inbound-price' }),
+    );
+    expect(hermes.generateResponse).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationSummary: 'Cliente busca vender flores por internet.',
+        conversationHistory: [
+          {
+            role: 'user',
+            content: 'Necesito una web para mi floristería',
+          },
+        ],
+        commercialProfile: expect.objectContaining({
+          service: 'desarrollo web',
+          need: 'catálogo de diez productos con botón de WhatsApp',
+        }),
+      }),
     );
     expect(meta.showTypingIndicator).toHaveBeenCalledWith(
       'wamid.inbound-price',

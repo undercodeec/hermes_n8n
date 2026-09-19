@@ -70,10 +70,7 @@ export class AutoReplyService {
       where: { id: data.conversationId },
       include: { contact: true },
     });
-    if (
-      !conversation ||
-      conversation.status === ConversationStatus.HANDED_OFF
-    ) {
+    if (!conversation || conversation.status !== ConversationStatus.ACTIVE) {
       return;
     }
 
@@ -109,6 +106,10 @@ export class AutoReplyService {
         content:
           'He registrado tu solicitud para que continúes con una persona del equipo. La conversación queda pendiente de asignación.',
         metadata: { action: 'HUMAN_HANDOFF_CREATED' },
+        allowedStatuses: [
+          ConversationStatus.ACTIVE,
+          ConversationStatus.HANDED_OFF,
+        ],
       });
       await this.persistConversationState(data.conversationId, {
         detectedIntent: 'solicitud_humano',
@@ -139,6 +140,7 @@ export class AutoReplyService {
           taskId: callback.id,
           requestedAt: policy.requestedCallAt?.toISOString(),
         },
+        allowedStatuses: [ConversationStatus.ACTIVE],
       });
       await this.leads.recordCommercialProfileFromConversation({
         contactId: data.contactId,
@@ -215,7 +217,7 @@ export class AutoReplyService {
     });
     if (
       !currentConversation ||
-      currentConversation.status === ConversationStatus.HANDED_OFF ||
+      currentConversation.status !== ConversationStatus.ACTIVE ||
       (await this.hasNewerInbound(data.conversationId, inbound))
     ) {
       return;
@@ -278,6 +280,16 @@ export class AutoReplyService {
         response.response =
           'No pude procesar tu solicitud correctamente. He registrado una derivación al equipo y queda pendiente de asignación.';
       }
+    }
+    if (
+      !(await this.hasConversationStatus(
+        data.conversationId,
+        shouldHandoff
+          ? [ConversationStatus.ACTIVE, ConversationStatus.HANDED_OFF]
+          : [ConversationStatus.ACTIVE],
+      ))
+    ) {
+      return;
     }
     const sentMessage = await this.meta.sendTextMessage(
       conversation.contact.waId,
@@ -462,6 +474,11 @@ export class AutoReplyService {
       profile.company ||
       profile.currentSituation ||
       profile.users ||
+      profile.productCount ||
+      profile.paymentNeeds ||
+      profile.shippingNeeds ||
+      profile.inventoryNeeds ||
+      profile.integrations ||
       profile.timeline ||
       profile.location,
     );
@@ -474,7 +491,16 @@ export class AutoReplyService {
     inboundWamid?: string | null;
     content: string;
     metadata: Record<string, unknown>;
+    allowedStatuses: ConversationStatus[];
   }): Promise<void> {
+    if (
+      !(await this.hasConversationStatus(
+        params.conversationId,
+        params.allowedStatuses,
+      ))
+    ) {
+      return;
+    }
     await this.showTypingIndicator(params.inboundWamid);
     const sent = await this.meta.sendTextMessage(params.waId, params.content);
     await this.prisma.message.create({
@@ -493,6 +519,17 @@ export class AutoReplyService {
       where: { id: params.conversationId },
       data: { updatedAt: new Date() },
     });
+  }
+
+  private async hasConversationStatus(
+    conversationId: string,
+    allowedStatuses: ConversationStatus[],
+  ): Promise<boolean> {
+    const current = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { status: true },
+    });
+    return Boolean(current && allowedStatuses.includes(current.status));
   }
 
   private async showTypingIndicator(

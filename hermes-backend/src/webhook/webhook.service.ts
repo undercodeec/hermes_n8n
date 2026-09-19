@@ -19,6 +19,7 @@ import {
 import {
   ConversationStatus,
   HandoffReason,
+  HandoffStatus,
   MessageDirection,
   MessageSender,
   MessageType,
@@ -434,26 +435,71 @@ export class WebhookService {
    * Obtiene la conversación activa del contacto o crea una nueva
    */
   private async getOrCreateConversation(contactId: string) {
-    const activeConversation = await this.prisma.conversation.findFirst({
-      where: {
-        contactId,
-        status: {
-          in: [ConversationStatus.ACTIVE, ConversationStatus.HANDED_OFF],
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${contactId}))`;
+
+      const latestConversation = await tx.conversation.findFirst({
+        where: { contactId },
+        orderBy: { updatedAt: 'desc' },
+      });
+
+      if (
+        latestConversation &&
+        (latestConversation.status === ConversationStatus.ACTIVE ||
+          latestConversation.status === ConversationStatus.HANDED_OFF)
+      ) {
+        return latestConversation;
+      }
+
+      if (latestConversation?.status === ConversationStatus.CLOSED) {
+        const openHandoff = await tx.humanHandoff.findFirst({
+          where: {
+            conversationId: latestConversation.id,
+            status: {
+              in: [
+                HandoffStatus.PENDING,
+                HandoffStatus.ASSIGNED,
+                HandoffStatus.IN_PROGRESS,
+              ],
+            },
+          },
+          select: { id: true },
+        });
+        const resumedStatus = openHandoff
+          ? ConversationStatus.HANDED_OFF
+          : ConversationStatus.ACTIVE;
+        const resumed = await tx.conversation.update({
+          where: { id: latestConversation.id },
+          data: { status: resumedStatus, closedAt: null },
+        });
+        await tx.auditLog.create({
+          data: {
+            action: 'CONVERSATION_REOPENED',
+            entity: 'conversations',
+            entityId: latestConversation.id,
+            changes: {
+              source: 'INBOUND_MESSAGE',
+              before: {
+                status: latestConversation.status,
+                closedAt: latestConversation.closedAt,
+              },
+              after: { status: resumedStatus, closedAt: null },
+              ...(openHandoff
+                ? { preservedOpenHandoffId: openHandoff.id }
+                : {}),
+            },
+          },
+        });
+        return resumed;
+      }
+
+      return tx.conversation.create({
+        data: {
+          contactId,
+          status: ConversationStatus.ACTIVE,
+          channel: 'whatsapp',
         },
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    if (activeConversation) {
-      return activeConversation;
-    }
-
-    return this.prisma.conversation.create({
-      data: {
-        contactId,
-        status: ConversationStatus.ACTIVE,
-        channel: 'whatsapp',
-      },
+      });
     });
   }
 

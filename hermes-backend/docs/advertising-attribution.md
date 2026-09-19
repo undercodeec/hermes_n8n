@@ -43,10 +43,12 @@ ignorada. Hermes no la exige ni la envia. Referencia vigente:
 
 - https://developers.google.com/google-ads/api/docs/api-policy/developer-token
 
-El acceso de la identidad local ya quedo demostrado. Aun falta crear o preparar
-una identidad no personal para el servidor de produccion (identidad adjunta,
-Workload Identity o impersonacion), concederle acceso dentro de Google Ads y
-probarla separadamente.
+El acceso de la identidad local ya quedo demostrado. El operador tambien confirma
+que ya existe una cuenta de servicio y que tiene acceso concedido dentro de
+Google Ads; no se debe crear ni invitar una segunda cuenta. Falta verificar que
+esa identidad existente tenga `Service Usage Consumer` en el proyecto, montarla
+como ADC en la VPS y repetir la consulta GAQL desde el contenedor de produccion
+sin exponer credenciales.
 
 ## Estado del despliegue de Hermes (2026-09-17)
 
@@ -70,6 +72,15 @@ Antes de activar datos reales, restringir PostgreSQL (`5432`) y Redis (`6379`) a
 host o a la red interna de Docker, salvo que un firewall ya limite expresamente
 el acceso externo. Ambos puertos aparecian publicados por Docker durante la
 verificacion.
+
+La VPS no necesita instalar Google Cloud CLI ni Codex. Las operaciones de Cloud
+(crear identidad, habilitar APIs y conceder IAM) se realizan desde una estacion
+administrativa con `gcloud` o Google Cloud Console. La VPS solo necesita que el
+contenedor `app` encuentre ADC. En una infraestructura fuera de Google Cloud se
+prefiere Workload Identity Federation. Si aun no existe un proveedor OIDC para
+ello, una prueba controlada puede montar una llave JSON de cuenta de servicio
+como secreto de solo lectura, fuera del repositorio, con permisos `0600`; debe
+rotarse o eliminarse al sustituirla por federacion.
 
 ## Auditoria del backend
 
@@ -223,24 +234,39 @@ pero su instruccion de obtener un Developer Token queda reemplazada por la
 politica anterior. Mantener todos los interruptores Google en `false` hasta el
 paso 4.
 
-1. **Identidad de produccion y permisos Ads.** Crear/configurar la identidad del
-   servidor sin llave JSON permanente, darle `Service Usage Consumer` en Cloud y
-   acceso a la cuenta Ads o MCC. Repetir la consulta GAQL de solo lectura con esa
-   identidad.
-2. **Accion de conversion.** Verificar en Google Ads que la accion identificada
-   sea compatible con `UPLOAD_CLICKS` y mantenerla secundaria durante la prueba.
-3. **Configurar Hermes de forma cerrada.** Aplicar la migracion y guardar solo
-   `GOOGLE_CLOUD_PROJECT`, `GOOGLE_ADS_CUSTOMER_ID`,
+1. **ADC en la VPS con la identidad existente.** No crear otra cuenta de servicio
+   ni volver a conceder acceso Ads. El operador confirmó el 2026-09-17 que la
+   identidad existente tiene `Service Usage Consumer`. **COMPLETADO (confirmado
+   por el operador, 2026-09-17):** ADC fue montado como secreto de solo lectura
+   en `hermes-app`; una consulta GAQL de solo lectura devolvió `HTTP 200` y una
+   fila desde producción. No se enviaron conversiones.
+2. **Accion de conversion.** **COMPLETADO (confirmado por el operador,
+   2026-09-17):** la acción identificada es compatible con `UPLOAD_CLICKS` y se
+   mantiene secundaria durante la prueba. La consulta GAQL de producción
+   confirmó la acción `7774640817` (`Hermes - Lead cualificado`).
+3. **Configurar Hermes de forma cerrada.** La migracion ya esta aplicada en la
+   VPS. Guardar solo `GOOGLE_CLOUD_PROJECT`, `GOOGLE_ADS_CUSTOMER_ID`,
    `GOOGLE_ADS_LOGIN_CUSTOMER_ID`, `GOOGLE_ADS_CURRENCY` y
    `GOOGLE_ADS_TIME_ZONE` en el entorno seguro. No usar
    `GOOGLE_ADS_DEVELOPER_TOKEN`. Mantener `ADVERTISING_GOOGLE_SYNC_ENABLED`,
    `ADVERTISING_GOOGLE_SEND_ENABLED`, `ADVERTISING_GOOGLE_METRICS_ENABLED` y
    `ADVERTISING_GOOGLE_INCLUDE_USER_DATA` en `false`.
-4. **Integracion y prueba validateOnly.** Como administrador, crear la
-   integracion y el mapeo inicial `LEAD_QUALIFIED`; activar solo
-   `ADVERTISING_GOOGLE_SYNC_ENABLED=true` y generar un lead de control con
-   GCLID/GBRAID/WBRAID y `adUserData=GRANTED`. Verificar `VALIDATED` en el
-   historial y estado de Hermes.
+   **COMPLETADO (confirmado por el operador, 2026-09-17):** se creó la
+   integración `GOOGLE_ADS` y el mapeo secundario `LEAD_QUALIFIED` hacia la
+   acción `7774640817`; `conversionSyncEnabled`, métricas y todos los flags de
+   entorno de Google continúan desactivados.
+4. **Integracion y prueba validateOnly.** El preflight del 2026-09-17 confirmó
+   que no existe aún un lead marcado como control/test que cumpla
+   simultáneamente atribución `CONFIRMED`, `ad_user_data=GRANTED` e identificador
+   `gclid`, `gbraid` o `wbraid`. La intervención humana pendiente es generar un
+   clic real y autorizado, otorgar consentimiento y enviar por WhatsApp el
+   mensaje con la referencia `UC-...` emitida por Hermes. Tras confirmar el
+   touch, autorizar explícitamente el `LEAD_ID` de control y proporcionar un JWT
+   `ADMIN` por un canal seguro. Solo entonces activar temporalmente
+   `conversionSyncEnabled=true` y `ADVERTISING_GOOGLE_SYNC_ENABLED=true`, con
+   `ADVERTISING_GOOGLE_SEND_ENABLED=false`, registrar una sola vez
+   `LEAD_QUALIFIED` y verificar `VALIDATED`. Revertir ambos interruptores al
+   terminar.
 5. **Envio real controlado.** Activar `ADVERTISING_GOOGLE_SEND_ENABLED=true`,
    crear un nuevo lead de prueba y revisar el diagnostico posterior
    (`ACCEPTED`, `PARTIAL` o `FAILED`). `SUBMITTED` no prueba atribucion.

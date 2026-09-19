@@ -26,7 +26,7 @@ describe('LeadsService', () => {
     isActive: jest.fn().mockReturnValue(false),
   } as unknown as ClsService;
   const config = {
-    get: jest.fn().mockReturnValue('https://example.com/admin/crm'),
+    get: jest.fn().mockReturnValue('https://admincrm.undercodeec.com'),
   } as unknown as ConfigService;
   const service = new LeadsService(prisma, events, cls, config);
 
@@ -114,7 +114,7 @@ describe('LeadsService', () => {
         leadId: 'lead-1',
         contactName: 'Ada',
         waId: '593999999999',
-        crmUrl: 'https://example.com/admin/crm/leads/lead-1',
+        crmUrl: 'https://admincrm.undercodeec.com/leads/lead-1',
       }),
     );
   });

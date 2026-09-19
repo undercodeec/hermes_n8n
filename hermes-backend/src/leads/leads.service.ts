@@ -560,6 +560,11 @@ export class LeadsService {
       profile.sector ||
       profile.location ||
       profile.users ||
+      profile.productCount ||
+      profile.paymentNeeds ||
+      profile.shippingNeeds ||
+      profile.inventoryNeeds ||
+      profile.integrations ||
       profile.budget ||
       profile.timeline,
     );
@@ -593,8 +598,9 @@ export class LeadsService {
       metadata && typeof metadata === 'object' && !Array.isArray(metadata)
         ? (metadata as Record<string, unknown>)
         : {};
-    const previousHistory = Array.isArray(previous.commercialProfileHistory)
-      ? previous.commercialProfileHistory
+    const historyValue: unknown = previous.commercialProfileHistory;
+    const previousHistory: unknown[] = Array.isArray(historyValue)
+      ? (historyValue as unknown[])
       : [];
     const definedChanges = Object.fromEntries(
       Object.entries(changes).filter(

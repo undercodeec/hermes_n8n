@@ -1,7 +1,25 @@
 {
+  "env": {
+    "ANTHROPIC_BASE_URL": "http://127.0.0.1:8787"
+  },
   "permissions": {
     "allow": [
-      "Bash(git -C \"D:/Documentos/Hermes/hermes-backend\" remote -v)"
+      "Bash(git -C \"D:/Documentos/Hermes/hermes-backend\" remote -v)",
+      "Bash(npm install *)",
+      "Bash(node -e \"const p=require\\('./package.json'\\); ['@nestjs/event-emitter','@nestjs/bullmq','bullmq','ioredis','nestjs-cls'].forEach\\(d=>console.log\\(d, p.dependencies[d]||'MISSING'\\)\\)\")",
+      "Bash(npm run *)",
+      "Bash(git add *)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(docker --version)",
+      "Bash(echo \"---exit:$?\")",
+      "Bash(git pull *)",
+      "Bash(git checkout *)",
+      "mcp__codebase-memory-mcp__list_projects",
+      "mcp__codebase-memory-mcp__index_repository",
+      "Bash(git merge *)",
+      "Bash(git fetch *)",
+      "Bash(git check-ignore *)"
     ]
   }
 }

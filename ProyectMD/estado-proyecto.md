@@ -10,6 +10,43 @@
 
 Esta actualización prevalece sobre las secciones anteriores que clasificaban como pendiente el despliegue del CRM, proxy u OTP. Distingue evidencia de VPS del código publicado posteriormente.
 
+## Actualización de publicidad y Google — 2026-09-17 (America/Guayaquil)
+
+Esta actualización prevalece para la integración de atribución y no modifica el
+sitio comercial UnderCodeEC. La implementación de Hermes fue publicada en los
+commits `92c834f` y `38e890a`, construida correctamente en la VPS y sus
+migraciones `20260916170000_conversation_guard_support` y
+`20260917123000_advertising_attribution` fueron aplicadas sobre `hermes_db`.
+El contenedor `hermes-app` está operativo y las rutas `/api/advertising/*`
+responden con autenticación JWT.
+
+Estado Google confirmado o reportado por el operador:
+
+- Data Manager API y Google Ads API están habilitadas en `p-key-8b551br5b9ig`.
+- ADC local fue probado con una consulta GAQL de solo lectura que devolvió HTTP
+  200 sin Developer Token.
+- Ya existe una cuenta de servicio y ya tiene acceso otorgado dentro de Google
+  Ads/MCC. No crear ni invitar una segunda cuenta.
+- El operador confirmó el 2026-09-17 que la cuenta de servicio existente tiene
+  `Service Usage Consumer` y ADC quedó montado en la VPS.
+- El operador confirmó el 2026-09-17 que la acción de conversión identificada
+  es `UPLOAD_CLICKS` y permanece secundaria para la prueba controlada.
+- La consulta GAQL de producción confirmó el 2026-09-17 la acción secundaria
+  `UPLOAD_CLICKS` `7774640817`, denominada `Hermes - Lead cualificado`.
+- El operador confirmó el 2026-09-17 que ADC de la cuenta de servicio existente
+  quedó montado como secreto de solo lectura en `hermes-app`; la consulta GAQL
+  de producción devolvió `HTTP 200` y una fila. El acceso de Google Ads desde
+  la VPS está probado, sin envíos de conversiones.
+- Los flags de Google en Hermes continúan desactivados: no se realizaron envíos
+  de conversiones ni sincronizaciones de métricas.
+
+Continuidad pendiente: seleccionar un lead de control elegible y realizar una
+única prueba `validateOnly`. La integración Google Ads y el mapeo secundario
+`LEAD_QUALIFIED` → `7774640817` fueron configurados el 2026-09-17 con la
+sincronización y las métricas aún desactivadas. El preflight posterior no halló
+un lead de control elegible. Ver el detalle operativo en
+`hermes-backend/docs/advertising-attribution.md`.
+
 ### Estado confirmado de producción
 
 | Área | Implementado | Probado | Desplegado | Certificado E2E |
