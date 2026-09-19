@@ -39,7 +39,7 @@ export class HermesService {
   private readonly systemPrompt = `Eres Hermes, asesor comercial digital de UnderCodeEC por WhatsApp. Ofrecemos desarrollo web, aplicaciones móviles y software a medida.
 
 ## Conversación
-Hable con cercanía y profesionalidad, como parte del equipo comercial, sin afirmar que es una persona. Trate al cliente de usted de manera consistente. Use su nombre solo de forma natural al iniciar o cuando aporte cercanía; no lo repita en cada mensaje. Evite halagos automáticos, entusiasmo artificial y muletillas como «Perfecto», «excelente idea» o «negocio precioso» cuando no aporten información.
+Hable con cercanía y profesionalidad, como parte del equipo comercial, sin afirmar que es una persona. Trate al cliente de usted de manera consistente. Use su nombre solo de forma natural al iniciar o cuando aporte cercanía; no lo repita en cada mensaje. Evite halagos automáticos, entusiasmo artificial y muletillas como «Perfecto», «excelente idea» o «negocio precioso» cuando no aporten información. No use fórmulas corporativas como «Bienvenido a UnderCodeEC»; ante un saludo, corresponda de forma natural y pregunte cómo podemos ayudarle.
 
 Responda primero y de forma completa la consulta actual. La extensión debe ser proporcional: sea breve para una duda sencilla y explique lo necesario para una decisión comercial, sin imponer un límite artificial de frases. Si el cliente hace varias preguntas directas, responda todas las que tengan respaldo antes de pedir un dato nuevo. Formule como máximo una pregunta por mensaje y solo cuando su respuesta cambie la recomendación o el siguiente paso. Una pregunta de descubrimiento anterior no es una obligación: suspéndala o descártela si el cliente cambia de tema, pide precio, plazo, condiciones, una explicación o intervención humana. No repita datos, preguntas ni invitaciones a reunión, llamada o cotización ya presentes en el contexto.
 
@@ -55,6 +55,8 @@ La evidencia nueva prevalece sobre la ficha anterior: si el cliente corrige, nie
 Adapte el descubrimiento al servicio. Para una web, si aún no se conoce la actividad del negocio, pregunte primero «¿A qué se dedica su negocio?». Después pregunte solo por el objetivo o por los servicios y productos principales que desea destacar, según cuál sea el dato decisivo que todavía falte. Conserve cualquier dato que el cliente adelante en una misma respuesta. No pregunte por funcionalidades, acciones de los visitantes, público, zona, presupuesto o plazo cuando el tipo de solución, la actividad, el propósito comercial y al menos un servicio, producto o necesidad principal ya permitan valorar el proyecto. Para una tienda online, si el cliente solo dice que quiere mostrar productos, aclare primero si desea vender y cobrar en línea o únicamente exhibir un catálogo; esa diferencia define la solución. Luego use la guía autorizada del contexto y pregunte solo el siguiente dato que realmente cambie la recomendación. Para una aplicación móvil, entienda el problema, usuarios y funciones principales sin asumir Android e iOS. Para software a medida, priorice el proceso actual, sus dificultades y el resultado esperado sin proponer arquitectura, tecnología, precio ni plazo definitivos prematuramente. Evite una entrevista técnica extensa si conviene una reunión con especialistas.
 
 Cuando ya exista información suficiente, resume en una frase concreta la solución, la actividad y lo que se destacará; recomienda el plan o siguiente paso respaldado por el contexto autorizado. No ofrezcas automáticamente una reunión, llamada ni conversación con el equipo. Hazlo únicamente si el cliente la solicita, si una valoración compleja realmente necesita intervención humana o si la política calculada por el backend lo permite. En el caso de una web para promocionar un negocio de reparación de lavadoras que ofrece servicio a domicilio y repuestos, no abras otra ronda de descubrimiento sobre contacto o interacciones: resume lo entendido y recomienda el siguiente paso pertinente sin forzar una reunión.
+
+Aplica divulgación progresiva al hablar de planes. Cuando dos opciones puedan servir, presenta primero sus nombres, precios y una diferencia esencial para que el cliente elija; no vuelques de inmediato todas las prestaciones. Para promocionar servicios, considera tanto una Landing Básica de USD $250 como el Plan de Lanzamiento web de USD $360 cuando ambos estén autorizados. Detalla qué incluye un plan solo cuando el cliente muestre interés claro en esa opción o pregunte por sus prestaciones. Si no está claro a qué plan se refiere, solicita una única aclaración breve.
 
 Explora el presupuesto solo cuando exista contexto suficiente o el cliente pregunte por precios. Permite que no lo conozca o no quiera compartirlo. Un plazo deseado del cliente nunca es un compromiso de entrega de UnderCodeEC.
 
@@ -156,6 +158,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
             `Si allowDiscoveryQuestion es false, no añada una pregunta comercial nueva. Si topicShift es true, abandone la pregunta anterior. ` +
             `Si requiredClarification es CATALOG_VS_ONLINE_SALES, aclare si el cliente solo quiere exhibir el catálogo o también vender y cobrar en la página antes de recomendar un plan. ` +
             `Si allowPlanRecommendation es false, no recomiende un plan ni un precio. Si allowMeetingOffer es false, no proponga reunión, llamada ni contacto con un asesor. ` +
+            `Si offerWebAlternatives es true, presente Landing Page y Sitio Web como opciones breves con su diferencia principal. Si allowPlanDetails es false, no enumere todas las prestaciones. Si interestedPlan existe, detalle únicamente ese tipo de plan. ` +
             `No formule preguntas cuyos temas aparezcan en recentQuestionTopics salvo que el mensaje actual las responda y una aclaración sea imprescindible.`,
         );
       }
@@ -249,6 +252,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           const candidate = this.parseHermesResponse(
             choice.message?.content || '',
           );
+          candidate.response = this.removeCorporateWelcome(candidate.response);
           const policyViolation = this.outputPolicyViolation(
             candidate,
             request,
@@ -330,6 +334,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       request.productOfInterest,
       request.commercialProfile?.service,
       request.commercialProfile?.need,
+      request.commercialProfile?.recommendedPlan,
       ...(request.pendingQuestions || []),
     ]
       .filter(Boolean)
@@ -872,6 +877,9 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     ) {
       return 'abre con una muletilla o una aprobación prefabricada';
     }
+    if (/\bbienvenid[oa]s? a undercodeec\b/.test(normalized)) {
+      return 'usa una bienvenida corporativa innecesaria';
+    }
     if (
       request.conversationGuidance?.allowMeetingOffer === false &&
       (['proponer_reunion', 'solicitar_confirmacion_reunion'].includes(
@@ -892,7 +900,73 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     ) {
       return 'recomienda un plan o precio antes de contar con criterios suficientes';
     }
+    if (
+      request.conversationGuidance?.offerWebAlternatives === true &&
+      (!/\blanding\b/.test(normalized) ||
+        !/\b(?:plan de lanzamiento|sitio web)\b/.test(normalized) ||
+        !/\b250\b/.test(normalized) ||
+        !/\b360\b/.test(normalized))
+    ) {
+      return 'omite una de las dos alternativas web que debe presentar brevemente';
+    }
+    if (
+      request.conversationGuidance?.allowPlanDetails === false &&
+      this.planDetailSignalCount(normalized) >= 3
+    ) {
+      return 'enumera demasiadas prestaciones antes de que el cliente elija un plan';
+    }
+    const interestedPlan = request.conversationGuidance?.interestedPlan;
+    if (
+      interestedPlan === 'LANDING_PAGE' &&
+      /\b(?:plan de lanzamiento|plan de crecimiento|plan de autoridad|tienda online|tienda de)\b/.test(
+        normalized,
+      )
+    ) {
+      return 'describe un plan distinto de la landing elegida por el cliente';
+    }
+    if (
+      interestedPlan === 'WEBSITE' &&
+      /\b(?:landing|tienda online|tienda de)\b/.test(normalized)
+    ) {
+      return 'describe un plan distinto del sitio web elegido por el cliente';
+    }
+    if (
+      interestedPlan === 'ONLINE_STORE' &&
+      /\b(?:landing|plan de lanzamiento|plan de crecimiento|plan de autoridad)\b/.test(
+        normalized,
+      )
+    ) {
+      return 'describe un plan distinto de la tienda online elegida por el cliente';
+    }
     return undefined;
+  }
+
+  private removeCorporateWelcome(response: string): string {
+    const cleaned = response
+      .replace(
+        /(?:^|\s)[¡!]?\s*bienvenid[oa]s?\s+a\s+undercodeec\s*[.!]?/giu,
+        ' ',
+      )
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+    return cleaned || response;
+  }
+
+  private planDetailSignalCount(normalized: string): number {
+    const signals = [
+      /\bdominio\b/,
+      /\bhosting\b/,
+      /\bssl\b/,
+      /\bcorreos? corporativos?\b/,
+      /\bformularios?\b/,
+      /\bwhatsapp\b/,
+      /\bgoogle\b/,
+      /\bsoporte\b/,
+      /\bseo\b/,
+      /\banalytics\b/,
+      /\b\d+ paginas?\b/,
+    ];
+    return signals.filter((pattern) => pattern.test(normalized)).length;
   }
 
   private applyDeterministicConstraints(

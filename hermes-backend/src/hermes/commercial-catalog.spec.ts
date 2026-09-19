@@ -32,4 +32,24 @@ describe('commercialCatalogContext', () => {
     expect(context).not.toContain('Tienda de Lanzamiento');
     expect(context).not.toContain('Tienda de Crecimiento');
   });
+
+  it('provides landing and website choices for a promotional services site', () => {
+    const context = commercialCatalogContext(
+      'Necesito un sitio web para promocionar mis servicios',
+    ).join('\n');
+
+    expect(context).toContain('Landing Básica — USD $250');
+    expect(context).toContain('Plan de Lanzamiento — USD $360');
+    expect(context).toContain('compara primero en forma breve');
+    expect(context).toContain('no toda la ficha');
+  });
+
+  it('loads the selected landing details when the client identifies it by price', () => {
+    const context = commercialCatalogContext(
+      'Me interesa la de $250, ¿qué incluye?',
+    ).join('\n');
+
+    expect(context).toContain('Landing Básica — USD $250');
+    expect(context).not.toContain('Plan de Lanzamiento — USD $360');
+  });
 });

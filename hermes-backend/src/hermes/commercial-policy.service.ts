@@ -80,6 +80,7 @@ export class CommercialPolicyService {
       'store_payment',
       'project_payment',
       'technical_explanation',
+      'plan_details',
     ].includes(currentTopic);
     const topicShift = Boolean(
       previousQuestionTopic &&
@@ -118,13 +119,27 @@ export class CommercialPolicyService {
       /\b(?:reunion|asesor(?:a|ia)?|especialista|videollamada|llamada)\b/.test(
         normalized,
       );
+    const interestedPlan = this.interestedPlan(
+      normalized,
+      context.conversationHistory || [],
+    );
     const allowPlanRecommendation =
       !requiredClarification &&
-      this.hasPlanRecommendationBasis(
-        normalized,
-        context.conversationHistory || [],
-        context.commercialProfile,
-        sufficientContext,
+      (Boolean(interestedPlan) ||
+        this.hasPlanRecommendationBasis(
+          normalized,
+          context.conversationHistory || [],
+          context.commercialProfile,
+          sufficientContext,
+        ));
+    const allowPlanDetails = Boolean(interestedPlan);
+    const offerWebAlternatives =
+      !interestedPlan &&
+      /\b(?:sitio web|pagina web|desarrollo web|presencia (?:web|en internet))\b/.test(
+        commercialScope,
+      ) &&
+      /\b(?:promocionar|promocion|presencia|servicios|economico|economica|barato|barata|alternativa|opciones?)\b/.test(
+        commercialScope,
       );
     const allowDiscoveryQuestion =
       !requestsHuman &&
@@ -160,6 +175,9 @@ export class CommercialPolicyService {
         ...(requiredClarification ? { requiredClarification } : {}),
         allowMeetingOffer,
         allowPlanRecommendation,
+        allowPlanDetails,
+        ...(interestedPlan ? { interestedPlan } : {}),
+        offerWebAlternatives,
         ...(paymentContext ? { paymentContext } : {}),
       },
     };
@@ -198,9 +216,17 @@ export class CommercialPolicyService {
     if (!decision.guidance.allowMeetingOffer) {
       content = this.stripUnrequestedMeetingOffer(content);
     }
+    const commercialProfile = { ...response.commercialProfile };
+    if (
+      decision.guidance.offerWebAlternatives &&
+      !decision.guidance.interestedPlan
+    ) {
+      delete commercialProfile.recommendedPlan;
+    }
     return {
       ...response,
       response: content,
+      ...(response.commercialProfile ? { commercialProfile } : {}),
       ...(!decision.guidance.allowMeetingOffer &&
       ['proponer_reunion', 'solicitar_confirmacion_reunion'].includes(
         response.nextAction || '',
@@ -399,6 +425,57 @@ export class CommercialPolicyService {
     return hasProductVolume && hasSecondStoreRequirement;
   }
 
+  private interestedPlan(
+    current: string,
+    history: Array<{ role: string; content: string }>,
+  ): 'LANDING_PAGE' | 'WEBSITE' | 'ONLINE_STORE' | undefined {
+    const asksForDetails =
+      /\b(?:que (?:(?:no )?mas |nomas )?(?:incluye|trae|contiene|viene)|de que.{0,20}viene|que viene incluido|detalles|mas informacion|expliqueme|cuenteme mas|como funciona)\b/.test(
+        current,
+      );
+    const selectsOption =
+      /\b(?:me interesa|estoy interesado|prefiero|elijo|escojo|quiero conocer|quiero saber mas|me quedo con)\b/.test(
+        current,
+      );
+    if (!asksForDetails && !selectsOption) return undefined;
+
+    const explicit = this.singlePlanInText(current);
+    if (explicit) return explicit;
+    if (!asksForDetails) return undefined;
+
+    const lastAssistant = [...history]
+      .reverse()
+      .find((message) => message.role === 'assistant');
+    return lastAssistant
+      ? this.singlePlanInText(this.normalize(lastAssistant.content))
+      : undefined;
+  }
+
+  private singlePlanInText(
+    value: string,
+  ): 'LANDING_PAGE' | 'WEBSITE' | 'ONLINE_STORE' | undefined {
+    const plans: Array<'LANDING_PAGE' | 'WEBSITE' | 'ONLINE_STORE'> = [];
+    if (
+      /\b(?:landing|pagina de aterrizaje)\b|(?:\busd\s*\$?\s*|\$|\bde\s+)250\b/.test(
+        value,
+      )
+    )
+      plans.push('LANDING_PAGE');
+    if (
+      /\b(?:plan de lanzamiento|plan de crecimiento|plan de autoridad|sitio web|pagina web)\b|(?:\busd\s*\$?\s*|\$|\bde\s+)(?:360|510|1010)\b/.test(
+        value,
+      )
+    )
+      plans.push('WEBSITE');
+    if (
+      /\b(?:tienda online|ecommerce|tienda de)\b|(?:\busd\s*\$?\s*|\$|\bde\s+)(?:550|850|3490)\b/.test(
+        value,
+      )
+    )
+      plans.push('ONLINE_STORE');
+    return plans.length === 1 ? plans[0] : undefined;
+  }
+
   private currentTopic(value: string, paymentContext?: PaymentContext): string {
     if (paymentContext === 'PROJECT_PAYMENT') return 'project_payment';
     if (paymentContext === 'STORE_CHECKOUT') return 'store_payment';
@@ -420,6 +497,12 @@ export class CommercialPolicyService {
       return 'timeline';
     if (/\b(?:que es|como funciona|que significa|para que sirve)\b/.test(value))
       return 'technical_explanation';
+    if (
+      /\b(?:que (?:(?:no )?mas |nomas )?(?:incluye|trae|contiene|viene)|de que.{0,20}viene|que viene incluido|detalles|mas informacion)\b/.test(
+        value,
+      )
+    )
+      return 'plan_details';
     if (/\b(?:catalogo|ver|mostrar)\b.{0,35}\bproductos?\b/.test(value))
       return 'store_goal';
     return 'general';

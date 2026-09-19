@@ -126,6 +126,8 @@ describe('HermesService commercial contract', () => {
       sufficientContext: true,
       allowMeetingOffer: false,
       allowPlanRecommendation: true,
+      allowPlanDetails: false,
+      offerWebAlternatives: false,
       paymentContext: 'PROJECT_PAYMENT' as const,
     };
     const result = await service.generateResponse({
@@ -319,6 +321,8 @@ describe('HermesService commercial contract', () => {
         sufficientContext: true,
         allowMeetingOffer: false,
         allowPlanRecommendation: true,
+        allowPlanDetails: false,
+        offerWebAlternatives: false,
       },
     });
 
@@ -404,11 +408,76 @@ describe('HermesService commercial contract', () => {
         sufficientContext: false,
         allowMeetingOffer: false,
         allowPlanRecommendation: false,
+        allowPlanDetails: false,
+        offerWebAlternatives: false,
       },
     });
 
     expect(post).toHaveBeenCalledTimes(2);
     expect(result.response).toContain('Antes de recomendarle un plan');
     expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
+  });
+
+  it('removes a corporate welcome from an otherwise natural greeting', async () => {
+    const welcome = JSON.stringify({
+      response:
+        'Buenos días. Bienvenido a UnderCodeEC. ¿En qué podemos ayudarle?',
+      detectedIntent: 'info_general',
+      suggestedTags: [],
+      nextAction: 'continuar_descubrimiento',
+      commercialProfile: {},
+    });
+    const { service, post } = setup(welcome);
+
+    const result = await service.generateResponse({
+      contactName: 'Christopher',
+      messageContent: 'Buenos días',
+      conversationHistory: [],
+    });
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(result.response).toBe('Buenos días. ¿En qué podemos ayudarle?');
+  });
+
+  it('retries a full plan dump and presents two brief promotional-web options', async () => {
+    const fullPlan = JSON.stringify({
+      response:
+        'El Plan de Lanzamiento cuesta USD $360 e incluye hasta 5 páginas, dominio, hosting, SSL, correos corporativos, formulario, WhatsApp, Google y soporte.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: { recommendedPlan: 'Plan de Lanzamiento' },
+    });
+    const options = JSON.stringify({
+      response:
+        'Puede empezar con una Landing Básica de USD $250 si desea concentrar sus servicios en una sola página, o con el Plan de Lanzamiento de USD $360 si prefiere organizarlos en un sitio web de hasta 5 páginas. ¿Cuál de las dos opciones le interesa conocer?',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'continuar_descubrimiento',
+      commercialProfile: {},
+    });
+    const { service, post } = setup([fullPlan, options]);
+
+    const result = await service.generateResponse({
+      messageContent: 'Quiero promocionar mis servicios.',
+      conversationHistory: [],
+      conversationGuidance: {
+        currentTopic: 'general',
+        directAnswerRequired: false,
+        allowDiscoveryQuestion: false,
+        topicShift: false,
+        recentQuestionTopics: [],
+        sufficientContext: true,
+        allowMeetingOffer: false,
+        allowPlanRecommendation: true,
+        allowPlanDetails: false,
+        offerWebAlternatives: true,
+      },
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result.response).toContain('Landing Básica de USD $250');
+    expect(result.response).toContain('Plan de Lanzamiento de USD $360');
+    expect(result.response).not.toContain('dominio');
   });
 });

@@ -13,12 +13,14 @@ import { CommercialPolicyService } from '../hermes/commercial-policy.service';
 import { AutoReplyJobData } from './auto-reply.constants';
 
 describe('AutoReplyService', () => {
-  it('schedules every automatic reply with a fixed two-second pause', async () => {
+  it('schedules the first automatic reply with a ten-second pause', async () => {
     const add = jest.fn().mockResolvedValue({});
     const queue = { add } as unknown as Queue<AutoReplyJobData>;
     const service = new AutoReplyService(
       { get: jest.fn() } as unknown as ConfigService,
-      {} as PrismaService,
+      {
+        message: { findFirst: jest.fn().mockResolvedValue(null) },
+      } as unknown as PrismaService,
       {} as MetaService,
       {} as HermesService,
       {} as HandoffService,
@@ -39,6 +41,41 @@ describe('AutoReplyService', () => {
     expect(add).toHaveBeenCalledWith(
       'send-auto-reply',
       data,
+      expect.objectContaining({ delay: 10_000 }),
+    );
+  });
+
+  it('keeps the regular delay after Hermes has already replied', async () => {
+    const add = jest.fn().mockResolvedValue({});
+    const service = new AutoReplyService(
+      { get: jest.fn() } as unknown as ConfigService,
+      {
+        message: {
+          findFirst: jest.fn().mockResolvedValue({ id: 'outbound-1' }),
+        },
+      } as unknown as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      {} as TasksService,
+      new CommercialPolicyService(),
+      {} as ConversationGuardService,
+      { add } as unknown as Queue<AutoReplyJobData>,
+    );
+
+    await service.enqueue(
+      {
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-2',
+      },
+      40,
+    );
+
+    expect(add).toHaveBeenCalledWith(
+      'send-auto-reply',
+      expect.any(Object),
       expect.objectContaining({ delay: 2000 }),
     );
   });
@@ -428,5 +465,100 @@ describe('AutoReplyService', () => {
       '593991234567',
       expect.stringContaining('He registrado una solicitud de cotización'),
     );
+  });
+
+  it('sends and persists a long reply as at most three ordered messages', async () => {
+    const inbound = {
+      id: 'inbound-long',
+      wamid: 'wamid.inbound-long',
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      content: 'Explíqueme cómo funciona.',
+      createdAt: new Date('2026-09-18T20:00:00Z'),
+      rawPayload: null,
+    };
+    const longResponse = [
+      'La primera parte explica el concepto de forma sencilla para el cliente.',
+      'La segunda parte relaciona ese concepto directamente con su negocio y su objetivo.',
+      'La tercera parte completa la información necesaria sin convertir la respuesta en una lista interminable.',
+      'Finalmente se indica el siguiente paso de manera natural y sin repetir preguntas.',
+    ].join(' ');
+    const messageCreate = jest.fn().mockResolvedValue({ id: 'outbound' });
+    const prisma = {
+      message: {
+        findUnique: jest.fn().mockResolvedValue(inbound),
+        findMany: jest
+          .fn()
+          .mockImplementation(async (args) =>
+            args.where?.NOT ? [] : [inbound],
+          ),
+        create: messageCreate,
+      },
+      conversation: {
+        findUnique: jest.fn().mockResolvedValue({
+          status: ConversationStatus.ACTIVE,
+          contact: { name: 'Ana', waId: '593991234567', email: null },
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      conversationState: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        upsert: jest.fn().mockResolvedValue({}),
+      },
+      lead: { findFirst: jest.fn().mockResolvedValue(null) },
+      task: { findMany: jest.fn().mockResolvedValue([]) },
+    } as unknown as PrismaService;
+    const meta = {
+      showTypingIndicator: jest.fn().mockResolvedValue(undefined),
+      sendTextMessage: jest
+        .fn()
+        .mockResolvedValue({ messages: [{ id: 'wamid.outbound' }] }),
+    } as unknown as MetaService;
+    const service = new AutoReplyService(
+      {
+        get: jest.fn((key: string) => {
+          if (key === 'AI_MESSAGE_SPLIT_THRESHOLD') return 120;
+          if (key === 'AI_MESSAGE_PART_DELAY_MS') return 0;
+          return undefined;
+        }),
+      } as unknown as ConfigService,
+      prisma,
+      meta,
+      {
+        generateResponse: jest.fn().mockResolvedValue({
+          response: longResponse,
+          detectedIntent: 'info_general',
+          nextAction: 'sin_accion',
+          tokensUsed: 100,
+          costEstimate: 0.01,
+        }),
+      } as unknown as HermesService,
+      { create: jest.fn() } as unknown as HandoffService,
+      {
+        recordCommercialProfileFromConversation: jest
+          .fn()
+          .mockResolvedValue({}),
+      } as unknown as LeadsService,
+      {} as TasksService,
+      new CommercialPolicyService(),
+      {
+        consumeAiQuota: jest.fn().mockResolvedValue(true),
+        isSafeGeneratedResponse: jest.fn().mockReturnValue(true),
+      } as unknown as ConversationGuardService,
+      { add: jest.fn() } as unknown as Queue,
+    );
+
+    await service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-long',
+    });
+
+    expect(meta.sendTextMessage).toHaveBeenCalledTimes(3);
+    expect(messageCreate).toHaveBeenCalledTimes(3);
+    const sentParts = (meta.sendTextMessage as jest.Mock).mock.calls.map(
+      (call) => call[1],
+    );
+    expect(sentParts.join(' ')).toBe(longResponse);
   });
 });

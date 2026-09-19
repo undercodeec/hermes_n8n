@@ -51,6 +51,12 @@ export type ConversationGuidance = {
   allowMeetingOffer: boolean;
   /** Impide recomendar un plan mientras falte una distinción esencial. */
   allowPlanRecommendation: boolean;
+  /** Permite detallar prestaciones solo cuando el interés apunta a un plan concreto. */
+  allowPlanDetails: boolean;
+  /** Plan concreto por el que el cliente mostró interés o pidió detalles. */
+  interestedPlan?: 'LANDING_PAGE' | 'WEBSITE' | 'ONLINE_STORE';
+  /** Conviene presentar Landing y Sitio Web como alternativas breves. */
+  offerWebAlternatives: boolean;
   paymentContext?: PaymentContext;
 };
 

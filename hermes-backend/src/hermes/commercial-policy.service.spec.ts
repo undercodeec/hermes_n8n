@@ -282,4 +282,105 @@ describe('CommercialPolicyService', () => {
 
     expect(decision.guidance.allowMeetingOffer).toBe(true);
   });
+
+  it('offers landing and website as brief alternatives for a promotional presence', () => {
+    const decision = service.analyze(
+      'Quiero que puedan ver mis servicios y promocionar mi negocio.',
+      receivedAt,
+      [],
+      {
+        commercialProfile: {
+          service: 'sitio web',
+          need: 'promocionar reparación de lavadoras',
+          sector: 'reparación de electrodomésticos',
+        },
+      },
+    );
+
+    expect(decision.guidance.offerWebAlternatives).toBe(true);
+    expect(decision.guidance.allowPlanRecommendation).toBe(true);
+    expect(decision.guidance.allowPlanDetails).toBe(false);
+
+    const enforced = service.enforceResponsePolicy(
+      {
+        response:
+          'Puede valorar una Landing Básica de $250 o un Plan de Lanzamiento de $360.',
+        detectedIntent: 'consulta_servicio',
+        nextAction: 'sin_accion',
+        commercialProfile: { recommendedPlan: 'Plan de Lanzamiento' },
+      },
+      decision,
+    );
+    expect(enforced.commercialProfile?.recommendedPlan).toBeUndefined();
+  });
+
+  it('allows details only for the plan explicitly selected by the client', () => {
+    const decision = service.analyze(
+      'Me interesa la Landing Básica, ¿qué incluye?',
+      receivedAt,
+      [],
+      {
+        conversationHistory: [
+          {
+            role: 'assistant',
+            content:
+              'Puede elegir una Landing Básica de $250 o un Plan de Lanzamiento de $360.',
+          },
+        ],
+      },
+    );
+
+    expect(decision.guidance.currentTopic).toBe('plan_details');
+    expect(decision.guidance.directAnswerRequired).toBe(true);
+    expect(decision.guidance.interestedPlan).toBe('LANDING_PAGE');
+    expect(decision.guidance.allowPlanDetails).toBe(true);
+    expect(decision.guidance.allowPlanRecommendation).toBe(true);
+    expect(decision.guidance.offerWebAlternatives).toBe(false);
+  });
+
+  it('does not guess a plan when a detail question follows two alternatives', () => {
+    const decision = service.analyze('¿Qué incluye?', receivedAt, [], {
+      conversationHistory: [
+        {
+          role: 'assistant',
+          content:
+            'Puede elegir una Landing Básica de $250 o un Plan de Lanzamiento de $360.',
+        },
+      ],
+    });
+
+    expect(decision.guidance.interestedPlan).toBeUndefined();
+    expect(decision.guidance.allowPlanDetails).toBe(false);
+  });
+
+  it('understands a selected web option by its quoted price', () => {
+    const decision = service.analyze(
+      'Me interesa la de $250, ¿qué incluye?',
+      receivedAt,
+      [],
+      {
+        conversationHistory: [
+          {
+            role: 'assistant',
+            content:
+              'Puede elegir una Landing Básica de $250 o un Plan de Lanzamiento de $360.',
+          },
+        ],
+      },
+    );
+
+    expect(decision.guidance.interestedPlan).toBe('LANDING_PAGE');
+    expect(decision.guidance.allowPlanDetails).toBe(true);
+  });
+
+  it('understands colloquial questions about what a selected plan includes', () => {
+    const decision = service.analyze(
+      'La landing de 250, ¿qué nomás viene?',
+      receivedAt,
+    );
+
+    expect(decision.guidance.currentTopic).toBe('plan_details');
+    expect(decision.guidance.interestedPlan).toBe('LANDING_PAGE');
+    expect(decision.guidance.allowPlanDetails).toBe(true);
+  });
 });

@@ -36,6 +36,13 @@ const LANDING_CATALOG = `Catálogo oficial del configurador — Landing Page (US
 
 const GENERAL_SUMMARY = `Resumen de planes web autorizados (USD, IVA incluido): Sitio Web desde $360; Landing Page desde $250; Tienda Online desde $550. Antes de recomendar uno, identifica cuál de estos proyectos necesita el cliente.`;
 
+const WEB_OPTIONS_GUIDE = `Guía para presentar opciones de presencia web:
+- Para un negocio que quiere promocionar servicios, captar contactos o empezar con una presencia sencilla, compara primero en forma breve la Landing Básica de USD $250 y el Plan de Lanzamiento de USD $360.
+- Explica la diferencia esencial, no toda la ficha: la landing concentra la información en una sola página; el sitio web permite organizarla en hasta 5 páginas.
+- No enumeres todavía dominio, hosting, SSL, correos, SEO, formularios, soporte ni todas las prestaciones. Detállalas únicamente cuando el cliente muestre interés en una opción concreta o pregunte qué incluye.
+- Si el cliente pregunta por una alternativa más económica a un sitio web, informa que la Landing Básica cuesta USD $250 y confirma si una sola página cubriría su necesidad.
+- Si presentó interés en dos opciones y luego pregunta de forma ambigua «¿qué incluye?», aclara primero cuál de las dos desea conocer.`;
+
 function normalize(value: string): string {
   return value
     .toLocaleLowerCase('es')
@@ -49,18 +56,36 @@ export function commercialCatalogContext(query: string): string[] {
   const store =
     /\b(tienda online|ecommerce|comercio electronico|carrito|checkout|pasarela|vender online|venta online|comprar online|pagar online)\b/.test(
       normalized,
-    );
+    ) ||
+    (/\b(550|850|3490)\b/.test(normalized) &&
+      /\b(incluye|trae|viene|interesa|detalles)\b/.test(normalized));
   const landing =
     /\b(landing|pagina de aterrizaje|captar leads?|campana publicitaria)\b/.test(
       normalized,
-    );
+    ) ||
+    (/\b250\b/.test(normalized) &&
+      /\b(incluye|trae|viene|interesa|detalles)\b/.test(normalized));
   const website =
     /\b(sitio web|pagina web|web corporativa|presencia web|portal web)\b/.test(
+      normalized,
+    ) ||
+    (/\b(360|510|1010)\b/.test(normalized) &&
+      /\b(incluye|trae|viene|interesa|detalles)\b/.test(normalized));
+  const compareWebOptions =
+    website &&
+    /\b(promocionar|promocion|presencia|servicios|economico|economica|barato|barata|alternativa|opciones?)\b/.test(
       normalized,
     );
 
   if (store) return [INFRASTRUCTURE_POLICY, STORE_DISCOVERY, STORE_CATALOG];
   if (landing) return [INFRASTRUCTURE_POLICY, LANDING_CATALOG];
+  if (compareWebOptions)
+    return [
+      INFRASTRUCTURE_POLICY,
+      WEB_OPTIONS_GUIDE,
+      LANDING_CATALOG,
+      WEBSITE_CATALOG,
+    ];
   if (website) return [INFRASTRUCTURE_POLICY, WEBSITE_CATALOG];
   if (/\b(planes?|precios?|tarifas?|paquetes?)\b/.test(normalized)) {
     return [GENERAL_SUMMARY];

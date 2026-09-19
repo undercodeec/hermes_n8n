@@ -21,6 +21,7 @@ import { ConversationGuardService } from '../conversation-guard/conversation-gua
 import { CommercialProfile } from '../hermes/dto/hermes-request.dto';
 import { CommercialPolicyService } from '../hermes/commercial-policy.service';
 import { TasksService } from '../tasks/tasks.service';
+import { splitWhatsAppMessage } from './whatsapp-message-splitter';
 
 @Injectable()
 export class AutoReplyService {
@@ -41,7 +42,15 @@ export class AutoReplyService {
   ) {}
 
   async enqueue(data: AutoReplyJobData, messageLength: number): Promise<void> {
-    const delay = this.replyDelay(messageLength);
+    const previousHermesMessage = await this.prisma.message.findFirst({
+      where: {
+        conversationId: data.conversationId,
+        direction: MessageDirection.OUTBOUND,
+        sender: MessageSender.HERMES,
+      },
+      select: { id: true },
+    });
+    const delay = this.replyDelay(messageLength, !previousHermesMessage);
     await this.queue.add('send-auto-reply', data, {
       jobId: `auto-reply-${data.inboundMessageId}`,
       delay,
@@ -301,26 +310,51 @@ export class AutoReplyService {
     ) {
       return;
     }
-    const sentMessage = await this.meta.sendTextMessage(
-      conversation.contact.waId,
+    const messageParts = splitWhatsAppMessage(
       response.response,
+      this.positiveInteger('AI_MESSAGE_SPLIT_THRESHOLD', 520),
     );
+    let sentParts = 0;
+    for (const [index, content] of messageParts.entries()) {
+      if (index > 0) {
+        await this.pause(
+          this.nonNegativeInteger('AI_MESSAGE_PART_DELAY_MS', 700),
+        );
+        const canContinue = await this.hasConversationStatus(
+          data.conversationId,
+          shouldHandoff
+            ? [ConversationStatus.ACTIVE, ConversationStatus.HANDED_OFF]
+            : [ConversationStatus.ACTIVE],
+        );
+        if (
+          !canContinue ||
+          (await this.hasNewerInbound(data.conversationId, inbound))
+        ) {
+          break;
+        }
+      }
+      const sentMessage = await this.meta.sendTextMessage(
+        conversation.contact.waId,
+        content,
+      );
+      const partLatencyMs = Date.now() - startedAt;
+      await this.prisma.message.create({
+        data: {
+          conversationId: data.conversationId,
+          contactId: data.contactId,
+          direction: MessageDirection.OUTBOUND,
+          sender: MessageSender.HERMES,
+          type: MessageType.TEXT,
+          content,
+          wamid: sentMessage?.messages?.[0]?.id,
+          tokensUsed: index === 0 ? response.tokensUsed : 0,
+          latencyMs: partLatencyMs,
+          costEstimate: index === 0 ? response.costEstimate : 0,
+        },
+      });
+      sentParts += 1;
+    }
     const latencyMs = Date.now() - startedAt;
-
-    await this.prisma.message.create({
-      data: {
-        conversationId: data.conversationId,
-        contactId: data.contactId,
-        direction: MessageDirection.OUTBOUND,
-        sender: MessageSender.HERMES,
-        type: MessageType.TEXT,
-        content: response.response,
-        wamid: sentMessage?.messages?.[0]?.id,
-        tokensUsed: response.tokensUsed,
-        latencyMs,
-        costEstimate: response.costEstimate,
-      },
-    });
     await this.prisma.conversation.update({
       where: { id: data.conversationId },
       data: { updatedAt: new Date() },
@@ -364,22 +398,38 @@ export class AutoReplyService {
             ? 'QUOTE_TASK_CREATED_AND_MESSAGE_SENT'
             : 'MESSAGE_SENT',
         outputValidation: 'passed',
+        messageParts: sentParts,
         latencyMs,
       }),
     );
   }
 
-  private replyDelay(messageLength: number): number {
+  private replyDelay(messageLength: number, isInitialReply: boolean): number {
     void messageLength;
-    const configured = Number(this.config.get('AI_REPLY_DELAY_MS'));
+    const key = isInitialReply
+      ? 'AI_INITIAL_REPLY_DELAY_MS'
+      : 'AI_REPLY_DELAY_MS';
+    const configured = Number(this.config.get(key));
     return Number.isSafeInteger(configured) && configured >= 0
       ? configured
-      : 2000;
+      : isInitialReply
+        ? 10_000
+        : 2000;
   }
 
   private positiveInteger(key: string, fallback: number): number {
     const value = Number(this.config.get(key));
     return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+  }
+
+  private nonNegativeInteger(key: string, fallback: number): number {
+    const value = Number(this.config.get(key));
+    return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
+  }
+
+  private async pause(delayMs: number): Promise<void> {
+    if (delayMs <= 0) return;
+    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
   }
 
   private async hasNewerInbound(
@@ -449,12 +499,22 @@ export class AutoReplyService {
         this.providerTimestamp(right.rawPayload) ?? right.createdAt;
       return leftTime.getTime() - rightTime.getTime();
     });
+    const conversationHistory = orderedMessages.reduce<
+      Array<{ role: 'user' | 'assistant'; content: string }>
+    >((history, message) => {
+      const role =
+        message.direction === MessageDirection.INBOUND ? 'user' : 'assistant';
+      const content = message.content || '';
+      const previous = history.at(-1);
+      if (previous?.role === role) {
+        previous.content = `${previous.content}\n\n${content}`.trim();
+      } else {
+        history.push({ role, content });
+      }
+      return history;
+    }, []);
     return {
-      recentMessages: orderedMessages.map((message) => ({
-        role:
-          message.direction === MessageDirection.INBOUND ? 'user' : 'assistant',
-        content: message.content || '',
-      })),
+      recentMessages: conversationHistory,
       conversationSummary: state?.summary || undefined,
       leadStage: lead?.stage || state?.leadStage || undefined,
       productOfInterest: lead?.productOfInterest || undefined,
