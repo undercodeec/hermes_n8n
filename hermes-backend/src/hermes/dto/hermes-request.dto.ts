@@ -29,6 +29,25 @@ export type CommercialProfile = {
   suggestedStage?: 'CONTACTED' | 'QUALIFIED';
 };
 
+export type PaymentContext =
+  'STORE_CHECKOUT' | 'PROJECT_PAYMENT' | 'UNDETERMINED';
+
+export type ConversationGuidance = {
+  /** Tema semántico del mensaje actual, calculado por el backend. */
+  currentTopic: string;
+  /** Una pregunta directa debe resolverse antes de continuar el descubrimiento. */
+  directAnswerRequired: boolean;
+  /** Indica si una pregunta comercial nueva aporta valor en este turno. */
+  allowDiscoveryQuestion: boolean;
+  /** El cliente dejó atrás la última pregunta del asesor y abrió otro tema. */
+  topicShift: boolean;
+  /** Temas de preguntas recientes del asesor para evitar repeticiones. */
+  recentQuestionTopics: string[];
+  /** Ya existe alcance suficiente para recomendar o solicitar una valoración. */
+  sufficientContext: boolean;
+  paymentContext?: PaymentContext;
+};
+
 export class HermesRequestDto {
   contactName: string;
   messageContent: string;
@@ -46,6 +65,7 @@ export class HermesRequestDto {
   };
   conversationId?: string;
   currentIntent?: string;
+  conversationGuidance?: ConversationGuidance;
   pendingQuestions?: string[];
   contactPreference?: string;
   pendingActions?: Array<{

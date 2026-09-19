@@ -89,6 +89,10 @@ export class AutoReplyService {
       inbound.content || '',
       receivedAt,
       context.commercialProfile?.pendingQuestions,
+      {
+        conversationHistory: context.recentMessages,
+        commercialProfile: context.commercialProfile,
+      },
     );
 
     if (policy.requestsHuman) {
@@ -104,7 +108,7 @@ export class AutoReplyService {
         waId: conversation.contact.waId,
         inboundWamid: inbound.wamid,
         content:
-          'He registrado tu solicitud para que continúes con una persona del equipo. La conversación queda pendiente de asignación.',
+          'He registrado su solicitud para que continúe con una persona del equipo. La conversación queda pendiente de asignación.',
         metadata: { action: 'HUMAN_HANDOFF_CREATED' },
         allowedStatuses: [
           ConversationStatus.ACTIVE,
@@ -128,7 +132,7 @@ export class AutoReplyService {
       });
       const content = policy.requestedCallAt
         ? 'He registrado la solicitud de llamada usando este mismo número de WhatsApp para el horario indicado. Está pendiente de confirmación por el equipo; todavía no está agendada.'
-        : 'Claro, podemos coordinar una llamada usando este mismo número de WhatsApp. ¿Qué horario te viene bien?';
+        : 'Claro, podemos coordinar una llamada usando este mismo número de WhatsApp. ¿Qué horario le viene bien?';
       await this.sendAndPersist({
         conversationId: data.conversationId,
         contactId: data.contactId,
@@ -184,6 +188,7 @@ export class AutoReplyService {
       },
       conversationId: data.conversationId,
       currentIntent: policy.intent,
+      conversationGuidance: policy.guidance,
       pendingQuestions: policy.pendingQuestions,
       contactPreference: context.commercialProfile?.contactPreference,
       pendingActions: context.pendingActions,
@@ -201,6 +206,10 @@ export class AutoReplyService {
         response.response,
       ),
     };
+    response.response = this.commercialPolicy.enforceQuestionPolicy(
+      response.response,
+      policy,
+    );
 
     if (!this.conversationGuard.isSafeGeneratedResponse(response.response)) {
       this.logger.error(
@@ -253,8 +262,8 @@ export class AutoReplyService {
           .join('; '),
       });
       response.response = requestedTimelineWithoutAuthorizedValue
-        ? 'Con el alcance que ya has descrito, no tengo una cifra ni un plazo autorizados para confirmarte por este canal. He registrado una solicitud de cotización para que el equipo prepare la valoración; queda pendiente de revisión.'
-        : 'Con el alcance que ya has descrito, no tengo una cifra autorizada para confirmarte por este canal. He registrado una solicitud de cotización para que el equipo prepare la valoración; queda pendiente de revisión.';
+        ? 'Con el alcance que ya ha descrito, no tengo una cifra ni un plazo autorizados para confirmarle por este canal. He registrado una solicitud de cotización para que el equipo prepare la valoración; queda pendiente de revisión.'
+        : 'Con el alcance que ya ha descrito, no tengo una cifra autorizada para confirmarle por este canal. He registrado una solicitud de cotización para que el equipo prepare la valoración; queda pendiente de revisión.';
       response.detectedIntent = 'cotizacion';
       response.nextAction = 'solicitar_cotizacion_humana';
       response.commercialProfile = {
@@ -278,7 +287,7 @@ export class AutoReplyService {
       });
       if (response.detectedIntent === 'error') {
         response.response =
-          'No pude procesar tu solicitud correctamente. He registrado una derivación al equipo y queda pendiente de asignación.';
+          'No pude procesar su solicitud correctamente. He registrado una derivación al equipo y queda pendiente de asignación.';
       }
     }
     if (

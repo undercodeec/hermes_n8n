@@ -11,6 +11,7 @@ import { WebhookService } from './webhook.service';
 import { AutoReplyService } from '../auto-replies/auto-reply.service';
 import { ConversationGuardService } from '../conversation-guard/conversation-guard.service';
 import { AdvertisingService } from '../advertising/advertising.service';
+import { ConversationEventsService } from '../conversations/conversation-events.service';
 
 describe('WebhookService campaign replies', () => {
   it('accepts only a valid Meta HMAC signature', () => {
@@ -35,6 +36,7 @@ describe('WebhookService campaign replies', () => {
       {} as AutoReplyService,
       {} as ConversationGuardService,
       {} as AdvertisingService,
+      {} as ConversationEventsService,
     );
 
     expect(service.validateSignature(payload, signature)).toBe(true);
@@ -89,6 +91,10 @@ describe('WebhookService campaign replies', () => {
     const advertising = {
       claimReference: jest.fn().mockResolvedValue({ status: 'missing' }),
     } as unknown as AdvertisingService;
+    const publishCustomerMessage = jest.fn();
+    const conversationEvents = {
+      publishCustomerMessage,
+    } as unknown as ConversationEventsService;
     const service = new WebhookService(
       { get: jest.fn() } as unknown as ConfigService,
       prisma,
@@ -100,6 +106,7 @@ describe('WebhookService campaign replies', () => {
       autoReplies,
       guard,
       advertising,
+      conversationEvents,
     );
 
     await (service as any).processIncomingMessage(
@@ -118,6 +125,13 @@ describe('WebhookService campaign replies', () => {
       reasonDetail:
         'Respuesta a campaña campaign-1; requiere atención humana desde CRM.',
     });
+    expect(publishCustomerMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        messageId: 'inbound-1',
+        conversationId: 'conversation-1',
+        contactName: 'Contacto de prueba',
+      }),
+    );
     expect(hermes.generateResponse).not.toHaveBeenCalled();
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
     expect(autoReplies.enqueue).not.toHaveBeenCalled();
@@ -195,6 +209,9 @@ describe('WebhookService campaign replies', () => {
       {
         claimReference: jest.fn().mockResolvedValue({ status: 'missing' }),
       } as unknown as AdvertisingService,
+      {
+        publishCustomerMessage: jest.fn(),
+      } as unknown as ConversationEventsService,
     );
 
     await (service as any).processIncomingMessage(
@@ -265,6 +282,7 @@ describe('WebhookService campaign replies', () => {
       {} as AutoReplyService,
       {} as ConversationGuardService,
       {} as AdvertisingService,
+      {} as ConversationEventsService,
     );
 
     const result = await (service as any).getOrCreateConversation('contact-1');

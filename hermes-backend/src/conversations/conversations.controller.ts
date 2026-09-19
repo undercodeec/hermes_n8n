@@ -6,7 +6,9 @@ import {
   Post,
   Put,
   Query,
+  Sse,
   UseGuards,
+  MessageEvent,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
@@ -21,6 +23,8 @@ import {
   QueryMessagesDto,
 } from './dto/query-conversations.dto';
 import { ReplyConversationDto } from './dto/reply-conversation.dto';
+import { ConversationEventsService } from './conversation-events.service';
+import { Observable } from 'rxjs';
 
 @ApiTags('Conversations')
 @ApiBearerAuth()
@@ -28,7 +32,10 @@ import { ReplyConversationDto } from './dto/reply-conversation.dto';
 @Roles(UserRole.ADMIN, UserRole.SALES_AGENT)
 @Controller('api/conversations')
 export class ConversationsController {
-  constructor(private readonly conversationsService: ConversationsService) {}
+  constructor(
+    private readonly conversationsService: ConversationsService,
+    private readonly conversationEvents: ConversationEventsService,
+  ) {}
 
   @Post()
   @ApiOperation({ summary: 'Crear conversación' })
@@ -40,6 +47,12 @@ export class ConversationsController {
   @ApiOperation({ summary: 'Listar y filtrar conversaciones del CRM' })
   findAll(@Query() query: QueryConversationsDto) {
     return this.conversationsService.findAll(query);
+  }
+
+  @Sse('events')
+  @ApiOperation({ summary: 'Eventos en tiempo real del Inbox mediante SSE' })
+  events(): Observable<MessageEvent> {
+    return this.conversationEvents.stream();
   }
 
   @Get(':id/messages')

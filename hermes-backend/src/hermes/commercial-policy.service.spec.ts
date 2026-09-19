@@ -45,4 +45,91 @@ describe('CommercialPolicyService', () => {
       ),
     ).toEqual(['timeline']);
   });
+
+  it('distinguishes project installments from checkout payments', () => {
+    const project = service.analyze(
+      '¿Puedo pagar el proyecto 50% al inicio y 50% contra entrega?',
+      receivedAt,
+    );
+    const checkout = service.analyze(
+      '¿Mis clientes pueden pagar con tarjeta dentro de la tienda?',
+      receivedAt,
+    );
+
+    expect(project.intent).toBe('consulta_pago_proyecto');
+    expect(project.guidance.paymentContext).toBe('PROJECT_PAYMENT');
+    expect(checkout.intent).toBe('consulta_cobro_tienda');
+    expect(checkout.guidance.paymentContext).toBe('STORE_CHECKOUT');
+  });
+
+  it('prioritizes a new infrastructure question over an old discovery question', () => {
+    const decision = service.analyze(
+      '¿Y el hosting qué incluye?',
+      receivedAt,
+      [],
+      {
+        conversationHistory: [
+          {
+            role: 'assistant',
+            content: '¿Qué método de pago usarán sus compradores?',
+          },
+        ],
+      },
+    );
+
+    expect(decision.guidance.currentTopic).toBe('infrastructure');
+    expect(decision.guidance.topicShift).toBe(true);
+    expect(decision.guidance.directAnswerRequired).toBe(true);
+    expect(decision.guidance.allowDiscoveryQuestion).toBe(false);
+  });
+
+  it('removes a repeated discovery question after answering the current topic', () => {
+    const decision = service.analyze('¿Qué es el hosting?', receivedAt, [], {
+      conversationHistory: [
+        {
+          role: 'assistant',
+          content: '¿Qué método de pago usarán sus compradores?',
+        },
+      ],
+    });
+
+    expect(
+      service.enforceQuestionPolicy(
+        'El hosting es el espacio donde funciona su sitio web. ¿Qué método de pago usarán sus compradores?',
+        decision,
+      ),
+    ).toBe('El hosting es el espacio donde funciona su sitio web.');
+  });
+
+  it('does not append generic project discovery to a direct payment answer', () => {
+    const decision = service.analyze(
+      '¿Puedo pagar el proyecto 50/50?',
+      receivedAt,
+    );
+
+    expect(
+      service.enforceQuestionPolicy(
+        'El equipo debe confirmar las condiciones en la propuesta. ¿Qué tipo de proyecto tiene en mente?',
+        decision,
+      ),
+    ).toBe('El equipo debe confirmar las condiciones en la propuesta.');
+  });
+
+  it('stops discovery when the persisted scope is already sufficient', () => {
+    const decision = service.analyze(
+      'También ofrecemos repuestos.',
+      receivedAt,
+      [],
+      {
+        commercialProfile: {
+          service: 'sitio web',
+          need: 'promocionar reparación de lavadoras a domicilio',
+          sector: 'reparación de electrodomésticos',
+        },
+      },
+    );
+
+    expect(decision.guidance.sufficientContext).toBe(true);
+    expect(decision.guidance.allowDiscoveryQuestion).toBe(false);
+  });
 });
