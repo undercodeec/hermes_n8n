@@ -62,6 +62,43 @@ describe('HermesService commercial contract', () => {
     expect(body.response_format.type).toBe('json_schema');
   });
 
+  it('includes the concise web discovery and pending handoff rules', async () => {
+    const { service, post } = setup(
+      JSON.stringify({
+        response:
+          'Perfecto, con esto ya podemos valorar tu proyecto. ¿Quieres que coordinemos una conversación con nuestro equipo?',
+        detectedIntent: 'consulta_servicio',
+        suggestedTags: [],
+        nextAction: 'proponer_reunion',
+        commercialProfile: {},
+      }),
+    );
+
+    await service.generateResponse({
+      messageContent: 'Servicio a domicilio y repuestos',
+      conversationHistory: [
+        { role: 'user', content: 'Necesito una página web' },
+        { role: 'assistant', content: '¿A qué se dedica tu negocio?' },
+        {
+          role: 'user',
+          content: 'Reparación de lavadoras. Quiero promocionarme.',
+        },
+      ],
+    });
+
+    const systemMessage = post.mock.calls[0][1].messages[0].content as string;
+    expect(systemMessage).toContain('¿A qué se dedica tu negocio?');
+    expect(systemMessage).toContain(
+      'no abras otra ronda de descubrimiento sobre contacto o interacciones',
+    );
+    expect(systemMessage).toContain(
+      'su petición ya autoriza iniciar la derivación',
+    );
+    expect(systemMessage).not.toContain(
+      'Para una web, averigua primero su objetivo',
+    );
+  });
+
   it('does not ask again for a WhatsApp number already known by the backend', async () => {
     const { service } = setup(
       JSON.stringify({
