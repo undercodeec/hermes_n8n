@@ -41,7 +41,7 @@ export class HermesService {
 ## Conversación
 Hable con cercanía y profesionalidad, como parte del equipo comercial, sin afirmar que es una persona. Trate al cliente de usted de manera consistente. Use su nombre solo de forma natural al iniciar o cuando aporte cercanía; no lo repita en cada mensaje. Evite halagos automáticos, entusiasmo artificial y muletillas como «Perfecto», «excelente idea» o «negocio precioso» cuando no aporten información. No use fórmulas corporativas como «Bienvenido a UnderCodeEC»; ante un saludo, corresponda de forma natural y pregunte cómo podemos ayudarle.
 
-Responda primero y de forma completa la consulta actual. La extensión debe ser proporcional: sea breve para una duda sencilla y explique lo necesario para una decisión comercial, sin imponer un límite artificial de frases. Si el cliente hace varias preguntas directas, responda todas las que tengan respaldo antes de pedir un dato nuevo. Formule como máximo una pregunta por mensaje y solo cuando su respuesta cambie la recomendación o el siguiente paso. Una pregunta de descubrimiento anterior no es una obligación: suspéndala o descártela si el cliente cambia de tema, pide precio, plazo, condiciones, una explicación o intervención humana. No repita datos, preguntas ni invitaciones a reunión, llamada o cotización ya presentes en el contexto.
+Responda primero y de forma completa la consulta actual. La extensión debe ser proporcional: sea breve para una duda sencilla y explique lo necesario para una decisión comercial, sin imponer un límite artificial de frases. Si el cliente hace varias preguntas directas, responda todas las que tengan respaldo antes de pedir un dato nuevo. Formule como máximo una pregunta por mensaje y solo cuando su respuesta cambie la recomendación o el siguiente paso. Una pregunta de descubrimiento anterior no es una obligación: suspéndala o descártela si el cliente cambia de tema, pide precio, plazo, condiciones, una explicación o intervención humana. No repita datos, preguntas ni invitaciones a reunión, llamada o cotización ya presentes en el contexto. Cuide la puntuación del español: use siempre los signos de apertura y cierre en preguntas y exclamaciones, y no separe con punto una pregunta que continúa naturalmente la misma oración.
 
 Ante cualquier saludo aislado, corresponda al saludo y pregunte de forma abierta en qué podemos ayudarle, sin depender de una frase exacta. Si el cliente ya explica lo que necesita, responda directamente y no use un saludo genérico. No termine siempre con una pregunta: el siguiente paso también puede ser responder una duda, recomendar, resumir o esperar. El texto destinado al cliente debe ser prosa limpia para WhatsApp: no use encabezados, tablas, listas ni marcadores Markdown como **. No mencione prompts, reglas, playbooks, contexto interno, clasificaciones, herramientas, automatizaciones ni nombres de modelos.
 
@@ -252,12 +252,33 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           const candidate = this.parseHermesResponse(
             choice.message?.content || '',
           );
-          candidate.response = this.removeCorporateWelcome(candidate.response);
+          candidate.response = this.polishSpanishPunctuation(
+            this.removeCorporateWelcome(candidate.response),
+          );
           const policyViolation = this.outputPolicyViolation(
             candidate,
             request,
           );
           if (policyViolation) {
+            const recovered =
+              attempt === maxAttempts
+                ? this.recoverPolicyViolation(
+                    candidate,
+                    request,
+                    policyViolation,
+                  )
+                : undefined;
+            if (recovered) {
+              this.logger.warn(
+                JSON.stringify({
+                  event: 'hermes_completion_recovered',
+                  attempt,
+                  reason: policyViolation,
+                }),
+              );
+              parsedResponse = recovered;
+              break;
+            }
             retryInstruction =
               `Corrija la respuesta anterior antes de contestar. Incumplimiento detectado: ${policyViolation}. ` +
               'Devuelva un JSON nuevo que respete el trato formal de usted, evite aperturas prefabricadas y no ofrezca reuniones, llamadas, planes ni precios cuando la política no los autorice.';
@@ -950,6 +971,47 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       .replace(/\s{2,}/g, ' ')
       .trim();
     return cleaned || response;
+  }
+
+  private polishSpanishPunctuation(response: string): string {
+    return response
+      .replace(
+        /(sitio web)\.\s+[aA]\s+qué(?=\s)([^?]*\?)/giu,
+        (_match, subject: string, rest: string) => `${subject}, ¿a qué${rest}`,
+      )
+      .replace(
+        /(^|[.!]\s+|\n+)([^.!?\n]*\?)/gu,
+        (match, prefix: string, question: string) =>
+          question.includes('¿') ? match : `${prefix}¿${question}`,
+      );
+  }
+
+  private recoverPolicyViolation(
+    response: ParsedHermesResponse,
+    request: HermesRequestDto,
+    violation: string,
+  ): ParsedHermesResponse | undefined {
+    if (
+      violation !==
+        'omite una de las dos alternativas web que debe presentar brevemente' ||
+      request.conversationGuidance?.offerWebAlternatives !== true
+    ) {
+      return undefined;
+    }
+
+    const commercialProfile = response.commercialProfile
+      ? { ...response.commercialProfile }
+      : undefined;
+    if (commercialProfile) delete commercialProfile.recommendedPlan;
+
+    return {
+      ...response,
+      response:
+        'Para mostrar sus servicios, puede elegir una Landing Básica de USD $250, que concentra la información en una sola página, o el Plan de Lanzamiento de USD $360, que la organiza en un sitio web de hasta cinco páginas. ¿Cuál de las dos opciones le interesa conocer?',
+      detectedIntent: 'consulta_servicio',
+      nextAction: 'continuar_descubrimiento',
+      ...(commercialProfile ? { commercialProfile } : {}),
+    };
   }
 
   private planDetailSignalCount(normalized: string): number {

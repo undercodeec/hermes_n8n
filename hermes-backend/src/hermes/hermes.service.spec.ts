@@ -439,6 +439,49 @@ describe('HermesService commercial contract', () => {
     expect(result.response).toBe('Buenos días. ¿En qué podemos ayudarle?');
   });
 
+  it('repairs missing opening question marks and joins a continued question with a comma', async () => {
+    const malformed = JSON.stringify({
+      response:
+        'Con gusto le ayudamos con el desarrollo de su sitio web. a qué se dedica su negocio?',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'continuar_descubrimiento',
+      commercialProfile: { service: 'Sitio web' },
+    });
+    const { service, post } = setup(malformed);
+
+    const result = await service.generateResponse({
+      messageContent: '¿Me podrían ayudar con un sitio web?',
+      conversationHistory: [],
+    });
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(result.response).toBe(
+      'Con gusto le ayudamos con el desarrollo de su sitio web, ¿a qué se dedica su negocio?',
+    );
+  });
+
+  it('adds the opening mark to a standalone question', async () => {
+    const malformed = JSON.stringify({
+      response: 'Buenas noches, Christopher. En qué podemos ayudarle hoy?',
+      detectedIntent: 'info_general',
+      suggestedTags: [],
+      nextAction: 'continuar_descubrimiento',
+      commercialProfile: {},
+    });
+    const { service } = setup(malformed);
+
+    const result = await service.generateResponse({
+      contactName: 'Christopher',
+      messageContent: 'Buenas noches',
+      conversationHistory: [],
+    });
+
+    expect(result.response).toBe(
+      'Buenas noches, Christopher. ¿En qué podemos ayudarle hoy?',
+    );
+  });
+
   it('retries a full plan dump and presents two brief promotional-web options', async () => {
     const fullPlan = JSON.stringify({
       response:
@@ -479,5 +522,41 @@ describe('HermesService commercial contract', () => {
     expect(result.response).toContain('Landing Básica de USD $250');
     expect(result.response).toContain('Plan de Lanzamiento de USD $360');
     expect(result.response).not.toContain('dominio');
+  });
+
+  it('recovers locally when both attempts omit required web alternatives', async () => {
+    const incomplete = JSON.stringify({
+      response:
+        'El Plan de Lanzamiento le permite mostrar sus servicios en un sitio web.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: { recommendedPlan: 'Plan de Lanzamiento' },
+    });
+    const { service, post } = setup([incomplete, incomplete]);
+
+    const result = await service.generateResponse({
+      messageContent: 'Mostrar servicios',
+      conversationHistory: [],
+      conversationGuidance: {
+        currentTopic: 'general',
+        directAnswerRequired: false,
+        allowDiscoveryQuestion: false,
+        topicShift: false,
+        recentQuestionTopics: [],
+        sufficientContext: true,
+        allowMeetingOffer: false,
+        allowPlanRecommendation: true,
+        allowPlanDetails: false,
+        offerWebAlternatives: true,
+      },
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result.detectedIntent).toBe('consulta_servicio');
+    expect(result.nextAction).toBe('continuar_descubrimiento');
+    expect(result.response).toContain('Landing Básica de USD $250');
+    expect(result.response).toContain('Plan de Lanzamiento de USD $360');
+    expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
   });
 });
