@@ -294,4 +294,96 @@ describe('WebhookService campaign replies', () => {
     });
     expect(prismaMock.conversation.create).not.toHaveBeenCalled();
   });
+
+  it('asks for written text when receiving audio and does not enqueue Hermes', async () => {
+    const inboundMessage = {
+      id: 'inbound-audio',
+      createdAt: new Date('2026-09-20T16:00:00Z'),
+    };
+    const messageCreate = jest
+      .fn()
+      .mockResolvedValueOnce(inboundMessage)
+      .mockResolvedValueOnce({ id: 'outbound-audio-notice' });
+    const prismaMock = {
+      $executeRaw: jest.fn(),
+      $transaction: jest.fn(),
+      contact: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'contact-1',
+          waId: '593991234567',
+          name: 'Ana',
+        }),
+      },
+      conversation: {
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'conversation-1',
+          contactId: 'contact-1',
+          status: ConversationStatus.ACTIVE,
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      message: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: messageCreate,
+      },
+    };
+    prismaMock.$transaction.mockImplementation((callback: any) =>
+      callback(prismaMock),
+    );
+    const meta = {
+      sendTextMessage: jest
+        .fn()
+        .mockResolvedValue({ messages: [{ id: 'wamid.notice' }] }),
+    } as unknown as MetaService;
+    const autoReplies = { enqueue: jest.fn() } as unknown as AutoReplyService;
+    const guard = { inspect: jest.fn() } as unknown as ConversationGuardService;
+    const service = new WebhookService(
+      {} as ConfigService,
+      prismaMock as unknown as PrismaService,
+      meta,
+      {} as HermesService,
+      {} as HandoffService,
+      {
+        findOrCreateForConversation: jest.fn().mockResolvedValue({}),
+      } as unknown as LeadsService,
+      {
+        markReplied: jest.fn().mockResolvedValue(undefined),
+        findHumanManagedRecipient: jest.fn().mockResolvedValue(null),
+        optOut: jest.fn(),
+      } as unknown as CampaignsService,
+      autoReplies,
+      guard,
+      {
+        claimReference: jest.fn().mockResolvedValue({ status: 'missing' }),
+      } as unknown as AdvertisingService,
+      {
+        publishCustomerMessage: jest.fn().mockResolvedValue(undefined),
+      } as unknown as ConversationEventsService,
+    );
+
+    await (service as any).processIncomingMessage(
+      {
+        id: 'wamid.audio',
+        from: '593991234567',
+        timestamp: '1790006400',
+        type: 'audio',
+        audio: { id: 'media-1', mime_type: 'audio/ogg' },
+      },
+      { wa_id: '593991234567', profile: { name: 'Ana' } },
+    );
+
+    expect(meta.sendTextMessage).toHaveBeenCalledWith(
+      '593991234567',
+      expect.stringContaining('no puedo transcribir notas de voz'),
+    );
+    expect(messageCreate).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          metadata: { action: 'AUDIO_TRANSCRIPTION_UNAVAILABLE' },
+        }),
+      }),
+    );
+    expect(autoReplies.enqueue).not.toHaveBeenCalled();
+    expect(guard.inspect).not.toHaveBeenCalled();
+  });
 });

@@ -5,6 +5,7 @@ import {
   HermesResponseDto,
   PaymentContext,
 } from './dto/hermes-request.dto';
+import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 
 export type PendingQuestion =
   'price' | 'timeline' | 'proposal' | 'availability';
@@ -608,11 +609,12 @@ export class CommercialPolicyService {
   }
 
   private normalize(value: string): string {
-    return value
+    const normalized = value
       .toLocaleLowerCase('es')
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '')
       .replace(/\s+/g, ' ')
       .trim();
+    return normalizeCommonSpanishTypos(normalized);
   }
 }

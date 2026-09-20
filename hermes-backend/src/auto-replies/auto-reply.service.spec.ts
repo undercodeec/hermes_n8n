@@ -13,6 +13,27 @@ import { CommercialPolicyService } from '../hermes/commercial-policy.service';
 import { AutoReplyJobData } from './auto-reply.constants';
 
 describe('AutoReplyService', () => {
+  it('never converts a technical Hermes error into a human handoff', () => {
+    const service = new AutoReplyService(
+      {
+        get: jest.fn((_key: string, fallback?: unknown) => fallback),
+      } as unknown as ConfigService,
+      {} as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      {} as TasksService,
+      new CommercialPolicyService(),
+      {} as ConversationGuardService,
+      {} as Queue,
+    );
+
+    expect(
+      (service as any).checkHandoffSignals('Mostrar servisiso', 'error'),
+    ).toBe(false);
+  });
+
   it('schedules the first automatic reply with a ten-second pause', async () => {
     const add = jest.fn().mockResolvedValue({});
     const queue = { add } as unknown as Queue<AutoReplyJobData>;

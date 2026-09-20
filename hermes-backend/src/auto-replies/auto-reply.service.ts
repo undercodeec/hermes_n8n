@@ -295,10 +295,6 @@ export class AutoReplyService {
         reason: this.handoffReason(response.detectedIntent),
         reasonDetail: `Handoff automático. Mensaje trigger: ${(inbound.content || '').substring(0, 200)}`,
       });
-      if (response.detectedIntent === 'error') {
-        response.response =
-          'No pude procesar su solicitud correctamente. He registrado una derivación al equipo y queda pendiente de asignación.';
-      }
     }
     if (
       !(await this.hasConversationStatus(
@@ -676,9 +672,11 @@ export class AutoReplyService {
       'reclamo',
       'pago_fallido',
       'negociacion_especial',
-      'error',
     ]);
     const normalizedIntent = detectedIntent?.trim().toLocaleLowerCase('es');
+    // Un fallo del proveedor o de validación no expresa que el cliente necesite
+    // atención humana. Nunca crear un handoff comercial por un error técnico.
+    if (normalizedIntent === 'error') return false;
     return (
       keywords.some((keyword) =>
         message.toLocaleLowerCase('es').includes(keyword),

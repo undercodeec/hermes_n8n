@@ -236,6 +236,20 @@ export class WebhookService {
         return;
       }
 
+      if (messageType === MessageType.AUDIO) {
+        await this.sendSystemMessage(
+          conversation.id,
+          contact.id,
+          contact.waId,
+          'Por el momento no puedo transcribir notas de voz. Por favor, escriba el mensaje para poder ayudarle correctamente.',
+          'AUDIO_TRANSCRIPTION_UNAVAILABLE',
+        );
+        this.logger.log(
+          `Audio recibido en conversación ${conversation.id}; se solicitó una versión escrita`,
+        );
+        return;
+      }
+
       const recentInbound = await this.prisma.message.findMany({
         where: {
           conversationId: conversation.id,
@@ -578,10 +592,10 @@ export class WebhookService {
       'reclamo',
       'pago_fallido',
       'negociacion_especial',
-      'error',
     ]);
     const lowerMessage = userMessage.toLocaleLowerCase('es');
     const normalizedIntent = detectedIntent?.trim().toLocaleLowerCase('es');
+    if (normalizedIntent === 'error') return false;
     return (
       keywords.some((keyword) => lowerMessage.includes(keyword)) ||
       (normalizedIntent ? intents.includes(normalizedIntent) : false)

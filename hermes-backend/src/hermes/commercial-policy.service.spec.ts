@@ -314,6 +314,21 @@ describe('CommercialPolicyService', () => {
     expect(enforced.commercialProfile?.recommendedPlan).toBeUndefined();
   });
 
+  it('recognizes common service spelling errors without losing the web recommendation', () => {
+    const decision = service.analyze('Mostrar servisiso', receivedAt, [], {
+      commercialProfile: {
+        service: 'sitio web',
+        need: 'promocionar el negocio de reparaciones',
+        sector: 'reparaciones técnicas',
+      },
+    });
+
+    expect(decision.guidance.sufficientContext).toBe(true);
+    expect(decision.guidance.offerWebAlternatives).toBe(true);
+    expect(decision.guidance.allowPlanRecommendation).toBe(true);
+    expect(decision.guidance.allowDiscoveryQuestion).toBe(false);
+  });
+
   it('allows details only for the plan explicitly selected by the client', () => {
     const decision = service.analyze(
       'Me interesa la Landing Básica, ¿qué incluye?',

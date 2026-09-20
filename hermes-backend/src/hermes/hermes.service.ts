@@ -9,6 +9,7 @@ import {
   HermesResponseDto,
 } from './dto/hermes-request.dto';
 import { commercialCatalogContext } from './commercial-catalog';
+import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 
 type ParsedHermesResponse = Pick<
   HermesResponseDto,
@@ -230,19 +231,22 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
               messages.at(-1)!,
             ]
           : messages;
-        const response = await this.httpClient.post<ChatCompletionResponse>(
-          '/chat/completions',
-          {
-            ...body,
-            messages: attemptMessages,
-            max_tokens: attempt === 1 ? maxOutputTokens : retryMaxOutputTokens,
-          },
-        );
-        const choice = response.data.choices?.[0];
-        promptTokens += response.data.usage?.prompt_tokens || 0;
-        completionTokens += response.data.usage?.completion_tokens || 0;
+        let finishReason: string | null | undefined;
 
         try {
+          const response = await this.httpClient.post<ChatCompletionResponse>(
+            '/chat/completions',
+            {
+              ...body,
+              messages: attemptMessages,
+              max_tokens:
+                attempt === 1 ? maxOutputTokens : retryMaxOutputTokens,
+            },
+          );
+          const choice = response.data.choices?.[0];
+          finishReason = choice?.finish_reason;
+          promptTokens += response.data.usage?.prompt_tokens || 0;
+          completionTokens += response.data.usage?.completion_tokens || 0;
           if (!choice) throw new Error('No se recibió respuesta de Hermes');
           if (this.isTruncatedCompletion(choice.finish_reason)) {
             throw new Error(
@@ -292,7 +296,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
             JSON.stringify({
               event: 'hermes_completion_retry',
               attempt,
-              finishReason: choice?.finish_reason ?? null,
+              finishReason: finishReason ?? null,
               reason: error instanceof Error ? error.message : String(error),
             }),
           );
@@ -338,11 +342,11 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       this.logger.error(`Error llamando a Hermes: ${message}`);
       return {
         response:
-          'Disculpe, no pude procesar su solicitud correctamente. Voy a derivar la conversación al equipo para que pueda revisarla.',
+          'Disculpe, tuve un inconveniente temporal al procesar su mensaje. Por favor, envíelo nuevamente para poder continuar.',
         tokensUsed: 0,
         costEstimate: 0,
         detectedIntent: 'error',
-        nextAction: 'derivar_humano',
+        nextAction: 'sin_accion',
       };
     }
   }
@@ -695,12 +699,13 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
   }
 
   private normalizeSearch(value: string): string {
-    return value
+    const normalized = value
       .toLocaleLowerCase('es')
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, ' ')
       .replace(/[^a-z0-9]+/g, ' ')
       .trim();
+    return normalizeCommonSpanishTypos(normalized);
   }
 
   private fitBusinessContext(sections: string[], maxChars: number): string {
@@ -991,6 +996,20 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     request: HermesRequestDto,
     violation: string,
   ): ParsedHermesResponse | undefined {
+    if (violation === 'abre con una muletilla o una aprobación prefabricada') {
+      const cleaned = response.response
+        .replace(
+          /^\s*[¡!¿?]*\s*(?:perfecto|excelente|entendido|genial|comprendo perfectamente)\s*[,.:;!¡-]*\s*/iu,
+          '',
+        )
+        .replace(/^(\p{Ll})/u, (letter) => letter.toLocaleUpperCase('es'))
+        .trim();
+      if (cleaned) {
+        const recovered = { ...response, response: cleaned };
+        if (!this.outputPolicyViolation(recovered, request)) return recovered;
+      }
+    }
+
     if (
       violation !==
         'omite una de las dos alternativas web que debe presentar brevemente' ||

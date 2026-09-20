@@ -212,7 +212,7 @@ describe('HermesService commercial contract', () => {
     );
   });
 
-  it('uses a safe handoff response when the provider returns invalid JSON', async () => {
+  it('uses a retryable technical response without promising a handoff when the provider returns invalid JSON', async () => {
     const { service, post } = setup([
       'respuesta sin JSON',
       '{\n  "response": "Hola, Ana. ¡Claro que',
@@ -225,7 +225,9 @@ describe('HermesService commercial contract', () => {
     });
 
     expect(result.detectedIntent).toBe('error');
-    expect(result.nextAction).toBe('derivar_humano');
+    expect(result.nextAction).toBe('sin_accion');
+    expect(result.response).toContain('inconveniente temporal');
+    expect(result.response).not.toContain('derivar');
     expect(result.response).not.toContain('respuesta sin JSON');
     expect(result.response).not.toContain('"response"');
     expect(post).toHaveBeenCalledTimes(2);
@@ -255,6 +257,34 @@ describe('HermesService commercial contract', () => {
     expect(post.mock.calls[1][1].max_tokens).toBe(4096);
     expect(result.response).toBe('Hola, Jonathan. Claro que podemos ayudarle.');
     expect(result.tokensUsed).toBe(240);
+  });
+
+  it('retries a transient provider failure before using the technical fallback', async () => {
+    const complete = JSON.stringify({
+      response: 'Podemos continuar con su solicitud.',
+      detectedIntent: 'info_general',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: {},
+    });
+    const { service, post } = setup(complete);
+    post.mockReset();
+    post.mockRejectedValueOnce(new Error('HTTP 503'));
+    post.mockResolvedValueOnce({
+      data: {
+        choices: [{ message: { content: complete }, finish_reason: 'stop' }],
+        usage: { prompt_tokens: 100, completion_tokens: 20 },
+      },
+    });
+
+    const result = await service.generateResponse({
+      messageContent: 'Necesito información',
+      conversationHistory: [],
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result.detectedIntent).toBe('info_general');
+    expect(result.response).toBe('Podemos continuar con su solicitud.');
   });
 
   it('retries a response that uses tuteo and adds a focused correction', async () => {
@@ -288,6 +318,36 @@ describe('HermesService commercial contract', () => {
           content: expect.stringContaining('usa tuteo'),
         }),
       ]),
+    );
+  });
+
+  it('recovers a formal second attempt locally when it only starts with a mechanical opening', async () => {
+    const informal = JSON.stringify({
+      response: 'Cuéntame qué necesitas y te ayudo.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'continuar_descubrimiento',
+      commercialProfile: {},
+    });
+    const mechanical = JSON.stringify({
+      response:
+        'Entendido. Para mostrar sus servicios, podemos preparar un sitio web enfocado en su negocio.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: { service: 'Sitio web' },
+    });
+    const { service, post } = setup([informal, mechanical]);
+
+    const result = await service.generateResponse({
+      messageContent: 'Mostrar servisiso',
+      conversationHistory: [],
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result.detectedIntent).toBe('consulta_servicio');
+    expect(result.response).toBe(
+      'Para mostrar sus servicios, podemos preparar un sitio web enfocado en su negocio.',
     );
   });
 
