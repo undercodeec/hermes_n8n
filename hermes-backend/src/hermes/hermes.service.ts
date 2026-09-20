@@ -266,11 +266,12 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           if (policyViolation) {
             const recovered =
               attempt === maxAttempts
-                ? this.recoverPolicyViolation(
+                ? (this.recoverPolicyViolation(
                     candidate,
                     request,
                     policyViolation,
-                  )
+                  ) ??
+                  this.buildPolicyFallback(candidate, request, policyViolation))
                 : undefined;
             if (recovered) {
               this.logger.warn(
@@ -1029,6 +1030,71 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         'Para mostrar sus servicios, puede elegir una Landing Básica de USD $250, que concentra la información en una sola página, o el Plan de Lanzamiento de USD $360, que la organiza en un sitio web de hasta cinco páginas. ¿Cuál de las dos opciones le interesa conocer?',
       detectedIntent: 'consulta_servicio',
       nextAction: 'continuar_descubrimiento',
+      ...(commercialProfile ? { commercialProfile } : {}),
+    };
+  }
+
+  /**
+   * A model response rejected by our own commercial policy is not a provider
+   * outage. After the corrective retry, keep the conversation moving with a
+   * conservative response instead of exposing a misleading technical error to
+   * the customer.
+   */
+  private buildPolicyFallback(
+    response: ParsedHermesResponse,
+    request: HermesRequestDto,
+    violation: string,
+  ): ParsedHermesResponse {
+    const commercialProfile = response.commercialProfile
+      ? { ...response.commercialProfile }
+      : undefined;
+    if (
+      commercialProfile &&
+      (request.conversationGuidance?.allowPlanRecommendation === false ||
+        !request.conversationGuidance?.interestedPlan)
+    ) {
+      delete commercialProfile.recommendedPlan;
+    }
+
+    let content: string;
+    let nextAction = 'sin_accion';
+    if (request.conversationGuidance?.directAnswerRequired) {
+      content =
+        'Voy a revisar ese punto con la información comercial disponible para darle una respuesta precisa.';
+    } else if (request.conversationGuidance?.allowDiscoveryQuestion) {
+      const conversationScope = this.normalizeSearch(
+        [
+          request.messageContent,
+          request.productOfInterest,
+          request.commercialProfile?.service,
+          request.commercialProfile?.need,
+          ...request.conversationHistory.map((message) => message.content),
+        ]
+          .filter(Boolean)
+          .join(' '),
+      );
+      content = /\b(?:sitio|pagina|landing|web)\b/.test(conversationScope)
+        ? '¿Qué resultado principal espera obtener con su sitio web: presentar sus servicios o recibir solicitudes de clientes por WhatsApp?'
+        : '¿Qué resultado principal espera obtener con este proyecto?';
+      nextAction = 'continuar_descubrimiento';
+    } else {
+      content =
+        'Gracias por la información. Podemos continuar con una solución enfocada en presentar sus servicios y facilitar el contacto de sus clientes.';
+    }
+
+    this.logger.warn(
+      JSON.stringify({
+        event: 'hermes_policy_fallback',
+        reason: violation,
+        conversationId: request.conversationId,
+        correlationId: request.correlationId,
+      }),
+    );
+    return {
+      ...response,
+      response: content,
+      detectedIntent: response.detectedIntent || 'consulta_servicio',
+      nextAction,
       ...(commercialProfile ? { commercialProfile } : {}),
     };
   }

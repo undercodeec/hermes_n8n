@@ -619,4 +619,55 @@ describe('HermesService commercial contract', () => {
     expect(result.response).toContain('Plan de Lanzamiento de USD $360');
     expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
   });
+
+  it('uses a contextual commercial fallback when both model attempts violate policy', async () => {
+    const informal = JSON.stringify({
+      response: 'Cuéntame qué quieres lograr con tu web.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'continuar_descubrimiento',
+      commercialProfile: { service: 'Sitio web' },
+    });
+    const prematurePlan = JSON.stringify({
+      response: 'Te recomiendo el Plan de Lanzamiento por USD $360.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: {
+        service: 'Sitio web',
+        recommendedPlan: 'Plan de Lanzamiento',
+      },
+    });
+    const { service, post } = setup([informal, prematurePlan]);
+
+    const result = await service.generateResponse({
+      messageContent: 'Reparaciónes de refrigeradores',
+      conversationHistory: [
+        { role: 'user', content: 'Estoy buscando un sitio web' },
+        {
+          role: 'assistant',
+          content: '¿A qué se dedica su negocio?',
+        },
+      ],
+      conversationGuidance: {
+        currentTopic: 'general',
+        directAnswerRequired: false,
+        allowDiscoveryQuestion: true,
+        topicShift: false,
+        recentQuestionTopics: ['business'],
+        sufficientContext: false,
+        allowMeetingOffer: false,
+        allowPlanRecommendation: false,
+        allowPlanDetails: false,
+        offerWebAlternatives: false,
+      },
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result.detectedIntent).toBe('consulta_servicio');
+    expect(result.nextAction).toBe('continuar_descubrimiento');
+    expect(result.response).toContain('resultado principal');
+    expect(result.response).not.toContain('inconveniente temporal');
+    expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
+  });
 });
