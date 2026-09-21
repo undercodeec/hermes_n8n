@@ -43,3 +43,5 @@ coverage/
 
 # Documentación interna (no se versiona)
 *.md
+!hermes-backend/docs/crm-baseline-agent.md
+!hermes-backend/docs/nous-hermes-runbook.md

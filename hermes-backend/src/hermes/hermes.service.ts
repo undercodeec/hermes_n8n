@@ -147,6 +147,14 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     });
   }
 
+  getProviderModel(): string {
+    return this.model;
+  }
+
+  getPromptVersion(): string {
+    return this.promptVersion;
+  }
+
   async generateResponse(
     request: HermesRequestDto,
   ): Promise<HermesResponseDto> {

@@ -3,7 +3,7 @@ import { BullModule } from '@nestjs/bullmq';
 import { AutoReplyService } from './auto-reply.service';
 import { AutoReplyProcessor } from './auto-reply.processor';
 import { AUTO_REPLY_QUEUE } from './auto-reply.constants';
-import { HermesModule } from '../hermes/hermes.module';
+import { ConversationEngineModule } from '../conversation-engine/conversation-engine.module';
 import { MetaModule } from '../meta/meta.module';
 import { HandoffModule } from '../handoff/handoff.module';
 import { LeadsModule } from '../leads/leads.module';
@@ -12,7 +12,7 @@ import { TasksModule } from '../tasks/tasks.module';
 
 @Module({
   imports: [
-    HermesModule,
+    ConversationEngineModule,
     MetaModule,
     HandoffModule,
     LeadsModule,

@@ -5,7 +5,7 @@ import { Queue } from 'bullmq';
 import { AutoReplyService } from './auto-reply.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MetaService } from '../meta/meta.service';
-import { HermesService } from '../hermes/hermes.service';
+import { ConversationEngineService } from '../conversation-engine/conversation-engine.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { LeadsService } from '../leads/leads.service';
 import {
@@ -21,6 +21,27 @@ import {
 } from '../hermes/dto/hermes-request.dto';
 
 describe('AutoReplyService', () => {
+  const toEngineResult = (response: HermesResponseDto) => ({
+    replyText: response.response,
+    proposedActions: [{ type: 'none' as const }],
+    engine: 'gemini_direct' as const,
+    providerModel: 'gemini-test',
+    usage:
+      response.tokensUsed === undefined
+        ? undefined
+        : { totalTokens: response.tokensUsed },
+    traceId: 'inbound-recovery',
+    costEstimate: response.costEstimate,
+    business: {
+      suggestedTags: response.suggestedTags,
+      detectedIntent: response.detectedIntent,
+      nextAction: response.nextAction,
+      decision: response.decision,
+      commercialProfile: response.commercialProfile,
+    },
+    diagnostic: response.diagnostic,
+  });
+
   type ProcessHarnessOptions = {
     hermesResponse: HermesResponseDto;
     outputDecision?: GeneratedResponseDecision;
@@ -125,8 +146,10 @@ describe('AutoReplyService', () => {
       prisma,
       meta as unknown as MetaService,
       {
-        generateResponse: jest.fn().mockResolvedValue(options.hermesResponse),
-      } as unknown as HermesService,
+        respond: jest
+          .fn()
+          .mockResolvedValue(toEngineResult(options.hermesResponse)),
+      } as unknown as ConversationEngineService,
       handoffs as unknown as HandoffService,
       leads as unknown as LeadsService,
       tasks as unknown as TasksService,
@@ -546,7 +569,7 @@ describe('AutoReplyService', () => {
       } as unknown as ConfigService,
       {} as PrismaService,
       {} as MetaService,
-      {} as HermesService,
+      {} as ConversationEngineService,
       {} as HandoffService,
       {} as LeadsService,
       {} as TasksService,
@@ -569,7 +592,7 @@ describe('AutoReplyService', () => {
         message: { findFirst: jest.fn().mockResolvedValue(null) },
       } as unknown as PrismaService,
       {} as MetaService,
-      {} as HermesService,
+      {} as ConversationEngineService,
       {} as HandoffService,
       {} as LeadsService,
       {} as TasksService,
@@ -602,7 +625,7 @@ describe('AutoReplyService', () => {
         },
       } as unknown as PrismaService,
       {} as MetaService,
-      {} as HermesService,
+      {} as ConversationEngineService,
       {} as HandoffService,
       {} as LeadsService,
       {} as TasksService,
@@ -654,12 +677,14 @@ describe('AutoReplyService', () => {
       },
     } as unknown as PrismaService;
     const meta = { sendTextMessage: jest.fn() } as unknown as MetaService;
-    const hermes = { generateResponse: jest.fn() } as unknown as HermesService;
+    const engine = {
+      respond: jest.fn(),
+    } as unknown as ConversationEngineService;
     const service = new AutoReplyService(
       { get: jest.fn() } as unknown as ConfigService,
       prisma,
       meta,
-      hermes,
+      engine,
       { create: jest.fn() } as unknown as HandoffService,
       { qualifyFromConversation: jest.fn() } as unknown as LeadsService,
       { requestCallback: jest.fn() } as unknown as TasksService,
@@ -678,7 +703,7 @@ describe('AutoReplyService', () => {
       inboundMessageId: 'inbound-1',
     });
 
-    expect(hermes.generateResponse).not.toHaveBeenCalled();
+    expect(engine.respond).not.toHaveBeenCalled();
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
     expect(JSON.parse(warn.mock.calls[0][0] as string)).toEqual(
       expect.objectContaining({
@@ -711,12 +736,14 @@ describe('AutoReplyService', () => {
       },
     } as unknown as PrismaService;
     const meta = { sendTextMessage: jest.fn() } as unknown as MetaService;
-    const hermes = { generateResponse: jest.fn() } as unknown as HermesService;
+    const engine = {
+      respond: jest.fn(),
+    } as unknown as ConversationEngineService;
     const service = new AutoReplyService(
       { get: jest.fn() } as unknown as ConfigService,
       prisma,
       meta,
-      hermes,
+      engine,
       {} as HandoffService,
       {} as LeadsService,
       {} as TasksService,
@@ -735,7 +762,7 @@ describe('AutoReplyService', () => {
       inboundMessageId: 'inbound-1',
     });
 
-    expect(hermes.generateResponse).not.toHaveBeenCalled();
+    expect(engine.respond).not.toHaveBeenCalled();
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
     expect(JSON.parse(warn.mock.calls[0][0] as string)).toEqual(
       expect.objectContaining({
@@ -793,7 +820,9 @@ describe('AutoReplyService', () => {
         .fn()
         .mockResolvedValue({ messages: [{ id: 'wamid.outbound' }] }),
     } as unknown as MetaService;
-    const hermes = { generateResponse: jest.fn() } as unknown as HermesService;
+    const engine = {
+      respond: jest.fn(),
+    } as unknown as ConversationEngineService;
     const tasks = {
       requestCallback: jest.fn().mockResolvedValue({ id: 'task-1' }),
     } as unknown as TasksService;
@@ -807,7 +836,7 @@ describe('AutoReplyService', () => {
       { get: jest.fn() } as unknown as ConfigService,
       prisma,
       meta,
-      hermes,
+      engine,
       { create: jest.fn() } as unknown as HandoffService,
       leads,
       tasks,
@@ -832,7 +861,7 @@ describe('AutoReplyService', () => {
       '593991234567',
       expect.stringContaining('este mismo número de WhatsApp'),
     );
-    expect(hermes.generateResponse).not.toHaveBeenCalled();
+    expect(engine.respond).not.toHaveBeenCalled();
     expect(guard.consumeAiQuota).not.toHaveBeenCalled();
   });
 
@@ -888,7 +917,7 @@ describe('AutoReplyService', () => {
       { get: jest.fn() } as unknown as ConfigService,
       prisma,
       meta,
-      { generateResponse: jest.fn() } as unknown as HermesService,
+      { respond: jest.fn() } as unknown as ConversationEngineService,
       handoff,
       {} as LeadsService,
       {} as TasksService,
@@ -966,19 +995,21 @@ describe('AutoReplyService', () => {
         .fn()
         .mockResolvedValue({ messages: [{ id: 'wamid.outbound' }] }),
     } as unknown as MetaService;
-    const hermes = {
-      generateResponse: jest.fn().mockResolvedValue({
-        response:
-          'Para darte un precio preciso, necesitaríamos conversar sobre más detalles.',
-        detectedIntent: 'consulta_precio',
-        nextAction: 'continuar_descubrimiento',
-        commercialProfile: {
-          service: 'desarrollo web',
-          need: 'catálogo de diez productos con botón de WhatsApp',
-          sector: 'floristería',
-        },
-      }),
-    } as unknown as HermesService;
+    const engine = {
+      respond: jest.fn().mockResolvedValue(
+        toEngineResult({
+          response:
+            'Para darte un precio preciso, necesitaríamos conversar sobre más detalles.',
+          detectedIntent: 'consulta_precio',
+          nextAction: 'continuar_descubrimiento',
+          commercialProfile: {
+            service: 'desarrollo web',
+            need: 'catálogo de diez productos con botón de WhatsApp',
+            sector: 'floristería',
+          },
+        }),
+      ),
+    } as unknown as ConversationEngineService;
     const tasks = {
       requestQuote: jest.fn().mockResolvedValue({ id: 'quote-task-1' }),
     } as unknown as TasksService;
@@ -992,7 +1023,7 @@ describe('AutoReplyService', () => {
       { get: jest.fn() } as unknown as ConfigService,
       prisma,
       meta,
-      hermes,
+      engine,
       { create: jest.fn() } as unknown as HandoffService,
       leads,
       tasks,
@@ -1015,18 +1046,20 @@ describe('AutoReplyService', () => {
     expect(tasks.requestQuote).toHaveBeenCalledWith(
       expect.objectContaining({ sourceMessageId: 'inbound-price' }),
     );
-    expect(hermes.generateResponse).toHaveBeenCalledWith(
+    expect(engine.respond).toHaveBeenCalledWith(
       expect.objectContaining({
-        conversationSummary: 'Cliente busca vender flores por internet.',
-        conversationHistory: [
-          {
-            role: 'user',
-            content: 'Necesito una web para mi floristería',
-          },
-        ],
-        commercialProfile: expect.objectContaining({
-          service: 'desarrollo web',
-          need: 'catálogo de diez productos con botón de WhatsApp',
+        approvedContext: expect.objectContaining({
+          conversationSummary: 'Cliente busca vender flores por internet.',
+          recentMessages: [
+            {
+              role: 'user',
+              text: 'Necesito una web para mi floristería',
+            },
+          ],
+          commercialProfile: expect.objectContaining({
+            service: 'desarrollo web',
+            need: 'catálogo de diez productos con botón de WhatsApp',
+          }),
         }),
       }),
     );
@@ -1097,14 +1130,16 @@ describe('AutoReplyService', () => {
       prisma,
       meta,
       {
-        generateResponse: jest.fn().mockResolvedValue({
-          response: longResponse,
-          detectedIntent: 'info_general',
-          nextAction: 'sin_accion',
-          tokensUsed: 100,
-          costEstimate: 0.01,
-        }),
-      } as unknown as HermesService,
+        respond: jest.fn().mockResolvedValue(
+          toEngineResult({
+            response: longResponse,
+            detectedIntent: 'info_general',
+            nextAction: 'sin_accion',
+            tokensUsed: 100,
+            costEstimate: 0.01,
+          }),
+        ),
+      } as unknown as ConversationEngineService,
       { create: jest.fn() } as unknown as HandoffService,
       {
         recordCommercialProfileFromConversation: jest

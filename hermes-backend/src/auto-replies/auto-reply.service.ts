@@ -15,15 +15,19 @@ import {
   TaskStatus,
 } from '@prisma/client';
 import { Queue } from 'bullmq';
-import { HermesService } from '../hermes/hermes.service';
+import { ConversationEngineService } from '../conversation-engine/conversation-engine.service';
 import { MetaSendResponse, MetaService } from '../meta/meta.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { LeadsService } from '../leads/leads.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AUTO_REPLY_QUEUE, AutoReplyJobData } from './auto-reply.constants';
 import { ConversationGuardService } from '../conversation-guard/conversation-guard.service';
-import { CommercialProfile } from '../hermes/dto/hermes-request.dto';
+import {
+  CommercialProfile,
+  HermesResponseDto,
+} from '../hermes/dto/hermes-request.dto';
 import { CommercialPolicyService } from '../hermes/commercial-policy.service';
+import { commercialCatalogContext } from '../hermes/commercial-catalog';
 import { TasksService } from '../tasks/tasks.service';
 import { splitWhatsAppMessage } from './whatsapp-message-splitter';
 import {
@@ -39,7 +43,7 @@ export class AutoReplyService {
     private readonly config: ConfigService,
     private readonly prisma: PrismaService,
     private readonly meta: MetaService,
-    private readonly hermes: HermesService,
+    private readonly conversationEngine: ConversationEngineService,
     private readonly handoffs: HandoffService,
     private readonly leads: LeadsService,
     private readonly tasks: TasksService,
@@ -197,32 +201,60 @@ export class AutoReplyService {
 
     const startedAt = Date.now();
     await this.showTypingIndicator(inbound.wamid);
-    const response = await this.hermes.generateResponse({
-      contactName: conversation.contact.name || 'Cliente',
-      messageContent: inbound.content || '',
-      conversationHistory: context.recentMessages,
-      leadStage: context.leadStage,
-      productOfInterest: context.productOfInterest,
-      conversationSummary: context.conversationSummary,
-      commercialProfile: context.commercialProfile,
-      contact: {
-        id: data.contactId,
-        hasUsablePhone: Boolean(conversation.contact.waId),
-        hasEmail: Boolean(conversation.contact.email),
-      },
+    const engineResult = await this.conversationEngine.respond({
       conversationId: data.conversationId,
-      correlationId: inbound.id,
-      currentIntent: policy.intent,
-      conversationGuidance: policy.guidance,
-      pendingQuestions: policy.pendingQuestions,
-      contactPreference: context.commercialProfile?.contactPreference,
-      pendingActions: context.pendingActions,
-      actionCapabilities: {
-        callbackTasks: true,
-        calendarBooking: false,
-        humanHandoff: true,
+      inboundMessageId: inbound.id,
+      customerMessage: inbound.content || '',
+      approvedContext: {
+        contactName: conversation.contact.name || 'Cliente',
+        recentMessages: context.recentMessages.map(({ role, content }) => ({
+          role,
+          text: content,
+        })),
+        commercialProfile: context.commercialProfile,
+        approvedKnowledge: commercialCatalogContext(
+          [
+            inbound.content,
+            context.productOfInterest,
+            context.commercialProfile?.service,
+            context.commercialProfile?.need,
+            context.commercialProfile?.recommendedPlan,
+          ]
+            .filter(Boolean)
+            .join(' '),
+        ),
+        handoffActive: false,
+        leadStage: context.leadStage,
+        productOfInterest: context.productOfInterest,
+        conversationSummary: context.conversationSummary,
+        contact: {
+          id: data.contactId,
+          hasUsablePhone: Boolean(conversation.contact.waId),
+          hasEmail: Boolean(conversation.contact.email),
+        },
+        currentIntent: policy.intent,
+        conversationGuidance: policy.guidance,
+        pendingQuestions: policy.pendingQuestions,
+        contactPreference: context.commercialProfile?.contactPreference,
+        pendingActions: context.pendingActions,
+        actionCapabilities: {
+          callbackTasks: true,
+          calendarBooking: false,
+          humanHandoff: true,
+        },
       },
     });
+    const response: HermesResponseDto = {
+      response: engineResult.replyText,
+      tokensUsed: engineResult.usage?.totalTokens,
+      costEstimate: engineResult.costEstimate,
+      suggestedTags: engineResult.business?.suggestedTags,
+      detectedIntent: engineResult.business?.detectedIntent,
+      nextAction: engineResult.business?.nextAction,
+      decision: engineResult.business?.decision,
+      commercialProfile: engineResult.business?.commercialProfile,
+      diagnostic: engineResult.diagnostic,
+    };
     const acceptedProfile = response.diagnostic
       ? context.commercialProfile
       : { ...context.commercialProfile, ...response.commercialProfile };
@@ -243,7 +275,7 @@ export class AutoReplyService {
     );
     if (outputDecision.action === 'BLOCK') {
       this.logger.error(
-        `Respuesta de Gemini bloqueada por ${outputDecision.reason} en conversación ${data.conversationId}`,
+        `Respuesta del motor ${engineResult.engine} bloqueada por ${outputDecision.reason} en conversación ${data.conversationId}`,
       );
       response.response =
         'Disculpe, no pude procesar la respuesta de forma segura. ¿Podría reformular su solicitud?';
@@ -451,10 +483,13 @@ export class AutoReplyService {
           tokensUsed: index === 0 ? response.tokensUsed : 0,
           latencyMs: partLatencyMs,
           costEstimate: index === 0 ? response.costEstimate : 0,
-          ...(index === 0 && incident
+          ...(index === 0
             ? {
                 metadata: {
-                  hermesIncident: incident,
+                  conversationEngine: engineResult.engine,
+                  providerModel: engineResult.providerModel,
+                  traceId: engineResult.traceId,
+                  ...(incident ? { hermesIncident: incident } : {}),
                 },
               }
             : {}),
@@ -504,6 +539,8 @@ export class AutoReplyService {
         event: 'auto_reply_sent',
         conversationId: data.conversationId,
         correlationId: inbound.id,
+        conversationEngine: engineResult.engine,
+        providerModel: engineResult.providerModel,
         detectedIntent: response.detectedIntent,
         suggestedAction: response.nextAction,
         executedAction: shouldHandoff
