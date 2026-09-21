@@ -12,6 +12,7 @@ import { ConversationGuardService } from '../conversation-guard/conversation-gua
 import { AdvertisingService } from '../advertising/advertising.service';
 import { normalizeWhatsAppId } from '../campaigns/phone-normalizer';
 import { ConversationEventsService } from '../conversations/conversation-events.service';
+import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 import {
   MetaWebhookDto,
   MetaWebhookMessage,
@@ -43,6 +44,7 @@ export class WebhookService {
     private readonly conversationGuard: ConversationGuardService,
     private readonly advertisingService: AdvertisingService,
     private readonly conversationEvents: ConversationEventsService,
+    private readonly deliveries: AutomatedDeliveryService,
   ) {}
 
   /**
@@ -145,8 +147,6 @@ export class WebhookService {
     message: MetaWebhookMessage,
     metaContact: MetaWebhookContact,
   ): Promise<void> {
-    const startTime = Date.now();
-
     try {
       const alreadyProcessed = await this.prisma.message.findUnique({
         where: { wamid: message.id },
@@ -259,9 +259,10 @@ export class WebhookService {
         await this.sendSystemMessage(
           conversation.id,
           contact.id,
-          contact.waId,
+          inboundMessage.id,
           'Por el momento no puedo transcribir notas de voz. Por favor, escriba el mensaje para poder ayudarle correctamente.',
           'AUDIO_TRANSCRIPTION_UNAVAILABLE',
+          false,
         );
         this.logger.log(
           `Audio recibido en conversación ${conversation.id}; se solicitó una versión escrita`,
@@ -298,9 +299,10 @@ export class WebhookService {
         await this.sendSystemMessage(
           conversation.id,
           contact.id,
-          contact.waId,
+          inboundMessage.id,
           guardDecision.notice,
           'SUPPORT_ROUTING',
+          true,
         );
         return;
       }
@@ -309,9 +311,10 @@ export class WebhookService {
           await this.sendSystemMessage(
             conversation.id,
             contact.id,
-            contact.waId,
+            inboundMessage.id,
             guardDecision.notice,
             `GUARD_${guardDecision.category}`,
+            false,
           );
         }
         this.logger.warn(
@@ -320,16 +323,8 @@ export class WebhookService {
         return;
       }
 
-      // Paso 5: Obtener contexto completo
       // La generación y el contexto completo se resuelven en el worker para
-      // que Meta reciba el webhook sin esperar a Gemini.
-      const context = {
-        recentMessages: [],
-        conversationSummary: undefined,
-        leadStage: undefined,
-        productOfInterest: undefined,
-      };
-
+      // que Meta reciba el webhook sin esperar al motor conversacional.
       await this.autoReplies.enqueue(
         {
           conversationId: conversation.id,
@@ -338,88 +333,6 @@ export class WebhookService {
         },
         (messageContent || '').length,
       );
-      return;
-
-      // Paso 6: Llamar a Hermes con prompt + contexto
-      const hermesResponse = await this.hermesService.generateResponse({
-        contactName: contact.name || 'Cliente',
-        messageContent: messageContent || '',
-        conversationHistory: context.recentMessages,
-        leadStage: context.leadStage,
-        productOfInterest: context.productOfInterest,
-        conversationSummary: context.conversationSummary,
-      });
-
-      const latencyMs = Date.now() - startTime;
-
-      // Paso 8: Aplicar reglas post-procesamiento
-      const shouldHandoff = this.checkHandoffSignals(
-        messageContent || '',
-        hermesResponse.detectedIntent,
-      );
-
-      if (shouldHandoff) {
-        this.logger.debug(
-          'Handoff detectado; se abrirá tras enviar la transición',
-        );
-        // Aún así enviar respuesta de transición
-      }
-
-      // Paso 9: Enviar respuesta por API de Meta
-      const sentMessage = await this.metaService.sendTextMessage(
-        contact.waId,
-        hermesResponse.response,
-      );
-
-      // Paso 10: Registrar resultado
-      await this.prisma.message.create({
-        data: {
-          conversationId: conversation.id,
-          contactId: contact.id,
-          direction: MessageDirection.OUTBOUND,
-          sender: MessageSender.HERMES,
-          type: MessageType.TEXT,
-          content: hermesResponse.response,
-          wamid: sentMessage?.messages?.[0]?.id,
-          tokensUsed: hermesResponse.tokensUsed,
-          latencyMs,
-          costEstimate: hermesResponse.costEstimate,
-        },
-      });
-      await this.prisma.conversation.update({
-        where: { id: conversation.id },
-        data: { updatedAt: new Date() },
-      });
-
-      if (shouldHandoff) {
-        await this.createAutoHandoff(
-          conversation.id,
-          messageContent || '',
-          hermesResponse.detectedIntent,
-        );
-      }
-
-      // Actualizar estado conversacional
-      if (hermesResponse.suggestedTags || hermesResponse.detectedIntent) {
-        await this.updateConversationState(conversation.id, hermesResponse);
-      }
-
-      // Paso 11 (Etapa 3): calificación automática de lead. Si Hermes detectó
-      // una intención de alta compra, upsert del lead a QUALIFIED + emisión de
-      // `lead.qualified` (el service es el punto único de emisión).
-      if (this.shouldQualifyLead(hermesResponse.detectedIntent)) {
-        await this.leadsService.qualifyFromConversation({
-          contactId: contact.id,
-          conversationId: conversation.id,
-          detectedIntent: hermesResponse.detectedIntent,
-          productOfInterest: context.productOfInterest,
-        });
-        this.logger.log(
-          `Lead calificado automáticamente para ${contact.waId} (intent: ${hermesResponse.detectedIntent})`,
-        );
-      }
-
-      this.logger.log(`Respuesta enviada a ${contact.waId} en ${latencyMs}ms`);
     } catch (error: unknown) {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
@@ -433,27 +346,21 @@ export class WebhookService {
   private async sendSystemMessage(
     conversationId: string,
     contactId: string,
-    waId: string,
+    sourceMessageId: string,
     content: string,
     action: string,
+    allowHandedOff: boolean,
   ): Promise<void> {
-    const sentMessage = await this.metaService.sendTextMessage(waId, content);
-    await this.prisma.message.create({
-      data: {
-        conversationId,
-        contactId,
-        direction: MessageDirection.OUTBOUND,
-        sender: MessageSender.SYSTEM,
-        type: MessageType.TEXT,
-        content,
-        wamid: sentMessage?.messages?.[0]?.id,
-        metadata: { action },
-      },
+    await this.deliveries.prepareBatch({
+      deliveryKind: 'SYSTEM_NOTICE',
+      conversationId,
+      contactId,
+      sourceMessageId,
+      sender: 'SYSTEM',
+      allowHandedOff,
+      parts: [{ partIndex: 0, content, metadata: { action } }],
     });
-    await this.prisma.conversation.update({
-      where: { id: conversationId },
-      data: { updatedAt: new Date() },
-    });
+    await this.deliveries.deliverPreparedBatch(sourceMessageId);
   }
 
   /**

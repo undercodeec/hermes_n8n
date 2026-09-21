@@ -1,22 +1,17 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import {
-  Injectable,
-  Logger,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ConversationStatus,
   HandoffReason,
   MessageDirection,
   MessageSender,
-  MessageType,
   Prisma,
   TaskStatus,
 } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { ConversationEngineService } from '../conversation-engine/conversation-engine.service';
-import { MetaSendResponse, MetaService } from '../meta/meta.service';
+import { MetaService } from '../meta/meta.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { LeadsService } from '../leads/leads.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -34,6 +29,7 @@ import {
   HermesIncidentMetadata,
   toIncidentMetadata,
 } from '../hermes/hermes-diagnostics';
+import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 
 @Injectable()
 export class AutoReplyService {
@@ -51,6 +47,7 @@ export class AutoReplyService {
     private readonly conversationGuard: ConversationGuardService,
     @InjectQueue(AUTO_REPLY_QUEUE)
     private readonly queue: Queue<AutoReplyJobData>,
+    private readonly deliveries: AutomatedDeliveryService,
   ) {}
 
   async enqueue(data: AutoReplyJobData, messageLength: number): Promise<void> {
@@ -87,6 +84,16 @@ export class AutoReplyService {
     });
     if (!inbound || inbound.conversationId !== data.conversationId) {
       this.logSkip(data, 'INBOUND_NOT_FOUND_OR_MISMATCH');
+      return;
+    }
+
+    const recovered = await this.deliveries.recoverBatch(inbound.id);
+    if (recovered?.handled) {
+      this.logSkip(data, 'EXISTING_DELIVERY_BATCH', {
+        confirmed: recovered.confirmed,
+        terminal: recovered.terminal,
+        reasonCode: recovered.reasonCode,
+      });
       return;
     }
 
@@ -132,23 +139,22 @@ export class AutoReplyService {
         reasonDetail:
           'El cliente solicitó expresamente hablar con una persona.',
       });
-      await this.sendAndPersist({
+      const delivery = await this.sendAndPersist({
         conversationId: data.conversationId,
         contactId: data.contactId,
-        waId: conversation.contact.waId,
+        sourceMessageId: inbound.id,
         inboundWamid: inbound.wamid,
         content:
           'He registrado su solicitud para que continúe con una persona del equipo. La conversación queda pendiente de asignación.',
         metadata: { action: 'HUMAN_HANDOFF_CREATED' },
-        allowedStatuses: [
-          ConversationStatus.ACTIVE,
-          ConversationStatus.HANDED_OFF,
-        ],
+        allowHandedOff: true,
       });
-      await this.persistConversationState(data.conversationId, {
-        detectedIntent: 'solicitud_humano',
-        nextAction: 'derivar_humano',
-      });
+      if (delivery.confirmed > 0) {
+        await this.persistConversationState(data.conversationId, {
+          detectedIntent: 'solicitud_humano',
+          nextAction: 'derivar_humano',
+        });
+      }
       return;
     }
 
@@ -163,10 +169,10 @@ export class AutoReplyService {
       const content = policy.requestedCallAt
         ? 'He registrado la solicitud de llamada usando este mismo número de WhatsApp para el horario indicado. Está pendiente de confirmación por el equipo; todavía no está agendada.'
         : 'Claro, podemos coordinar una llamada usando este mismo número de WhatsApp. ¿Qué horario le viene bien?';
-      await this.sendAndPersist({
+      const delivery = await this.sendAndPersist({
         conversationId: data.conversationId,
         contactId: data.contactId,
-        waId: conversation.contact.waId,
+        sourceMessageId: inbound.id,
         inboundWamid: inbound.wamid,
         content,
         metadata: {
@@ -174,8 +180,9 @@ export class AutoReplyService {
           taskId: callback.id,
           requestedAt: policy.requestedCallAt?.toISOString(),
         },
-        allowedStatuses: [ConversationStatus.ACTIVE],
+        allowHandedOff: false,
       });
+      if (delivery.confirmed === 0) return;
       await this.leads.recordCommercialProfileFromConversation({
         contactId: data.contactId,
         conversationId: data.conversationId,
@@ -442,63 +449,39 @@ export class AutoReplyService {
       response.response,
       this.positiveInteger('AI_MESSAGE_SPLIT_THRESHOLD', 520),
     );
-    let sentParts = 0;
-    for (const [index, content] of messageParts.entries()) {
-      if (index > 0) {
-        await this.pause(
-          this.nonNegativeInteger('AI_MESSAGE_PART_DELAY_MS', 700),
-        );
-        const canContinue = await this.hasConversationStatus(
-          data.conversationId,
-          shouldHandoff
-            ? [ConversationStatus.ACTIVE, ConversationStatus.HANDED_OFF]
-            : [ConversationStatus.ACTIVE],
-        );
-        if (
-          !canContinue ||
-          (await this.hasNewerInbound(data.conversationId, inbound))
-        ) {
-          this.logSkip(data, 'MULTIPART_DELIVERY_INTERRUPTED', {
-            sentParts,
-            nextPart: index + 1,
-          });
-          break;
-        }
-      }
-      const sentMessage = await this.meta.sendTextMessage(
-        conversation.contact.waId,
+    await this.deliveries.prepareBatch({
+      deliveryKind: 'HERMES_REPLY',
+      conversationId: data.conversationId,
+      contactId: data.contactId,
+      sourceMessageId: inbound.id,
+      sender: 'HERMES',
+      allowHandedOff: shouldHandoff,
+      parts: messageParts.map((content, partIndex) => ({
+        partIndex,
         content,
-      );
-      const outboundWamid = this.confirmedWamid(sentMessage);
-      const partLatencyMs = Date.now() - startedAt;
-      await this.prisma.message.create({
-        data: {
-          conversationId: data.conversationId,
-          contactId: data.contactId,
-          direction: MessageDirection.OUTBOUND,
-          sender: MessageSender.HERMES,
-          type: MessageType.TEXT,
-          content,
-          wamid: outboundWamid,
-          tokensUsed: index === 0 ? response.tokensUsed : 0,
-          latencyMs: partLatencyMs,
-          costEstimate: index === 0 ? response.costEstimate : 0,
-          ...(index === 0
-            ? {
-                metadata: {
-                  conversationEngine: engineResult.engine,
-                  providerModel: engineResult.providerModel,
-                  traceId: engineResult.traceId,
-                  ...(incident ? { hermesIncident: incident } : {}),
-                },
-              }
-            : {}),
-        },
-      });
-      if (index === 0 && incident) {
-        await this.persistHermesIncident(data.conversationId, incident);
-      }
-      sentParts += 1;
+        ...(partIndex === 0
+          ? {
+              metadata: {
+                conversationEngine: engineResult.engine,
+                providerModel: engineResult.providerModel,
+                traceId: engineResult.traceId,
+                tokensUsed: response.tokensUsed,
+                latencyMs: Date.now() - startedAt,
+                costEstimate: response.costEstimate,
+                ...(incident ? { hermesIncident: incident } : {}),
+              },
+            }
+          : {}),
+      })),
+    });
+    const delivery = await this.deliveries.deliverPreparedBatch(inbound.id);
+    const sentParts = delivery.confirmed;
+    if (sentParts === 0) {
+      this.logSkip(data, delivery.reasonCode || 'DELIVERY_NOT_CONFIRMED');
+      return;
+    }
+    if (incident) {
+      await this.persistHermesIncident(data.conversationId, incident);
     }
     const latencyMs = Date.now() - startedAt;
     await this.prisma.conversation.update({
@@ -571,16 +554,6 @@ export class AutoReplyService {
   private positiveInteger(key: string, fallback: number): number {
     const value = Number(this.config.get(key));
     return Number.isSafeInteger(value) && value > 0 ? value : fallback;
-  }
-
-  private nonNegativeInteger(key: string, fallback: number): number {
-    const value = Number(this.config.get(key));
-    return Number.isSafeInteger(value) && value >= 0 ? value : fallback;
-  }
-
-  private async pause(delayMs: number): Promise<void> {
-    if (delayMs <= 0) return;
-    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
   }
 
   private async hasNewerInbound(
@@ -742,39 +715,29 @@ export class AutoReplyService {
   private async sendAndPersist(params: {
     conversationId: string;
     contactId: string;
-    waId: string;
+    sourceMessageId: string;
     inboundWamid?: string | null;
     content: string;
     metadata: Record<string, unknown>;
-    allowedStatuses: ConversationStatus[];
-  }): Promise<void> {
-    if (
-      !(await this.hasConversationStatus(
-        params.conversationId,
-        params.allowedStatuses,
-      ))
-    ) {
-      return;
-    }
+    allowHandedOff: boolean;
+  }) {
     await this.showTypingIndicator(params.inboundWamid);
-    const sent = await this.meta.sendTextMessage(params.waId, params.content);
-    const outboundWamid = this.confirmedWamid(sent);
-    await this.prisma.message.create({
-      data: {
-        conversationId: params.conversationId,
-        contactId: params.contactId,
-        direction: MessageDirection.OUTBOUND,
-        sender: MessageSender.SYSTEM,
-        type: MessageType.TEXT,
-        content: params.content,
-        wamid: outboundWamid,
-        metadata: params.metadata as Prisma.InputJsonValue,
-      },
+    await this.deliveries.prepareBatch({
+      deliveryKind: 'SYSTEM_NOTICE',
+      conversationId: params.conversationId,
+      contactId: params.contactId,
+      sourceMessageId: params.sourceMessageId,
+      sender: 'SYSTEM',
+      allowHandedOff: params.allowHandedOff,
+      parts: [
+        {
+          partIndex: 0,
+          content: params.content,
+          metadata: params.metadata,
+        },
+      ],
     });
-    await this.prisma.conversation.update({
-      where: { id: params.conversationId },
-      data: { updatedAt: new Date() },
-    });
+    return this.deliveries.deliverPreparedBatch(params.sourceMessageId);
   }
 
   private async hasConversationStatus(
@@ -786,18 +749,6 @@ export class AutoReplyService {
       select: { status: true },
     });
     return Boolean(current && allowedStatuses.includes(current.status));
-  }
-
-  private confirmedWamid(
-    response: MetaSendResponse | null | undefined,
-  ): string {
-    const wamid = response?.messages?.[0]?.id;
-    if (!wamid) {
-      throw new ServiceUnavailableException(
-        'Meta no confirmó el envío del mensaje',
-      );
-    }
-    return wamid;
   }
 
   private logSkip(

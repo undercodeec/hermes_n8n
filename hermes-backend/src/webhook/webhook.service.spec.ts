@@ -13,6 +13,7 @@ import { AutoReplyService } from '../auto-replies/auto-reply.service';
 import { ConversationGuardService } from '../conversation-guard/conversation-guard.service';
 import { AdvertisingService } from '../advertising/advertising.service';
 import { ConversationEventsService } from '../conversations/conversation-events.service';
+import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 
 describe('WebhookService campaign replies', () => {
   it('records every accepted Meta webhook before processing its entries', async () => {
@@ -372,6 +373,12 @@ describe('WebhookService campaign replies', () => {
     } as unknown as MetaService;
     const autoReplies = { enqueue: jest.fn() } as unknown as AutoReplyService;
     const guard = { inspect: jest.fn() } as unknown as ConversationGuardService;
+    const deliveries = {
+      prepareBatch: jest.fn().mockResolvedValue(undefined),
+      deliverPreparedBatch: jest
+        .fn()
+        .mockResolvedValue({ handled: true, confirmed: 1, terminal: true }),
+    };
     const service = new WebhookService(
       {} as ConfigService,
       prismaMock as unknown as PrismaService,
@@ -394,6 +401,7 @@ describe('WebhookService campaign replies', () => {
       {
         publishCustomerMessage: jest.fn().mockResolvedValue(undefined),
       } as unknown as ConversationEventsService,
+      deliveries as unknown as AutomatedDeliveryService,
     );
 
     await (service as any).processIncomingMessage(
@@ -407,18 +415,69 @@ describe('WebhookService campaign replies', () => {
       { wa_id: '593991234567', profile: { name: 'Ana' } },
     );
 
-    expect(meta.sendTextMessage).toHaveBeenCalledWith(
-      '593991234567',
-      expect.stringContaining('no puedo transcribir notas de voz'),
-    );
-    expect(messageCreate).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
+    expect(deliveries.prepareBatch).toHaveBeenCalledWith({
+      deliveryKind: 'SYSTEM_NOTICE',
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      sourceMessageId: 'inbound-audio',
+      sender: 'SYSTEM',
+      allowHandedOff: false,
+      parts: [
+        expect.objectContaining({
+          partIndex: 0,
           metadata: { action: 'AUDIO_TRANSCRIPTION_UNAVAILABLE' },
         }),
-      }),
+      ],
+    });
+    expect(deliveries.deliverPreparedBatch).toHaveBeenCalledWith(
+      'inbound-audio',
     );
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
     expect(autoReplies.enqueue).not.toHaveBeenCalled();
     expect(guard.inspect).not.toHaveBeenCalled();
+  });
+
+  it('allows only a post-handoff support notice through the handed-off guard', async () => {
+    const deliveries = {
+      prepareBatch: jest.fn().mockResolvedValue(undefined),
+      deliverPreparedBatch: jest
+        .fn()
+        .mockResolvedValue({ handled: true, confirmed: 1, terminal: true }),
+    };
+    const service = new WebhookService(
+      {} as ConfigService,
+      {} as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      {} as CampaignsService,
+      {} as AutoReplyService,
+      {} as ConversationGuardService,
+      {} as AdvertisingService,
+      {} as ConversationEventsService,
+      deliveries as unknown as AutomatedDeliveryService,
+    );
+
+    await (service as any).sendSystemMessage(
+      'conversation-1',
+      'contact-1',
+      'inbound-support',
+      'Un especialista continuará la atención.',
+      'SUPPORT_ROUTING',
+      true,
+    );
+
+    expect(deliveries.prepareBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceMessageId: 'inbound-support',
+        allowHandedOff: true,
+        parts: [
+          expect.objectContaining({
+            metadata: { action: 'SUPPORT_ROUTING' },
+          }),
+        ],
+      }),
+    );
   });
 });

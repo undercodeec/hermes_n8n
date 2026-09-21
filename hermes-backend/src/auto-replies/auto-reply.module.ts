@@ -9,6 +9,7 @@ import { HandoffModule } from '../handoff/handoff.module';
 import { LeadsModule } from '../leads/leads.module';
 import { ConversationGuardModule } from '../conversation-guard/conversation-guard.module';
 import { TasksModule } from '../tasks/tasks.module';
+import { AutomatedDeliveryModule } from '../automated-deliveries/automated-delivery.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { TasksModule } from '../tasks/tasks.module';
     LeadsModule,
     ConversationGuardModule,
     TasksModule,
+    AutomatedDeliveryModule,
     BullModule.registerQueue({
       name: AUTO_REPLY_QUEUE,
       defaultJobOptions: {

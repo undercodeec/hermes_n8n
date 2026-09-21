@@ -19,6 +19,8 @@ import {
   CommercialProfile,
   HermesResponseDto,
 } from '../hermes/dto/hermes-request.dto';
+import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
+import { PrepareAutomatedDeliveryBatch } from '../automated-deliveries/automated-delivery.types';
 
 describe('AutoReplyService', () => {
   const toEngineResult = (response: HermesResponseDto) => ({
@@ -42,6 +44,49 @@ describe('AutoReplyService', () => {
     diagnostic: response.diagnostic,
   });
 
+  function passthroughDeliveries(
+    metaService: MetaService,
+    messageCreate: jest.Mock = jest
+      .fn()
+      .mockResolvedValue({ id: 'outbound-1' }),
+  ): AutomatedDeliveryService {
+    let prepared: PrepareAutomatedDeliveryBatch | undefined;
+    const sendTextMessage = (
+      metaService as unknown as { sendTextMessage: jest.Mock }
+    ).sendTextMessage;
+    return {
+      recoverBatch: jest.fn().mockResolvedValue(null),
+      prepareBatch: jest.fn().mockImplementation(async (input) => {
+        prepared = input;
+      }),
+      deliverPreparedBatch: jest.fn().mockImplementation(async () => {
+        if (!prepared) throw new Error('delivery batch was not prepared');
+        for (const part of prepared.parts) {
+          const sent = await sendTextMessage('593991234567', part.content);
+          const wamid = sent?.messages?.[0]?.id;
+          if (!wamid) throw new Error('Meta no confirmó el envío del mensaje');
+          await messageCreate({
+            data: {
+              conversationId: prepared.conversationId,
+              contactId: prepared.contactId,
+              direction: 'OUTBOUND',
+              sender: prepared.sender,
+              type: 'TEXT',
+              content: part.content,
+              wamid,
+              metadata: part.metadata,
+            },
+          });
+        }
+        return {
+          handled: true,
+          confirmed: prepared.parts.length,
+          terminal: true,
+        };
+      }),
+    } as unknown as AutomatedDeliveryService;
+  }
+
   type ProcessHarnessOptions = {
     hermesResponse: HermesResponseDto;
     outputDecision?: GeneratedResponseDecision;
@@ -59,6 +104,12 @@ describe('AutoReplyService', () => {
     };
     handoffs: { create: jest.Mock };
     guard: { consumeAiQuota: jest.Mock; inspectGeneratedResponse: jest.Mock };
+    engine: { respond: jest.Mock };
+    deliveries: {
+      recoverBatch: jest.Mock;
+      prepareBatch: jest.Mock;
+      deliverPreparedBatch: jest.Mock;
+    };
     messageCreate: jest.Mock;
     conversationUpdate: jest.Mock;
   } {
@@ -137,6 +188,42 @@ describe('AutoReplyService', () => {
     const handoffs = {
       create: jest.fn().mockResolvedValue({ id: 'handoff-1' }),
     };
+    const engine = {
+      respond: jest
+        .fn()
+        .mockResolvedValue(toEngineResult(options.hermesResponse)),
+    };
+    const deliveries = {
+      recoverBatch: jest.fn().mockResolvedValue(null),
+      prepareBatch: jest.fn().mockResolvedValue(undefined),
+      deliverPreparedBatch: jest.fn().mockImplementation(async () => {
+        const prepared = deliveries.prepareBatch.mock.calls.at(-1)?.[0];
+        if (!prepared) return { handled: false, confirmed: 0, terminal: false };
+        for (const part of prepared.parts) {
+          const sent = await meta.sendTextMessage('593991234567', part.content);
+          if (!sent?.messages?.[0]?.id) {
+            throw new Error('Meta no confirmó el envío del mensaje');
+          }
+          await messageCreate({
+            data: {
+              conversationId: prepared.conversationId,
+              contactId: prepared.contactId,
+              direction: 'OUTBOUND',
+              sender: prepared.sender,
+              type: 'TEXT',
+              content: part.content,
+              wamid: sent.messages[0].id,
+              metadata: part.metadata,
+            },
+          });
+        }
+        return {
+          handled: true,
+          confirmed: prepared.parts.length,
+          terminal: true,
+        };
+      }),
+    };
     const service = new AutoReplyService(
       {
         get: jest.fn((key: string) =>
@@ -145,17 +232,14 @@ describe('AutoReplyService', () => {
       } as unknown as ConfigService,
       prisma,
       meta as unknown as MetaService,
-      {
-        respond: jest
-          .fn()
-          .mockResolvedValue(toEngineResult(options.hermesResponse)),
-      } as unknown as ConversationEngineService,
+      engine as unknown as ConversationEngineService,
       handoffs as unknown as HandoffService,
       leads as unknown as LeadsService,
       tasks as unknown as TasksService,
       new CommercialPolicyService(),
       guard as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
+      deliveries as unknown as AutomatedDeliveryService,
     );
     return {
       service,
@@ -164,10 +248,91 @@ describe('AutoReplyService', () => {
       leads,
       handoffs,
       guard,
+      engine,
+      deliveries,
       messageCreate,
       conversationUpdate,
     };
   }
+
+  it('resumes a prepared batch before quota or inference', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'respuesta', detectedIntent: 'info_general' },
+    });
+    harness.deliveries.recoverBatch.mockResolvedValue({
+      handled: true,
+      confirmed: 1,
+      terminal: true,
+    });
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+
+    expect(harness.guard.consumeAiQuota).not.toHaveBeenCalled();
+    expect(harness.engine.respond).not.toHaveBeenCalled();
+    expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('prepares all generated parts and delegates delivery once', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: {
+        response: `${'a'.repeat(500)}. ${'b'.repeat(500)}`,
+        detectedIntent: 'info_general',
+      },
+    });
+    harness.deliveries.deliverPreparedBatch.mockResolvedValue({
+      handled: true,
+      confirmed: 2,
+      terminal: true,
+    });
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+
+    expect(harness.deliveries.prepareBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryKind: 'HERMES_REPLY',
+        sourceMessageId: 'inbound-recovery',
+        sender: 'HERMES',
+        parts: [
+          expect.objectContaining({ partIndex: 0 }),
+          expect.objectContaining({ partIndex: 1 }),
+        ],
+      }),
+    );
+    expect(harness.deliveries.deliverPreparedBatch).toHaveBeenCalledWith(
+      'inbound-recovery',
+    );
+    expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not persist lead state when the delivery is suppressed', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'respuesta', detectedIntent: 'info_general' },
+    });
+    harness.deliveries.deliverPreparedBatch.mockResolvedValue({
+      handled: true,
+      confirmed: 0,
+      terminal: true,
+      reasonCode: 'NEWER_INBOUND',
+    });
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+
+    expect(
+      harness.leads.recordCommercialProfileFromConversation,
+    ).not.toHaveBeenCalled();
+  });
 
   it('keeps the internal Hermes incident visible to CRM and absent from customer copy', async () => {
     const harness = setupProcessHarness({
@@ -206,14 +371,11 @@ describe('AutoReplyService', () => {
     });
 
     expect(callOrder).toEqual(['review-task', 'send', 'persist']);
-    expect(harness.meta.sendTextMessage).toHaveBeenCalledWith(
-      '593991234567',
-      expect.stringContaining(
-        'Ya dejé registrado el caso para revisarlo y continuar por este mismo chat',
-      ),
+    const prepared = harness.deliveries.prepareBatch.mock.calls[0][0];
+    const customerCopy = prepared.parts[0].content as string;
+    expect(customerCopy).toContain(
+      'Ya dejé registrado el caso para revisarlo y continuar por este mismo chat',
     );
-    const customerCopy = harness.meta.sendTextMessage.mock
-      .calls[0][1] as string;
     expect(customerCopy).not.toMatch(/HTTP 503|HERMES_PROVIDER_UNAVAILABLE/);
     expect(harness.messageCreate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -266,11 +428,10 @@ describe('AutoReplyService', () => {
     });
 
     expect(harness.tasks.requestHermesReview).toHaveBeenCalledTimes(1);
-    expect(harness.meta.sendTextMessage).toHaveBeenCalledWith(
-      '593991234567',
-      expect.stringContaining(
-        'Permítame consultar este punto con el equipo. Le confirmaremos por este mismo chat',
-      ),
+    expect(
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
+    ).toContain(
+      'Permítame consultar este punto con el equipo. Le confirmaremos por este mismo chat',
     );
   });
 
@@ -691,6 +852,7 @@ describe('AutoReplyService', () => {
       new CommercialPolicyService(),
       { consumeAiQuota: jest.fn() } as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
+      passthroughDeliveries(meta),
     );
     const warn = jest.spyOn(
       (service as unknown as { logger: Logger }).logger,
@@ -750,6 +912,7 @@ describe('AutoReplyService', () => {
       new CommercialPolicyService(),
       {} as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
+      passthroughDeliveries(meta),
     );
     const warn = jest.spyOn(
       (service as unknown as { logger: Logger }).logger,
@@ -832,6 +995,7 @@ describe('AutoReplyService', () => {
     const guard = {
       consumeAiQuota: jest.fn(),
     } as unknown as ConversationGuardService;
+    const deliveries = passthroughDeliveries(meta);
     const service = new AutoReplyService(
       { get: jest.fn() } as unknown as ConfigService,
       prisma,
@@ -843,6 +1007,7 @@ describe('AutoReplyService', () => {
       new CommercialPolicyService(),
       guard,
       { add: jest.fn() } as unknown as Queue,
+      deliveries,
     );
 
     await service.process({
@@ -857,10 +1022,9 @@ describe('AutoReplyService', () => {
         sourceMessageId: 'inbound-call',
       }),
     );
-    expect(meta.sendTextMessage).toHaveBeenCalledWith(
-      '593991234567',
-      expect.stringContaining('este mismo número de WhatsApp'),
-    );
+    expect(
+      (deliveries.prepareBatch as jest.Mock).mock.calls[0][0].parts[0].content,
+    ).toContain('este mismo número de WhatsApp');
     expect(engine.respond).not.toHaveBeenCalled();
     expect(guard.consumeAiQuota).not.toHaveBeenCalled();
   });
@@ -924,6 +1088,11 @@ describe('AutoReplyService', () => {
       new CommercialPolicyService(),
       { consumeAiQuota: jest.fn() } as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
+      passthroughDeliveries(
+        meta,
+        (prisma as unknown as { message: { create: jest.Mock } }).message
+          .create,
+      ),
     );
 
     await service.process({
@@ -1019,6 +1188,7 @@ describe('AutoReplyService', () => {
       }),
       qualifyFromConversation: jest.fn().mockResolvedValue({}),
     } as unknown as LeadsService;
+    const deliveries = passthroughDeliveries(meta);
     const service = new AutoReplyService(
       { get: jest.fn() } as unknown as ConfigService,
       prisma,
@@ -1035,6 +1205,7 @@ describe('AutoReplyService', () => {
           .mockReturnValue({ action: 'ALLOW' }),
       } as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
+      deliveries,
     );
 
     await service.process({
@@ -1066,10 +1237,9 @@ describe('AutoReplyService', () => {
     expect(meta.showTypingIndicator).toHaveBeenCalledWith(
       'wamid.inbound-price',
     );
-    expect(meta.sendTextMessage).toHaveBeenCalledWith(
-      '593991234567',
-      expect.stringContaining('He registrado una solicitud de cotización'),
-    );
+    expect(
+      (deliveries.prepareBatch as jest.Mock).mock.calls[0][0].parts[0].content,
+    ).toContain('He registrado una solicitud de cotización');
   });
 
   it('sends and persists a long reply without loss in bounded messages', async () => {
@@ -1119,6 +1289,7 @@ describe('AutoReplyService', () => {
         .fn()
         .mockResolvedValue({ messages: [{ id: 'wamid.outbound' }] }),
     } as unknown as MetaService;
+    const deliveries = passthroughDeliveries(meta, messageCreate);
     const service = new AutoReplyService(
       {
         get: jest.fn((key: string) => {
@@ -1155,6 +1326,7 @@ describe('AutoReplyService', () => {
           .mockReturnValue({ action: 'ALLOW' }),
       } as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
+      deliveries,
     );
 
     await service.process({
@@ -1163,9 +1335,11 @@ describe('AutoReplyService', () => {
       inboundMessageId: 'inbound-long',
     });
 
-    const sentParts = (meta.sendTextMessage as jest.Mock).mock.calls.map(
-      (call) => call[1],
-    );
+    const sentParts = (
+      (deliveries.prepareBatch as jest.Mock).mock.calls[0][0].parts as Array<{
+        content: string;
+      }>
+    ).map((part) => part.content);
     expect(sentParts.length).toBeLessThanOrEqual(9);
     expect(messageCreate).toHaveBeenCalledTimes(sentParts.length);
     expect(sentParts.every((part) => part.length <= 1000)).toBe(true);

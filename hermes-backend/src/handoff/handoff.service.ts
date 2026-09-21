@@ -1,6 +1,7 @@
 import {
   ConflictException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -23,6 +24,8 @@ const OPEN_HANDOFF_STATUSES: HandoffStatus[] = [
 
 @Injectable()
 export class HandoffService {
+  private readonly logger = new Logger(HandoffService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: EventEmitter2,
@@ -115,21 +118,29 @@ export class HandoffService {
 
     if (result.created) {
       const contact = result.handoff.conversation.contact;
-      this.events.emit(
-        'conversation.handoff_requested',
-        new ConversationHandoffRequestedEvent(
-          result.handoff.id,
-          result.handoff.conversationId,
-          contact.id,
-          result.handoff.reason,
-          result.handoff.reasonDetail ?? undefined,
-          result.handoff.assignedAgentId ?? undefined,
-          contact.name ?? undefined,
-          contact.waId,
-          this.crmUrl(result.handoff.conversationId),
-          this.traceId(),
-        ),
-      );
+      try {
+        this.events.emit(
+          'conversation.handoff_requested',
+          new ConversationHandoffRequestedEvent(
+            result.handoff.id,
+            result.handoff.conversationId,
+            contact.id,
+            result.handoff.reason,
+            result.handoff.reasonDetail ?? undefined,
+            result.handoff.assignedAgentId ?? undefined,
+            contact.name ?? undefined,
+            contact.waId,
+            this.crmUrl(result.handoff.conversationId),
+            this.traceId(),
+          ),
+        );
+      } catch (error) {
+        this.logger.warn(
+          `No se pudo publicar el evento de handoff ${result.handoff.id}: ${
+            error instanceof Error ? error.message : 'event publication failed'
+          }`,
+        );
+      }
     }
 
     return result.handoff;

@@ -1,7 +1,11 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { ConversationStatus, HandoffStatus } from '@prisma/client';
+import {
+  ConversationStatus,
+  HandoffReason,
+  HandoffStatus,
+} from '@prisma/client';
 import { ClsService } from 'nestjs-cls';
 import { PrismaService } from '../prisma/prisma.service';
 import {
@@ -40,6 +44,60 @@ describe('HandoffService', () => {
       assignedAgentId: 'user-1',
     });
     tx.humanHandoff.update.mockResolvedValue({ id: 'handoff-1' });
+  });
+
+  it('keeps a durable handoff when event publication fails', async () => {
+    const handoff = {
+      id: 'handoff-1',
+      conversationId: 'conversation-1',
+      reason: HandoffReason.SUPPORT,
+      reasonDetail: 'Soporte solicitado',
+      assignedAgentId: null,
+      conversation: {
+        contact: { id: 'contact-1', name: 'Ana', waId: '593991234567' },
+      },
+    };
+    const createTx = {
+      $executeRaw: jest.fn(),
+      conversation: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'conversation-1',
+          status: ConversationStatus.ACTIVE,
+          contact: handoff.conversation.contact,
+        }),
+        update: jest.fn().mockResolvedValue({}),
+      },
+      humanHandoff: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(handoff),
+      },
+      auditLog: { create: jest.fn() },
+    };
+    const createPrisma = {
+      $transaction: jest.fn((callback: (client: typeof createTx) => unknown) =>
+        callback(createTx),
+      ),
+    } as unknown as PrismaService;
+    const events = {
+      emit: jest.fn().mockImplementation(() => {
+        throw new Error('n8n queue unavailable');
+      }),
+    };
+    const createService = new HandoffService(
+      createPrisma,
+      events as unknown as EventEmitter2,
+      { isActive: jest.fn().mockReturnValue(false) } as unknown as ClsService,
+      { get: jest.fn() } as unknown as ConfigService,
+    );
+
+    await expect(
+      createService.create({
+        conversationId: 'conversation-1',
+        reason: HandoffReason.SUPPORT,
+        reasonDetail: 'Soporte solicitado',
+      }),
+    ).resolves.toEqual(expect.objectContaining({ id: 'handoff-1' }));
+    expect(createTx.humanHandoff.create).toHaveBeenCalledTimes(1);
   });
 
   it('devuelve explícitamente el control a Hermes al resolver', async () => {

@@ -10,6 +10,7 @@ import { AutoReplyModule } from '../auto-replies/auto-reply.module';
 import { ConversationGuardModule } from '../conversation-guard/conversation-guard.module';
 import { AdvertisingModule } from '../advertising/advertising.module';
 import { ConversationsModule } from '../conversations/conversations.module';
+import { AutomatedDeliveryModule } from '../automated-deliveries/automated-delivery.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { ConversationsModule } from '../conversations/conversations.module';
     ConversationGuardModule,
     AdvertisingModule,
     ConversationsModule,
+    AutomatedDeliveryModule,
   ],
   controllers: [WebhookController],
   providers: [WebhookService],
