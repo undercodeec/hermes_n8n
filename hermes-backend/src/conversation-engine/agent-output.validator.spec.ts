@@ -12,7 +12,10 @@ describe('AgentOutputValidator', () => {
         {
           model: 'gemini-3.8-flash',
           choices: [
-            { finish_reason: 'stop', message: { content: ' Respuesta final. ' } },
+            {
+              finish_reason: 'stop',
+              message: { content: ' Respuesta final. ' },
+            },
           ],
           usage: { prompt_tokens: 10, completion_tokens: 5 },
         },
@@ -30,9 +33,7 @@ describe('AgentOutputValidator', () => {
     {},
     {
       error: { message: 'provider failed' },
-      choices: [
-        { finish_reason: 'stop', message: { content: 'texto' } },
-      ],
+      choices: [{ finish_reason: 'stop', message: { content: 'texto' } }],
     },
     {
       choices: [

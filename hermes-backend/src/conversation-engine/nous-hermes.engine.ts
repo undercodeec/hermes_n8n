@@ -17,7 +17,12 @@ export class NousHermesEngine implements ConversationEngine {
 
   constructor(
     private readonly config: ConfigService,
-    @InjectQueue(NOUS_HERMES_INFERENCE_QUEUE) private readonly queue: Queue,
+    @InjectQueue(NOUS_HERMES_INFERENCE_QUEUE)
+    private readonly queue: Queue<
+      ConversationTurnInput,
+      ConversationTurnResult,
+      string
+    >,
     private readonly queueEvents: NousHermesQueueEvents,
   ) {}
 

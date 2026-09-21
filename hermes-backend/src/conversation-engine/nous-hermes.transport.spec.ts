@@ -7,7 +7,6 @@ import {
 } from './nous-hermes.constants';
 import {
   NousHermesRateLimitError,
-  NousHermesSecretReader,
   NousHermesTransport,
 } from './nous-hermes.transport';
 import type { ConversationTurnInput } from './conversation-engine.types';
@@ -61,7 +60,7 @@ describe('NousHermesTransport', () => {
     return new NousHermesTransport(
       config,
       new AgentOutputValidator(),
-      secretReader as unknown as NousHermesSecretReader,
+      secretReader,
     );
   }
 
@@ -97,15 +96,16 @@ describe('NousHermesTransport', () => {
     'http://public.example/v1/chat/completions',
     'http://nous-hermes-api:8642/v1/chat/completions?x=1',
     'http://user@nous-hermes-api:8642/v1/chat/completions',
-  ])('rejects any destination outside the exact private contract: %s', async (url) => {
-    const result = await configuredTransport({
-      NOUS_HERMES_CHAT_COMPLETIONS_URL: url,
-    }).execute(baseInput());
-    expect(post).not.toHaveBeenCalled();
-    expect(result.diagnostic?.code).toBe(
-      'NOUS_HERMES_CONFIGURATION_INVALID',
-    );
-  });
+  ])(
+    'rejects any destination outside the exact private contract: %s',
+    async (url) => {
+      const result = await configuredTransport({
+        NOUS_HERMES_CHAT_COMPLETIONS_URL: url,
+      }).execute(baseInput());
+      expect(post).not.toHaveBeenCalled();
+      expect(result.diagnostic?.code).toBe('NOUS_HERMES_CONFIGURATION_INVALID');
+    },
+  );
 
   it('reads and trims the mounted secret without logging it', async () => {
     post.mockResolvedValue({
@@ -127,13 +127,8 @@ describe('NousHermesTransport', () => {
       configuredTransport().execute(baseInput()),
     ).rejects.toBeInstanceOf(NousHermesRateLimitError);
     post.mockRejectedValueOnce({ response: { status: 500 } });
-    await expect(configuredTransport().execute(baseInput())).resolves.toEqual(
-      expect.objectContaining({
-        diagnostic: expect.objectContaining({
-          code: 'NOUS_HERMES_UNAVAILABLE',
-        }),
-      }),
-    );
+    const result = await configuredTransport().execute(baseInput());
+    expect(result.diagnostic?.code).toBe('NOUS_HERMES_UNAVAILABLE');
   });
 
   it.each([
@@ -156,9 +151,7 @@ describe('NousHermesTransport', () => {
     { choices: [] },
     { error: { message: 'failed' }, choices: [] },
     {
-      choices: [
-        { finish_reason: 'error', message: { content: 'failed' } },
-      ],
+      choices: [{ finish_reason: 'error', message: { content: 'failed' } }],
     },
     {
       choices: [
@@ -189,9 +182,7 @@ describe('NousHermesTransport', () => {
     ).toBe('NOUS_HERMES_TIMEOUT');
     secretReader.read.mockRejectedValueOnce(new Error('ENOENT /private/path'));
     const missing = await configuredTransport().execute(baseInput());
-    expect(missing.diagnostic?.code).toBe(
-      'NOUS_HERMES_CONFIGURATION_INVALID',
-    );
+    expect(missing.diagnostic?.code).toBe('NOUS_HERMES_CONFIGURATION_INVALID');
     expect(missing.replyText).not.toContain('/private/path');
   });
 

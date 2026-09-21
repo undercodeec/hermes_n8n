@@ -1,3 +1,11 @@
+/* eslint-disable
+  @typescript-eslint/no-unsafe-argument,
+  @typescript-eslint/no-unsafe-assignment,
+  @typescript-eslint/no-unsafe-call,
+  @typescript-eslint/no-unsafe-member-access,
+  @typescript-eslint/require-await,
+  @typescript-eslint/unbound-method
+  -- This integration-style unit suite uses dynamic Nest, Prisma, and BullMQ doubles. */
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ConversationStatus, MessageDirection } from '@prisma/client';

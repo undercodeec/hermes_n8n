@@ -1,6 +1,9 @@
 import { ConfigService } from '@nestjs/config';
 import type { Queue } from 'bullmq';
-import type { ConversationTurnInput } from './conversation-engine.types';
+import type {
+  ConversationTurnInput,
+  ConversationTurnResult,
+} from './conversation-engine.types';
 import { NousHermesEngine } from './nous-hermes.engine';
 import { NousHermesQueueEvents } from './nous-hermes.queue-events';
 import { NousHermesRateLimitError } from './nous-hermes.transport';
@@ -38,7 +41,11 @@ describe('NousHermesEngine queue routing', () => {
     };
     const engine = new NousHermesEngine(
       config as unknown as ConfigService,
-      queue as unknown as Queue,
+      queue as unknown as Queue<
+        ConversationTurnInput,
+        ConversationTurnResult,
+        string
+      >,
       queueEvents as unknown as NousHermesQueueEvents,
     );
     return { engine, queue, queueEvents, waitUntilFinished };

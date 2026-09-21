@@ -87,8 +87,7 @@ export class ConversationsService {
       category: incident.category as HermesDiagnosticCategory,
       code: sanitizeDiagnosticSummary(incident.code),
       summary: sanitizeDiagnosticSummary(incident.summary),
-      attempts:
-        typeof incident.attempts === 'number' ? incident.attempts : 0,
+      attempts: typeof incident.attempts === 'number' ? incident.attempts : 0,
       recovered:
         typeof incident.recovered === 'boolean' ? incident.recovered : false,
       requiresHumanReview:
@@ -124,8 +123,12 @@ export class ConversationsService {
       id: value.id,
       title: value.title,
       status: value.status,
-      ...(value.createdAt instanceof Date ? { createdAt: value.createdAt } : {}),
-      ...(value.updatedAt instanceof Date ? { updatedAt: value.updatedAt } : {}),
+      ...(value.createdAt instanceof Date
+        ? { createdAt: value.createdAt }
+        : {}),
+      ...(value.updatedAt instanceof Date
+        ? { updatedAt: value.updatedAt }
+        : {}),
     };
   }
 

@@ -6,13 +6,11 @@ import {
 } from '@nestjs/common';
 import {
   AutomatedDelivery,
-  AutomatedDeliveryKind,
   AutomatedDeliveryStatus,
   ConversationStatus,
   HandoffStatus,
   MarketingConsentStatus,
   MessageDirection,
-  MessageSender,
   MessageType,
   Prisma,
 } from '@prisma/client';
@@ -40,7 +38,12 @@ const TERMINAL_STATUSES: AutomatedDeliveryStatus[] = [
 ];
 
 type ClaimResult =
-  | { claimed: true; operation: AutomatedDelivery; waId: string; claimToken: string }
+  | {
+      claimed: true;
+      operation: AutomatedDelivery;
+      waId: string;
+      claimToken: string;
+    }
   | { claimed: false; terminal: boolean; reasonCode: string };
 
 @Injectable()
@@ -62,12 +65,12 @@ export class AutomatedDeliveryService
         where: { operationKey },
         create: {
           operationKey,
-          deliveryKind: input.deliveryKind as AutomatedDeliveryKind,
+          deliveryKind: input.deliveryKind,
           partIndex: part.partIndex,
           conversationId: input.conversationId,
           contactId: input.contactId,
           sourceMessageId: input.sourceMessageId,
-          sender: input.sender as MessageSender,
+          sender: input.sender,
           content: part.content,
           allowHandedOff: input.allowHandedOff,
           metadata: part.metadata as Prisma.InputJsonValue | undefined,
@@ -209,7 +212,11 @@ export class AutomatedDeliveryService
         where: { id: operation.id },
       });
       if (!current) {
-        return { claimed: false, terminal: true, reasonCode: 'DELIVERY_MISSING' };
+        return {
+          claimed: false,
+          terminal: true,
+          reasonCode: 'DELIVERY_MISSING',
+        };
       }
       if (current.status !== AutomatedDeliveryStatus.PREPARED) {
         return {
@@ -303,8 +310,16 @@ export class AutomatedDeliveryService
     conversation: { status: ConversationStatus } | null;
     contact: { marketingConsentStatus: MarketingConsentStatus } | null;
     handoff: { id: string } | null;
-    sourceMessage: { id: string; createdAt: Date; rawPayload: Prisma.JsonValue } | null;
-    latestInbound: { id: string; createdAt: Date; rawPayload: Prisma.JsonValue } | null;
+    sourceMessage: {
+      id: string;
+      createdAt: Date;
+      rawPayload: Prisma.JsonValue;
+    } | null;
+    latestInbound: {
+      id: string;
+      createdAt: Date;
+      rawPayload: Prisma.JsonValue;
+    } | null;
     now: Date;
   }): string | null {
     const {
@@ -348,7 +363,7 @@ export class AutomatedDeliveryService
   }): Date {
     const raw = message.rawPayload;
     if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
-      const timestamp = (raw as Prisma.JsonObject).timestamp;
+      const timestamp = raw.timestamp;
       if (typeof timestamp === 'string' || typeof timestamp === 'number') {
         const numeric = Number(timestamp);
         if (Number.isFinite(numeric) && numeric > 0) {

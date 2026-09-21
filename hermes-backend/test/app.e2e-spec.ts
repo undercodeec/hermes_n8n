@@ -175,7 +175,9 @@ describe('Contratos HTTP del CRM (e2e aislado)', () => {
       .send({ proof: 'header.payload.signature' })
       .expect(200);
 
-    expect(response.body.accessToken).toBe('hermes-crm-jwt');
+    expect(response.body as unknown).toEqual(
+      expect.objectContaining({ accessToken: 'hermes-crm-jwt' }),
+    );
     expect(authService.loginWithCrmProof).toHaveBeenCalledWith(
       'header.payload.signature',
     );

@@ -104,3 +104,40 @@ Estos resultados no sustituyen la regresión completa ni una prueba conjunta
 autorizada contra la VPS. `HERMES_CONVERSATION_ENGINE=gemini_direct` y la
 allowlist vacía siguen siendo los valores versionados; no se realizó despliegue
 ni canary real.
+
+## Regresión final de la rama
+
+Resultados frescos posteriores a la implementación y a la limpieza del alcance:
+
+```text
+npx prisma format
+PASS
+npx prisma validate
+PASS
+npx prisma generate
+PASS: Prisma Client 5.22.0
+
+npm test -- --runInBand
+PASS: 29 suites, 285 tests, 0 snapshots (5.838 s)
+
+npm run test:e2e -- --runInBand
+PASS: 1 suite, 11 tests, 0 snapshots (1.478 s)
+
+npm run test:integration
+PASS: 2 suites, 2 tests, 0 snapshots (0.984 s)
+
+npm run build
+PASS
+
+eslint sobre los 32 archivos TypeScript cambiados
+PASS: 0 errores, 0 advertencias
+
+npm run lint / eslint global sin --fix
+FAIL heredado fuera de los archivos cambiados: 129 errores, 4 advertencias
+```
+
+El lint global no puede declararse aprobado: la deuda está en módulos no
+modificados por esta rama. La entrega no amplía el alcance para refactorizarla y
+debe conservarse como bloqueador explícito del criterio que exige lint global
+verde. Los 32 archivos TypeScript tocados por esta rama sí pasan la misma
+configuración ESLint sin errores ni advertencias.

@@ -1,5 +1,12 @@
+/* eslint-disable
+  @typescript-eslint/no-unsafe-argument,
+  @typescript-eslint/no-unsafe-assignment,
+  @typescript-eslint/no-unsafe-call,
+  @typescript-eslint/no-unsafe-member-access,
+  @typescript-eslint/no-unsafe-return,
+  @typescript-eslint/require-await
+  -- This test uses a deliberately dynamic in-memory Prisma transaction double. */
 import { MetaSendError, MetaService } from '../meta/meta.service';
-import { PrismaService } from '../prisma/prisma.service';
 import { AutomatedDeliveryService } from './automated-delivery.service';
 import { PrepareAutomatedDeliveryBatch } from './automated-delivery.types';
 
@@ -69,7 +76,9 @@ class DeliveryStore {
       ),
       findUnique: jest.fn(async ({ where }: Row) =>
         this.rows.find((row) =>
-          where.id ? row.id === where.id : row.operationKey === where.operationKey,
+          where.id
+            ? row.id === where.id
+            : row.operationKey === where.operationKey,
         ),
       ),
       updateMany: jest.fn(async ({ where, data }: Row) => {
@@ -188,10 +197,12 @@ describe('AutomatedDeliveryService', () => {
   beforeEach(() => {
     store = new DeliveryStore();
     meta = {
-      sendTextMessage: jest.fn().mockResolvedValue(confirmedMetaResponse('wamid.1')),
+      sendTextMessage: jest
+        .fn()
+        .mockResolvedValue(confirmedMetaResponse('wamid.1')),
     };
     service = new AutomatedDeliveryService(
-      store.prisma as unknown as PrismaService,
+      store.prisma,
       meta as unknown as MetaService,
     );
   });
@@ -231,7 +242,9 @@ describe('AutomatedDeliveryService', () => {
   });
 
   it('treats an unexpected throw after claim as ambiguous', async () => {
-    meta.sendTextMessage.mockRejectedValueOnce(new Error('process interrupted'));
+    meta.sendTextMessage.mockRejectedValueOnce(
+      new Error('process interrupted'),
+    );
     await service.prepareBatch(batch('respuesta'));
     await service.deliverPreparedBatch('inbound-1');
     await service.deliverPreparedBatch('inbound-1');
@@ -249,7 +262,9 @@ describe('AutomatedDeliveryService', () => {
     arrangeEligibilityFailure(store, reasonCode);
     await service.prepareBatch(batch('respuesta'));
     const result = await service.deliverPreparedBatch('inbound-1');
-    expect(result).toEqual(expect.objectContaining({ terminal: true, reasonCode }));
+    expect(result).toEqual(
+      expect.objectContaining({ terminal: true, reasonCode }),
+    );
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
   });
 
@@ -257,21 +272,26 @@ describe('AutomatedDeliveryService', () => {
     [new MetaSendError('AMBIGUOUS', false, null, 'META_TRANSPORT_ERROR')],
     [new MetaSendError('AMBIGUOUS', false, 500, '500')],
     [new MetaSendError('AMBIGUOUS', false, 200, 'META_WAMID_MISSING')],
-  ])('marks an uncertain result ambiguous and never resends it', async (error) => {
-    meta.sendTextMessage.mockRejectedValueOnce(error);
-    await service.prepareBatch(batch('respuesta'));
-    await service.deliverPreparedBatch('inbound-1');
-    await service.deliverPreparedBatch('inbound-1');
-    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
-    expect(store.rows[0].status).toBe('AMBIGUOUS');
-  });
+  ])(
+    'marks an uncertain result ambiguous and never resends it',
+    async (error) => {
+      meta.sendTextMessage.mockRejectedValueOnce(error);
+      await service.prepareBatch(batch('respuesta'));
+      await service.deliverPreparedBatch('inbound-1');
+      await service.deliverPreparedBatch('inbound-1');
+      expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
+      expect(store.rows[0].status).toBe('AMBIGUOUS');
+    },
+  );
 
   it('returns an explicit 429 to PREPARED for a bounded queue retry', async () => {
     meta.sendTextMessage.mockRejectedValueOnce(
       new MetaSendError('DEFINITIVE_REJECTION', true, 429, '429'),
     );
     await service.prepareBatch(batch('respuesta'));
-    await expect(service.deliverPreparedBatch('inbound-1')).rejects.toMatchObject({
+    await expect(
+      service.deliverPreparedBatch('inbound-1'),
+    ).rejects.toMatchObject({
       retryable: true,
     });
     expect(store.rows[0].status).toBe('PREPARED');
@@ -287,7 +307,9 @@ describe('AutomatedDeliveryService', () => {
   it('resumes a PREPARED batch after worker restart without regenerating it', async () => {
     store.rows.push(preparedRow({ content: 'contenido original' }));
     const result = await service.recoverBatch('inbound-1');
-    expect(result).toEqual(expect.objectContaining({ handled: true, confirmed: 1 }));
+    expect(result).toEqual(
+      expect.objectContaining({ handled: true, confirmed: 1 }),
+    );
     expect(meta.sendTextMessage).toHaveBeenCalledWith(
       '593991234567',
       'contenido original',
