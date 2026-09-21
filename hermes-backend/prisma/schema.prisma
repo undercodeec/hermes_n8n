@@ -135,6 +135,7 @@ model Contact {
   campaignRecipients      CampaignRecipient[]
   advertisingAttributions AdvertisingAttribution[]
   advertisingConversions  AdvertisingConversion[]
+  automatedDeliveries     AutomatedDelivery[]
 
   @@map("contacts")
 }
@@ -312,6 +313,7 @@ model Conversation {
   handoffs                HumanHandoff[]
   tasks                   Task[]
   advertisingAttributions AdvertisingAttribution[]
+  automatedDeliveries     AutomatedDelivery[]
 
   @@index([contactId, updatedAt])
   @@index([status, updatedAt])
@@ -363,6 +365,20 @@ enum MessageSender {
   SYSTEM
 }
 
+enum AutomatedDeliveryKind {
+  HERMES_REPLY
+  SYSTEM_NOTICE
+}
+
+enum AutomatedDeliveryStatus {
+  PREPARED
+  DISPATCHING
+  CONFIRMED
+  REJECTED
+  AMBIGUOUS
+  SUPPRESSED
+}
+
 model Message {
   id             String           @id @default(uuid())
   conversationId String
@@ -381,15 +397,55 @@ model Message {
   createdAt      DateTime         @default(now())
 
   // Relaciones
-  conversation           Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  contact                Contact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  sentByUser             User?                   @relation("HumanSender", fields: [sentByUserId], references: [id], onDelete: SetNull)
-  advertisingAttribution AdvertisingAttribution?
+  conversation              Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  contact                   Contact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  sentByUser                User?                   @relation("HumanSender", fields: [sentByUserId], references: [id], onDelete: SetNull)
+  advertisingAttribution    AdvertisingAttribution?
+  sourceAutomatedDeliveries AutomatedDelivery[]     @relation("AutomatedDeliverySource")
+  outboundAutomatedDelivery AutomatedDelivery?      @relation("AutomatedDeliveryOutbound")
 
   @@index([conversationId, createdAt])
   @@index([contactId])
   @@index([sentByUserId])
   @@map("messages")
+}
+
+model AutomatedDelivery {
+  id                String                  @id @default(uuid())
+  operationKey      String                  @unique
+  deliveryKind      AutomatedDeliveryKind
+  partIndex         Int
+  conversationId    String
+  contactId         String
+  sourceMessageId   String
+  outboundMessageId String?                 @unique
+  sender            MessageSender
+  content           String
+  allowHandedOff    Boolean                 @default(false)
+  status            AutomatedDeliveryStatus @default(PREPARED)
+  attempts          Int                     @default(0)
+  claimToken        String?
+  claimExpiresAt    DateTime?
+  dispatchStartedAt DateTime?
+  confirmedAt       DateTime?
+  ambiguousAt       DateTime?
+  rejectedAt        DateTime?
+  suppressedAt      DateTime?
+  wamid             String?                 @unique
+  reasonCode        String?
+  metadata          Json?
+  createdAt         DateTime                @default(now())
+  updatedAt         DateTime                @updatedAt
+
+  conversation    Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  contact         Contact      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  sourceMessage   Message      @relation("AutomatedDeliverySource", fields: [sourceMessageId], references: [id], onDelete: Restrict)
+  outboundMessage Message?     @relation("AutomatedDeliveryOutbound", fields: [outboundMessageId], references: [id], onDelete: SetNull)
+
+  @@unique([sourceMessageId, deliveryKind, partIndex])
+  @@index([status, claimExpiresAt])
+  @@index([conversationId, createdAt])
+  @@map("automated_deliveries")
 }
 
 // ─────────────────────────────────────────────

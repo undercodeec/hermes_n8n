@@ -18,7 +18,7 @@ export class MetaSendError extends ServiceUnavailableException {
   constructor(
     public readonly outcome: MetaSendOutcome,
     public readonly retryable: boolean,
-    public readonly status: number | null,
+    public readonly providerStatus: number | null,
     public readonly safeCode: string,
   ) {
     super('Meta no pudo confirmar el envío del mensaje');

@@ -20,6 +20,7 @@ import {
   sanitizeDiagnosticSummary,
 } from '../hermes/hermes-diagnostics';
 import { MetaService } from '../meta/meta.service';
+import { whatsappReplyWindow } from '../meta/whatsapp-service-window';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import {
@@ -28,7 +29,6 @@ import {
 } from './dto/query-conversations.dto';
 import { ReplyConversationDto } from './dto/reply-conversation.dto';
 
-const WHATSAPP_REPLY_WINDOW_MS = 24 * 60 * 60 * 1000;
 const OPEN_HANDOFF_STATUSES: HandoffStatus[] = [
   HandoffStatus.PENDING,
   HandoffStatus.ASSIGNED,
@@ -54,15 +54,10 @@ export class ConversationsService {
   ) {}
 
   private replyWindow(lastInboundAt: Date | null) {
-    const closesAt = lastInboundAt
-      ? new Date(lastInboundAt.getTime() + WHATSAPP_REPLY_WINDOW_MS)
-      : null;
-    const isOpen = closesAt !== null && closesAt.getTime() > Date.now();
+    const window = whatsappReplyWindow(lastInboundAt);
     return {
-      isOpen,
-      lastInboundAt,
-      closesAt,
-      templateRequired: !isOpen,
+      ...window,
+      templateRequired: !window.isOpen,
     };
   }
 

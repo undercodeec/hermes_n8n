@@ -38,7 +38,12 @@ describe('MetaService typing indicator', () => {
 
       expect(failure).toBeInstanceOf(MetaSendError);
       expect(failure).toEqual(
-        expect.objectContaining({ outcome, retryable, status, safeCode }),
+        expect.objectContaining({
+          outcome,
+          retryable,
+          providerStatus: status,
+          safeCode,
+        }),
       );
       expect((failure as Error).message).not.toContain(
         'provider-secret-detail',
