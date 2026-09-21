@@ -9,6 +9,13 @@ services:
       - .env
     environment:
       PORT: 3003
+    secrets:
+      - source: nous_hermes_api_key
+        target: nous_hermes_api_key
+        mode: 0400
+    networks:
+      - default
+      - hermes_client_api
     ports:
       - '3003:3003'
     depends_on:
@@ -92,3 +99,11 @@ volumes:
     driver: local
   hermes_n8n_data:
     driver: local
+
+secrets:
+  nous_hermes_api_key:
+    file: /etc/hermes-agent-client/api-key
+
+networks:
+  hermes_client_api:
+    external: true

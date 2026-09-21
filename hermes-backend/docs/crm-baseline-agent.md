@@ -58,3 +58,49 @@ Controles ya presentes y cubiertos por tests: handoff antes de confirmar al clie
 - La cola evita trabajos duplicados con `jobId` y PostgreSQL deduplica inbound por `wamid`, pero no existe todavía una reserva durable previa al envío a Meta que cubra el crash ambiguo «Meta aceptó, proceso cayó antes de persistir». No debe habilitarse un canary hasta decidir y probar la estrategia de reconciliación/at-most-once.
 - La guarda explícita de 24 horas existe en la respuesta manual. La respuesta automática nace de un inbound recién recibido, pero no conserva una comprobación independiente de esa ventana en el instante exacto del envío.
 - No existe handoff VPS local verificable. Por tanto, sólo se autorizan mocks y el motor efectivo permanece `gemini_direct`.
+
+## Estado de implementación posterior a la captura inicial
+
+La sección anterior conserva la fotografía previa al trabajo. En la rama
+`feat/hermes-conversation-engine` ya se incorporaron, sin activar tráfico
+comercial:
+
+- reparación del módulo E2E aislado y teardown seguro;
+- clasificación tipada de resultados Meta;
+- ledger PostgreSQL previo al envío, reclamación atómica y estados terminales
+  que impiden reenviar resultados ambiguos;
+- ruta recovery-first para respuestas Hermes y avisos del webhook;
+- contrato privado Nous v1 con URL y alias fijos, secreto desde archivo,
+  rechazo de herramientas/contenido privilegiado y contexto stateless;
+- serialización global de inferencia Nous mediante BullMQ/Redis con límite uno;
+- configuración Compose de secret y red externa sólo para `app`.
+
+Evidencia real ejecutada el 2026-09-21 en servicios desechables locales:
+
+```text
+npx prisma migrate deploy
+PASS: 9 migraciones aplicadas en PostgreSQL 16 vacío
+
+npm run test:integration
+PASS: 2 suites, 2 tests, 0 snapshots (0.907 s)
+```
+
+La prueba Redis creó dos workers con concurrencia local dos y confirmó máximo
+global activo uno. La prueba PostgreSQL lanzó dos reclamaciones simultáneas y
+confirmó una sola transición `PREPARED` → `DISPATCHING` y una sola
+`operationKey`. Los contenedores temporales fueron eliminados al terminar.
+
+Evidencia enfocada después de implementar la cola:
+
+```text
+npm test -- --runInBand conversation-engine/nous-hermes.queue.spec.ts conversation-engine/nous-hermes.engine.spec.ts conversation-engine/conversation-engine.service.spec.ts auto-replies/auto-reply.service.spec.ts
+PASS: 4 suites, 32 tests, 0 snapshots (1.873 s)
+
+npm run build
+PASS
+```
+
+Estos resultados no sustituyen la regresión completa ni una prueba conjunta
+autorizada contra la VPS. `HERMES_CONVERSATION_ENGINE=gemini_direct` y la
+allowlist vacía siguen siendo los valores versionados; no se realizó despliegue
+ni canary real.
