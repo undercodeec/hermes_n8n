@@ -12,6 +12,18 @@ export interface MetaSendResponse {
   contacts: { input: string; wa_id: string }[];
   messages: { id: string }[];
 }
+export type MetaSendOutcome = 'DEFINITIVE_REJECTION' | 'AMBIGUOUS';
+
+export class MetaSendError extends ServiceUnavailableException {
+  constructor(
+    public readonly outcome: MetaSendOutcome,
+    public readonly retryable: boolean,
+    public readonly status: number | null,
+    public readonly safeCode: string,
+  ) {
+    super('Meta no pudo confirmar el envío del mensaje');
+  }
+}
 export interface MetaTemplate {
   id?: string;
   name: string;
@@ -87,17 +99,29 @@ export class MetaService {
       data = response.data;
     } catch (error) {
       const safe = this.toSafeError(error);
-      this.logger.error(
-        `Error enviando mensaje: ${safe.code || 'META_ERROR'} ${safe.message}`,
+      const definitive =
+        safe.status !== null && safe.status >= 400 && safe.status < 500;
+      const failure = new MetaSendError(
+        definitive ? 'DEFINITIVE_REJECTION' : 'AMBIGUOUS',
+        safe.status === 429,
+        safe.status,
+        safe.status ? `META_HTTP_${safe.status}` : 'META_TRANSPORT_ERROR',
       );
-      throw new ServiceUnavailableException('Meta no pudo enviar el mensaje');
+      this.logger.error(
+        `Error enviando mensaje: ${failure.safeCode} ${failure.outcome}`,
+      );
+      throw failure;
     }
     const wamid = data.messages?.[0]?.id;
     if (!wamid) {
-      this.logger.error('Meta no confirmó el envío: respuesta sin wamid');
-      throw new ServiceUnavailableException(
-        'Meta no confirmó el envío del mensaje',
+      const failure = new MetaSendError(
+        'AMBIGUOUS',
+        false,
+        200,
+        'META_WAMID_MISSING',
       );
+      this.logger.error(`${failure.safeCode} ${failure.outcome}`);
+      throw failure;
     }
     this.logger.log(`Mensaje enviado; wamid: ${wamid}`);
     return data;

@@ -1,7 +1,72 @@
 import { ConfigService } from '@nestjs/config';
-import { MetaService } from './meta.service';
+import { MetaSendError, MetaService } from './meta.service';
+
+function createService(): MetaService {
+  return new MetaService({
+    get: jest.fn((_key: string, fallback?: string) => fallback),
+  } as unknown as ConfigService);
+}
+
+function httpPost(service: MetaService): jest.Mock {
+  const client = service as unknown as {
+    httpClient: { post: jest.Mock };
+  };
+  client.httpClient.post = jest.fn();
+  return client.httpClient.post;
+}
 
 describe('MetaService typing indicator', () => {
+  it.each([
+    [429, 'DEFINITIVE_REJECTION', true, 'META_HTTP_429'],
+    [400, 'DEFINITIVE_REJECTION', false, 'META_HTTP_400'],
+    [401, 'DEFINITIVE_REJECTION', false, 'META_HTTP_401'],
+    [500, 'AMBIGUOUS', false, 'META_HTTP_500'],
+  ])(
+    'classifies HTTP %i without exposing the provider body',
+    async (status, outcome, retryable, safeCode) => {
+      const service = createService();
+      httpPost(service).mockRejectedValue({
+        response: {
+          status,
+          data: { error: { code: 999, message: 'provider-secret-detail' } },
+        },
+      });
+
+      const failure = await service
+        .sendTextMessage('593991234567', 'Mensaje')
+        .catch((error: unknown) => error);
+
+      expect(failure).toBeInstanceOf(MetaSendError);
+      expect(failure).toEqual(
+        expect.objectContaining({ outcome, retryable, status, safeCode }),
+      );
+      expect((failure as Error).message).not.toContain(
+        'provider-secret-detail',
+      );
+    },
+  );
+
+  it.each([{ code: 'ECONNABORTED' }, { code: 'ECONNRESET' }])(
+    'classifies a transport failure as ambiguous',
+    async (transportError) => {
+      const service = createService();
+      httpPost(service).mockRejectedValue(transportError);
+      await expect(
+        service.sendTextMessage('593991234567', 'Mensaje'),
+      ).rejects.toEqual(
+        expect.objectContaining({ outcome: 'AMBIGUOUS', retryable: false }),
+      );
+    },
+  );
+
+  it('classifies a successful response without wamid as ambiguous', async () => {
+    const service = createService();
+    httpPost(service).mockResolvedValue({ data: { messages: [] } });
+    await expect(
+      service.sendTextMessage('593991234567', 'Mensaje'),
+    ).rejects.toEqual(expect.objectContaining({ outcome: 'AMBIGUOUS' }));
+  });
+
   it('marks the inbound message as read and enables the native text indicator', async () => {
     const config = {
       get: jest.fn((key: string, fallback?: string) => {
@@ -54,7 +119,12 @@ describe('MetaService typing indicator', () => {
 
     await expect(
       service.sendTextMessage('593991234567', 'Mensaje de prueba'),
-    ).rejects.toThrow('Meta no pudo enviar el mensaje');
+    ).rejects.toEqual(
+      expect.objectContaining({
+        outcome: 'AMBIGUOUS',
+        safeCode: 'META_TRANSPORT_ERROR',
+      }),
+    );
   });
 
   it('rejects a text send when Meta omits the outbound wamid', async () => {
@@ -74,6 +144,11 @@ describe('MetaService typing indicator', () => {
 
     await expect(
       service.sendTextMessage('593991234567', 'Mensaje de prueba'),
-    ).rejects.toThrow('Meta no confirmó el envío del mensaje');
+    ).rejects.toEqual(
+      expect.objectContaining({
+        outcome: 'AMBIGUOUS',
+        safeCode: 'META_WAMID_MISSING',
+      }),
+    );
   });
 });
