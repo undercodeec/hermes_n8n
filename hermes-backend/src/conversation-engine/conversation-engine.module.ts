@@ -4,12 +4,18 @@ import { AgentOutputValidator } from './agent-output.validator';
 import { ConversationEngineService } from './conversation-engine.service';
 import { DirectGeminiEngine } from './direct-gemini.engine';
 import { NousHermesEngine } from './nous-hermes.engine';
+import {
+  NousHermesSecretReader,
+  NousHermesTransport,
+} from './nous-hermes.transport';
 
 @Module({
   imports: [HermesModule],
   providers: [
     AgentOutputValidator,
     DirectGeminiEngine,
+    NousHermesSecretReader,
+    NousHermesTransport,
     NousHermesEngine,
     ConversationEngineService,
   ],

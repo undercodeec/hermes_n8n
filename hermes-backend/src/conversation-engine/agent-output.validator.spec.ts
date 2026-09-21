@@ -11,7 +11,9 @@ describe('AgentOutputValidator', () => {
       validator.validate(
         {
           model: 'gemini-3.8-flash',
-          choices: [{ message: { content: ' Respuesta final. ' } }],
+          choices: [
+            { finish_reason: 'stop', message: { content: ' Respuesta final. ' } },
+          ],
           usage: { prompt_tokens: 10, completion_tokens: 5 },
         },
         900,
@@ -26,6 +28,19 @@ describe('AgentOutputValidator', () => {
   it.each([
     null,
     {},
+    {
+      error: { message: 'provider failed' },
+      choices: [
+        { finish_reason: 'stop', message: { content: 'texto' } },
+      ],
+    },
+    {
+      choices: [
+        { finish_reason: 'error', message: { content: 'provider detail' } },
+      ],
+    },
+    { choices: [{ message: { content: 'texto' } }] },
+    { choices: [{ finish_reason: '', message: { content: 'texto' } }] },
     { choices: [{ message: { content: '' } }] },
     { choices: [{ message: { content: { text: 'no' } } }] },
     {
@@ -46,7 +61,11 @@ describe('AgentOutputValidator', () => {
   it('rejects an oversized response', () => {
     expect(() =>
       validator.validate(
-        { choices: [{ message: { content: 'x'.repeat(11) } }] },
+        {
+          choices: [
+            { finish_reason: 'stop', message: { content: 'x'.repeat(11) } },
+          ],
+        },
         10,
       ),
     ).toThrow('too long');

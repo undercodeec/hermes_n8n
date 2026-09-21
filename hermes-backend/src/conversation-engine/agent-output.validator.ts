@@ -8,7 +8,9 @@ export class InvalidAgentOutputError extends Error {
 }
 
 type ChatCompletionPayload = {
+  error?: unknown;
   choices?: Array<{
+    finish_reason?: unknown;
     message?: {
       content?: unknown;
       tool_calls?: unknown;
@@ -40,7 +42,23 @@ export class AgentOutputValidator {
     }
 
     const completion = payload as ChatCompletionPayload;
-    const message = completion.choices?.[0]?.message;
+    if (completion.error !== undefined) {
+      throw new InvalidAgentOutputError(
+        'Agent response contains a top-level error',
+      );
+    }
+    const choice = completion.choices?.[0];
+    if (
+      !choice ||
+      typeof choice.finish_reason !== 'string' ||
+      !choice.finish_reason.trim() ||
+      choice.finish_reason.trim().toLowerCase() === 'error'
+    ) {
+      throw new InvalidAgentOutputError(
+        'Agent response has an invalid finish reason',
+      );
+    }
+    const message = choice.message;
     if (!message || typeof message !== 'object') {
       throw new InvalidAgentOutputError('Agent response has no final message');
     }
