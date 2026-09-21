@@ -1,3 +1,5 @@
+import type { HermesDiagnostic } from '../hermes-diagnostics';
+
 export type CommercialProfile = {
   service?: string;
   company?: string;
@@ -51,6 +53,10 @@ export type ConversationGuidance = {
   allowMeetingOffer: boolean;
   /** Impide recomendar un plan mientras falte una distinción esencial. */
   allowPlanRecommendation: boolean;
+  /** Permite informar precios publicados pertinentes al alcance actual. */
+  allowPriceAnswer: boolean;
+  /** La consulta actual exige resolver el tema de precio. */
+  priceAnswerRequired: boolean;
   /** Permite detallar prestaciones solo cuando el interés apunta a un plan concreto. */
   allowPlanDetails: boolean;
   /** Plan concreto por el que el cliente mostró interés o pidió detalles. */
@@ -104,4 +110,5 @@ export class HermesResponseDto {
   decision?: string;
   /** Datos extraídos exclusivamente de información explícita del cliente. */
   commercialProfile?: CommercialProfile;
+  diagnostic?: HermesDiagnostic;
 }

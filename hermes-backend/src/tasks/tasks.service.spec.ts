@@ -3,6 +3,63 @@ import { PrismaService } from '../prisma/prisma.service';
 import { TasksService } from './tasks.service';
 
 describe('TasksService callback requests', () => {
+  it('creates one pending Hermes review task per source message', async () => {
+    const created = {
+      id: 'review-task-1',
+      conversationId: 'conversation-1',
+      leadId: null,
+      type: TaskType.GENERAL,
+      status: TaskStatus.PENDING,
+      metadata: { sourceMessageIds: ['message-1'] },
+    };
+    const task = {
+      findFirst: jest
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(created),
+      update: jest.fn(),
+      create: jest.fn().mockResolvedValue(created),
+    };
+    const tx = {
+      $executeRaw: jest.fn().mockResolvedValue(1),
+      task,
+    };
+    const prisma = {
+      task,
+      $transaction: jest.fn((callback: (client: typeof tx) => unknown) =>
+        callback(tx),
+      ),
+    } as unknown as PrismaService;
+    const service = new TasksService(prisma);
+    const params = {
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      sourceMessageId: 'message-1',
+      category: 'PROVIDER_ERROR' as const,
+      code: 'HERMES_PROVIDER_UNAVAILABLE',
+      summary: 'HTTP 503',
+    };
+
+    const first = await service.requestHermesReview(params);
+    const second = await service.requestHermesReview(params);
+
+    expect(second.id).toBe(first.id);
+    expect(prisma.task.create).toHaveBeenCalledTimes(1);
+    expect(prisma.task.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          type: TaskType.GENERAL,
+          status: TaskStatus.PENDING,
+          title: 'Revisar incidencia de Hermes',
+          metadata: expect.objectContaining({
+            actionStatus: 'PENDING_REVIEW',
+            sourceMessageIds: ['message-1'],
+          }),
+        }),
+      }),
+    );
+  });
+
   it('does not duplicate a callback task when the same inbound message is retried', async () => {
     const existing = {
       id: 'task-1',

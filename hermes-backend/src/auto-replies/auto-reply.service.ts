@@ -22,6 +22,10 @@ import { CommercialProfile } from '../hermes/dto/hermes-request.dto';
 import { CommercialPolicyService } from '../hermes/commercial-policy.service';
 import { TasksService } from '../tasks/tasks.service';
 import { splitWhatsAppMessage } from './whatsapp-message-splitter';
+import {
+  HermesIncidentMetadata,
+  toIncidentMetadata,
+} from '../hermes/hermes-diagnostics';
 
 @Injectable()
 export class AutoReplyService {
@@ -208,9 +212,11 @@ export class AutoReplyService {
         humanHandoff: true,
       },
     });
+    const acceptedProfile = response.diagnostic
+      ? context.commercialProfile
+      : { ...context.commercialProfile, ...response.commercialProfile };
     response.commercialProfile = {
-      ...context.commercialProfile,
-      ...response.commercialProfile,
+      ...acceptedProfile,
       pendingQuestions: this.commercialPolicy.remainingPendingQuestions(
         policy.pendingQuestions,
         response.response,
@@ -221,11 +227,85 @@ export class AutoReplyService {
       this.commercialPolicy.enforceResponsePolicy(response, policy),
     );
 
-    if (!this.conversationGuard.isSafeGeneratedResponse(response.response)) {
+    const outputDecision =
+      this.conversationGuard.inspectGeneratedResponse(response.response);
+    if (outputDecision.action === 'BLOCK') {
       this.logger.error(
-        `Respuesta de Gemini bloqueada por la política de salida en conversación ${data.conversationId}`,
+        `Respuesta de Gemini bloqueada por ${outputDecision.reason} en conversación ${data.conversationId}`,
       );
-      return;
+      response.response =
+        'Disculpe, no pude procesar la respuesta de forma segura. ¿Podría reformular su solicitud?';
+      response.detectedIntent = 'error';
+      response.nextAction = 'sin_accion';
+      response.commercialProfile = context.commercialProfile
+        ? { ...context.commercialProfile }
+        : undefined;
+      response.diagnostic = {
+        category: 'OUTPUT_BLOCKED',
+        code: `HERMES_OUTPUT_${outputDecision.reason}`,
+        summary: `Respuesta bloqueada por ${outputDecision.reason}`,
+        attempts: 1,
+        recovered: true,
+        requiresHumanReview: false,
+      };
+    }
+
+    if (
+      !response.diagnostic &&
+      this.containsUnbackedFollowupPromise(response.response)
+    ) {
+      response.diagnostic = {
+        category: 'CONTEXT_ERROR',
+        code: 'HERMES_UNBACKED_FOLLOWUP_PROMISE',
+        summary: 'La respuesta prometía seguimiento sin una acción registrada',
+        attempts: 1,
+        recovered: true,
+        requiresHumanReview: true,
+      };
+    }
+
+    if (response.diagnostic?.category === 'POLICY_VIOLATION') {
+      response.detectedIntent = 'info_general';
+      response.nextAction = 'sin_accion';
+      response.suggestedTags = undefined;
+    }
+
+    let incident: HermesIncidentMetadata | undefined;
+    if (response.diagnostic) {
+      let reviewTaskId: string | undefined;
+      if (response.diagnostic.requiresHumanReview) {
+        try {
+          const reviewTask = await this.tasks.requestHermesReview({
+            conversationId: data.conversationId,
+            contactId: data.contactId,
+            leadId: context.leadId,
+            sourceMessageId: inbound.id,
+            category: response.diagnostic.category,
+            code: response.diagnostic.code,
+            summary: response.diagnostic.summary,
+          });
+          reviewTaskId = reviewTask.id;
+          response.response = ['PROVIDER_ERROR', 'INVALID_PROVIDER_RESPONSE'].includes(
+            response.diagnostic.category,
+          )
+            ? 'Disculpe, no pude completar la respuesta en este momento. Ya dejé registrado el caso para revisarlo y continuar por este mismo chat.'
+            : 'Permítame consultar este punto con el equipo. Le confirmaremos por este mismo chat.';
+        } catch (error) {
+          this.logger.error(
+            `No se pudo crear la tarea de revisión de Hermes: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          response.response =
+            'Disculpe, no pude completar la respuesta en este momento. ¿Podría enviar nuevamente su mensaje para intentarlo otra vez?';
+        }
+      }
+      incident = toIncidentMetadata(
+        {
+          ...response.diagnostic,
+          requiresHumanReview: Boolean(reviewTaskId),
+        },
+        inbound.id,
+        reviewTaskId,
+      );
     }
 
     // Mientras Gemini redactaba, un mensaje nuevo o un handoff puede haber
@@ -252,6 +332,7 @@ export class AutoReplyService {
       policy.pendingQuestions.includes('timeline') &&
       !/\b\d+\s*(?:días?|semanas?|meses?)\b/i.test(response.response);
     if (
+      !response.diagnostic &&
       (requestedPriceWithoutAuthorizedValue ||
         requestedTimelineWithoutAuthorizedValue) &&
       this.hasEnoughScopeForQuote(response.commercialProfile)
@@ -285,10 +366,9 @@ export class AutoReplyService {
       };
     }
 
-    const shouldHandoff = this.checkHandoffSignals(
-      inbound.content || '',
-      response.detectedIntent,
-    );
+    const shouldHandoff =
+      !response.diagnostic &&
+      this.checkHandoffSignals(inbound.content || '', response.detectedIntent);
     if (shouldHandoff) {
       await this.handoffs.create({
         conversationId: data.conversationId,
@@ -346,8 +426,18 @@ export class AutoReplyService {
           tokensUsed: index === 0 ? response.tokensUsed : 0,
           latencyMs: partLatencyMs,
           costEstimate: index === 0 ? response.costEstimate : 0,
+          ...(index === 0 && incident
+            ? {
+                metadata: {
+                  hermesIncident: incident,
+                } as Prisma.InputJsonValue,
+              }
+            : {}),
         },
       });
+      if (index === 0 && incident) {
+        await this.persistHermesIncident(data.conversationId, incident);
+      }
       sentParts += 1;
     }
     const latencyMs = Date.now() - startedAt;
@@ -368,7 +458,10 @@ export class AutoReplyService {
       await this.persistConversationState(data.conversationId, response);
     }
 
-    if (this.shouldQualifyLead(response.detectedIntent)) {
+    if (
+      !response.diagnostic &&
+      this.shouldQualifyLead(response.detectedIntent)
+    ) {
       await this.leads.qualifyFromConversation({
         contactId: data.contactId,
         conversationId: data.conversationId,
@@ -559,6 +652,31 @@ export class AutoReplyService {
     );
   }
 
+  private async persistHermesIncident(
+    conversationId: string,
+    incident: HermesIncidentMetadata,
+  ): Promise<void> {
+    const current = await this.prisma.conversation.findUnique({
+      where: { id: conversationId },
+      select: { metadata: true },
+    });
+    const existing =
+      current?.metadata &&
+      typeof current.metadata === 'object' &&
+      !Array.isArray(current.metadata)
+        ? (current.metadata as Record<string, unknown>)
+        : {};
+    await this.prisma.conversation.update({
+      where: { id: conversationId },
+      data: {
+        metadata: {
+          ...existing,
+          lastHermesIncident: incident,
+        } as Prisma.InputJsonValue,
+      },
+    });
+  }
+
   private async sendAndPersist(params: {
     conversationId: string;
     contactId: string;
@@ -693,6 +811,22 @@ export class AutoReplyService {
         'agendar_cita',
         'pago',
       ]).includes(detectedIntent.trim().toLowerCase()),
+    );
+  }
+
+  private containsUnbackedFollowupPromise(response: string): boolean {
+    const normalized = response
+      .toLocaleLowerCase('es')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ');
+    return (
+      /\b(?:confirmaremos|revisaremos|contactaremos|responderemos)\b/.test(
+        normalized,
+      ) ||
+      /\b(?:permita(?:me)?|voy a|vamos a)\b.{0,45}\b(?:consultar|revisar|confirmar)\b/.test(
+        normalized,
+      )
     );
   }
 

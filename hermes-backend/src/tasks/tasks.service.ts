@@ -3,6 +3,10 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
 import { Prisma, TaskStatus, TaskType } from '@prisma/client';
+import {
+  HermesDiagnosticCategory,
+  sanitizeDiagnosticSummary,
+} from '../hermes/hermes-diagnostics';
 
 @Injectable()
 export class TasksService {
@@ -147,6 +151,75 @@ export class TasksService {
           type: TaskType.QUOTE,
           status: TaskStatus.PENDING,
           title: 'Preparar cotización solicitada por WhatsApp',
+          description,
+          metadata,
+        },
+      });
+    });
+  }
+
+  async requestHermesReview(params: {
+    conversationId: string;
+    leadId?: string;
+    contactId: string;
+    sourceMessageId: string;
+    category: HermesDiagnosticCategory;
+    code: string;
+    summary: string;
+  }) {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.conversationId}))`;
+      const existing = await tx.task.findFirst({
+        where: {
+          conversationId: params.conversationId,
+          type: TaskType.GENERAL,
+          status: { in: [TaskStatus.PENDING, TaskStatus.IN_PROGRESS] },
+          metadata: { path: ['actionStatus'], equals: 'PENDING_REVIEW' },
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      const previousMetadata = this.objectMetadata(existing?.metadata);
+      const sourceMessageIds = Array.isArray(previousMetadata.sourceMessageIds)
+        ? previousMetadata.sourceMessageIds.filter(
+            (value): value is string => typeof value === 'string',
+          )
+        : [];
+      if (existing && sourceMessageIds.includes(params.sourceMessageId)) {
+        return existing;
+      }
+
+      const summary = sanitizeDiagnosticSummary(params.summary);
+      const metadata = {
+        category: params.category,
+        code: sanitizeDiagnosticSummary(params.code).slice(0, 100),
+        summary,
+        contactId: params.contactId,
+        actionStatus: 'PENDING_REVIEW',
+        sourceMessageIds: [...sourceMessageIds, params.sourceMessageId].slice(
+          -20,
+        ),
+      } as Prisma.InputJsonValue;
+      const description = summary
+        ? `Revisar incidencia de Hermes: ${summary}`
+        : 'Revisar incidencia de Hermes asociada a la conversación.';
+
+      if (existing) {
+        return tx.task.update({
+          where: { id: existing.id },
+          data: {
+            leadId: params.leadId ?? existing.leadId,
+            description,
+            metadata,
+          },
+        });
+      }
+      return tx.task.create({
+        data: {
+          conversationId: params.conversationId,
+          leadId: params.leadId,
+          type: TaskType.GENERAL,
+          status: TaskStatus.PENDING,
+          title: 'Revisar incidencia de Hermes',
           description,
           metadata,
         },

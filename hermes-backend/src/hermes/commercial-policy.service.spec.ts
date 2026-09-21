@@ -1,8 +1,172 @@
-import { CommercialPolicyService } from './commercial-policy.service';
+import {
+  CommercialPolicyDecision,
+  CommercialPolicyService,
+} from './commercial-policy.service';
+import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 
 describe('CommercialPolicyService', () => {
   const service = new CommercialPolicyService();
   const receivedAt = new Date('2026-09-18T20:00:00.000Z');
+  const sectorCases = [
+    ['reparación de refrigeradores', 'sitio web'],
+    ['restaurante', 'sitio web'],
+    ['abogado o consultor', 'landing'],
+    ['floristería', 'catálogo sin pagos'],
+    ['comercio', 'tienda con pagos online'],
+    ['servicio profesional', 'sitio web'],
+  ] as const;
+  const sufficientDecision = (): CommercialPolicyDecision => ({
+    intent: 'consulta_servicio',
+    pendingQuestions: [],
+    requestsHuman: false,
+    requestsCall: false,
+    hasRelativeCallTime: false,
+    guidance: {
+      currentTopic: 'general',
+      directAnswerRequired: false,
+      allowDiscoveryQuestion: false,
+      topicShift: false,
+      recentQuestionTopics: [],
+      sufficientContext: true,
+      allowMeetingOffer: false,
+      allowPlanRecommendation: true,
+      allowPriceAnswer: false,
+      priceAnswerRequired: false,
+      allowPlanDetails: false,
+      offerWebAlternatives: false,
+    },
+  });
+
+  it.each(sectorCases)(
+    '%s receives the same decision for equivalent evidence',
+    (sector, _solution) => {
+      const decision = service.analyze(`Mi negocio es ${sector}`, receivedAt, [], {
+        conversationHistory: [
+          {
+            role: 'user',
+            content: 'Necesito una presencia web para promocionarme',
+          },
+          { role: 'assistant', content: '¿A qué se dedica su negocio?' },
+        ],
+        commercialProfile: {
+          service: 'sitio web',
+          need: 'promocionar servicios o productos',
+        },
+      });
+      expect(decision.guidance.sufficientContext).toBe(true);
+      expect(decision.guidance.allowDiscoveryQuestion).toBe(false);
+    },
+  );
+
+  it.each([
+    [
+      'Aplicación móvil para que nuestros socios consulten pedidos',
+      'general',
+      false,
+    ],
+    [
+      'Software a medida integrado con inventario para el equipo de bodega',
+      'general',
+      true,
+    ],
+    ['¿Cuánto cuesta un sitio web?', 'price', false],
+    ['¿Cuánto cuesta y cuánto tarda un sistema a medida?', 'price', false],
+    ['Antes explíqueme qué incluye el hosting', 'infrastructure', false],
+    ['Quiero hablar con una persona', 'general', false],
+    ['¿Desde dónde trabaja UnderCodeEC?', 'business_location', false],
+  ] as const)(
+    'maps %s to topic %s and meeting=%s',
+    (message, currentTopic, allowMeetingOffer) => {
+      const decision = service.analyze(message, receivedAt);
+
+      expect(decision.guidance.currentTopic).toBe(currentTopic);
+      expect(decision.guidance.allowMeetingOffer).toBe(allowMeetingOffer);
+      if (message.includes('cuánto cuesta y cuánto tarda')) {
+        expect(decision.pendingQuestions).toEqual(['price', 'timeline']);
+      }
+      if (message === 'Quiero hablar con una persona') {
+        expect(decision.requestsHuman).toBe(true);
+      }
+      if (message.startsWith('Software a medida')) {
+        expect(decision.guidance.allowPlanRecommendation).toBe(false);
+        expect(decision.pendingQuestions).toEqual([]);
+      }
+    },
+  );
+
+  it('does not treat a solution name or negated activity as the business answer', () => {
+    const context = {
+      conversationHistory: [
+        { role: 'assistant', content: '¿A qué se dedica su negocio?' },
+      ],
+      commercialProfile: {
+        service: 'sitio web',
+        need: 'promocionar servicios o productos',
+      },
+    };
+
+    for (const answer of ['landing', 'sitio web', 'No tengo negocio']) {
+      expect(
+        service.analyze(answer, receivedAt, [], context).guidance
+          .sufficientContext,
+      ).toBe(false);
+    }
+  });
+
+  it('classifies an exact UnderCodeEC address request as organization location', () => {
+    const decision = service.analyze(
+      '¿Cuál es la dirección física exacta de UnderCodeEC?',
+      receivedAt,
+    );
+
+    expect(decision.guidance.currentTopic).toBe('business_location');
+    expect(decision.guidance.directAnswerRequired).toBe(true);
+    expect(decision.guidance.allowDiscoveryQuestion).toBe(false);
+  });
+
+  it('does not restore a response made only of a blocked question', () => {
+    const decision = sufficientDecision();
+
+    expect(
+      service.enforceQuestionPolicy('¿Cuál es su presupuesto?', decision),
+    ).not.toContain('presupuesto');
+  });
+
+  it('keeps useful content and removes the blocked question', () => {
+    const decision = sufficientDecision();
+
+    expect(
+      service.enforceQuestionPolicy(
+        'Podemos avanzar con la valoración. ¿Cuál es su presupuesto?',
+        decision,
+      ),
+    ).toBe('Podemos avanzar con la valoración.');
+  });
+
+  it('filters only affirmative unrequested meeting offers', () => {
+    const decision = sufficientDecision();
+    const enforce = (response: string) =>
+      service.enforceResponsePolicy(
+        {
+          response,
+          detectedIntent: 'consulta_servicio',
+          nextAction: 'sin_accion',
+        },
+        decision,
+      ).response;
+
+    expect(enforce('Podemos coordinar una reunión con el equipo.')).not.toContain(
+      'reunión',
+    );
+    expect(
+      enforce(
+        'La solución cubre el alcance. Podemos coordinar una reunión con el equipo.',
+      ),
+    ).toBe('La solución cubre el alcance.');
+    expect(enforce('No necesita una reunión con el equipo.')).toBe(
+      'No necesita una reunión con el equipo.',
+    );
+  });
 
   it('keeps price and timeline as explicit pending questions', () => {
     const decision = service.analyze(
@@ -12,6 +176,117 @@ describe('CommercialPolicyService', () => {
 
     expect(decision.intent).toBe('consulta_precio');
     expect(decision.pendingQuestions).toEqual(['price', 'timeline']);
+  });
+
+  it('allows an authorized website price without allowing a definitive plan recommendation', () => {
+    const decision = service.analyze(
+      '¿Cuánto cuesta un sitio web?',
+      receivedAt,
+    );
+
+    expect(decision.guidance.directAnswerRequired).toBe(true);
+    expect(decision.guidance.priceAnswerRequired).toBe(true);
+    expect(decision.guidance.allowPriceAnswer).toBe(true);
+    expect(decision.guidance.allowPlanRecommendation).toBe(false);
+  });
+
+  it('does not authorize a price when the requested service has no published value', () => {
+    const decision = service.analyze(
+      '¿Cuánto cuesta un software a medida para logística?',
+      receivedAt,
+    );
+
+    expect(decision.guidance.priceAnswerRequired).toBe(true);
+    expect(decision.guidance.allowPriceAnswer).toBe(false);
+  });
+
+  it.each([
+    '¿Dónde están ubicados?',
+    '¿Desde dónde trabajan?',
+    '¿En qué país queda UnderCodeEC?',
+    '¿Tienen sede física?',
+  ])('treats organization location as a direct topic: %s', (message) => {
+    const decision = service.analyze(message, receivedAt);
+
+    expect(decision.guidance.currentTopic).toBe('business_location');
+    expect(decision.guidance.directAnswerRequired).toBe(true);
+    expect(decision.guidance.allowDiscoveryQuestion).toBe(false);
+  });
+
+  it('does not confuse the customer business location with UnderCodeEC location', () => {
+    const decision = service.analyze(
+      'Mi restaurante está ubicado en Cuenca y necesito una web',
+      receivedAt,
+    );
+
+    expect(decision.guidance.currentTopic).not.toBe('business_location');
+  });
+
+  it.each([
+    'Reparaciones de refrigeradores',
+    'Restaurante de comida ecuatoriana',
+    'Servicios de asesoría legal',
+    'Venta de arreglos florales',
+  ])(
+    'recognizes a substantive answer to the business question: %s',
+    (message) => {
+      const decision = service.analyze(message, receivedAt, [], {
+        conversationHistory: [
+          {
+            role: 'user',
+            content: 'Necesito un sitio web para promocionarme',
+          },
+          { role: 'assistant', content: '¿A qué se dedica su negocio?' },
+        ],
+        commercialProfile: {
+          service: 'sitio web',
+          need: 'promocionar el negocio',
+        },
+      });
+
+      expect(decision.guidance.recentQuestionTopics).toContain('business');
+      expect(decision.guidance.sufficientContext).toBe(true);
+    },
+  );
+
+  it('does not treat one isolated word as sufficient scope', () => {
+    const decision = service.analyze('Restaurante', receivedAt, [], {
+      conversationHistory: [
+        { role: 'assistant', content: '¿A qué se dedica su negocio?' },
+      ],
+      commercialProfile: { service: 'sitio web' },
+    });
+
+    expect(decision.guidance.sufficientContext).toBe(false);
+  });
+
+  it('normalizes only explicit high-confidence commercial typo variants', () => {
+    expect(
+      normalizeCommonSpanishTypos(
+        'nesesito conocer el presio de un sitio wep para mi restorante',
+      ),
+    ).toBe(
+      'necesito conocer el precio de un sitio web para mi restaurante',
+    );
+  });
+
+  it('normalizes diacritics before recognizing a substantive business answer', () => {
+    const decision = service.analyze(
+      'Reparaciónes de refrigeradores',
+      receivedAt,
+      [],
+      {
+        conversationHistory: [
+          { role: 'assistant', content: '¿A qué se dedica su negocio?' },
+        ],
+        commercialProfile: {
+          service: 'sitio web',
+          need: 'promocionar el negocio',
+        },
+      },
+    );
+
+    expect(decision.guidance.sufficientContext).toBe(true);
   });
 
   it('resolves a relative callback time from the provider timestamp', () => {

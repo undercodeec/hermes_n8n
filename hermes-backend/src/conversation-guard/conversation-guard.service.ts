@@ -11,6 +11,17 @@ export type GuardDecision =
     }
   | { action: 'SUPPORT'; notice: string };
 
+export type GeneratedResponseDecision =
+  | { action: 'ALLOW' }
+  | {
+      action: 'BLOCK';
+      reason:
+        | 'EMPTY'
+        | 'STRUCTURED_PAYLOAD'
+        | 'UNSAFE_CONTENT'
+        | 'ABSURD_LENGTH';
+    };
+
 @Injectable()
 export class ConversationGuardService implements OnModuleDestroy {
   private readonly logger = new Logger(ConversationGuardService.name);
@@ -44,7 +55,7 @@ export class ConversationGuardService implements OnModuleDestroy {
         action: 'BLOCK',
         category: 'SPAM',
         notice: (await this.claimNotice(contactId, 'LONG_INPUT'))
-          ? 'Por favor, envíanos una consulta breve sobre nuestros servicios para poder ayudarte.'
+          ? 'Por favor, envíenos una consulta breve sobre nuestros servicios para poder ayudarle.'
           : undefined,
       };
     }
@@ -67,7 +78,7 @@ export class ConversationGuardService implements OnModuleDestroy {
           action: 'BLOCK',
           category: 'SPAM',
           notice: (await this.claimNotice(contactId, 'RATE_LIMIT'))
-            ? 'Recibimos varios mensajes seguidos. Cuando estés listo, envíanos una sola consulta sobre nuestros servicios.'
+            ? 'Recibimos varios mensajes seguidos. Cuando esté listo, envíenos una sola consulta sobre nuestros servicios.'
             : undefined,
         };
       }
@@ -123,14 +134,24 @@ export class ConversationGuardService implements OnModuleDestroy {
   }
 
   isSafeGeneratedResponse(content: string): boolean {
+    return this.inspectGeneratedResponse(content).action === 'ALLOW';
+  }
+
+  inspectGeneratedResponse(content: string): GeneratedResponseDecision {
+    if (!content.trim()) return { action: 'BLOCK', reason: 'EMPTY' };
     if (
-      !content ||
-      content.length > this.positiveInteger('AI_MAX_OUTPUT_CHARS', 900)
+      content.length >
+      this.positiveInteger('AI_ABSOLUTE_MAX_OUTPUT_CHARS', 6000)
     ) {
-      return false;
+      return { action: 'BLOCK', reason: 'ABSURD_LENGTH' };
     }
-    if (this.looksLikeStructuredPayload(content)) return false;
-    return !this.moderationNotice(this.normalize(content));
+    if (this.looksLikeStructuredPayload(content)) {
+      return { action: 'BLOCK', reason: 'STRUCTURED_PAYLOAD' };
+    }
+    if (this.moderationNotice(this.normalize(content))) {
+      return { action: 'BLOCK', reason: 'UNSAFE_CONTENT' };
+    }
+    return { action: 'ALLOW' };
   }
 
   private looksLikeStructuredPayload(content: string): boolean {
@@ -146,15 +167,16 @@ export class ConversationGuardService implements OnModuleDestroy {
   ): { category: 'MODERATION' | 'OUT_OF_SCOPE'; notice: string } | undefined {
     if (
       this.matches(normalized, [
-        /\b(porno|pornografia|sexo explicito|desnuda|desnudo|onlyfans|nudes?)\b/,
-        /\b(te voy a matar|amenaza|matarte|violacion|violar)\b/,
-        /\b(puta|puto|mierda|imbecil|idiota|estupido|pendejo)\b/,
+        /\b(?:quiero|genera|generes|crear|crees|produce|muestra|muestrame|envia|enviame|enviare|enviar)\b.{0,70}\b(?:contenido sexual explicito|sexo explicito|pornografia|porno|nudes?|desnud[oa]s?)\b/,
+        /\b(?:te voy a matar|voy a matarte|quiero matarte|te matare|voy a violarte|quiero violar)\b/,
+        /\b(?:eres|son|ustedes son|hermes es)\b.{0,25}\b(?:puta|puto|mierda|imbecil|idiota|estupido|pendejo)\b/,
+        /\b(?:puta|puto|mierda|imbecil|idiota|estupido|pendejo)\b.{0,40}\b(?:puta|puto|mierda|imbecil|idiota|estupido|pendejo)\b/,
       ])
     ) {
       return {
         category: 'MODERATION',
         notice:
-          'Podemos atenderte únicamente sobre nuestros servicios. Si tienes una consulta comercial, cuéntanos en qué podemos ayudarte.',
+          'Podemos atenderle únicamente sobre nuestros servicios. Si tiene una consulta comercial, indíquenos en qué podemos ayudarle.',
       };
     }
     if (
@@ -166,7 +188,7 @@ export class ConversationGuardService implements OnModuleDestroy {
       return {
         category: 'OUT_OF_SCOPE',
         notice:
-          'Por este canal atendemos consultas sobre nuestros servicios. ¿En qué podemos ayudarte?',
+          'Por este canal atendemos consultas sobre nuestros servicios. ¿En qué podemos ayudarle?',
       };
     }
     return undefined;
@@ -193,7 +215,7 @@ export class ConversationGuardService implements OnModuleDestroy {
       '+593979046329',
     );
     const digits = phone.replace(/\D/g, '');
-    return `Entiendo. Para que soporte lo revise, escríbenos al ${phone} con la URL y el detalle del problema. También puedes abrir https://wa.me/${digits}.`;
+    return `Entiendo. Para que soporte lo revise, escríbanos al ${phone} con la URL y el detalle del problema. También puede abrir https://wa.me/${digits}.`;
   }
 
   private hasExcessiveLinks(content: string): boolean {

@@ -4,7 +4,12 @@ import {
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
-import { ConversationStatus, MessageSender } from '@prisma/client';
+import {
+  ConversationStatus,
+  MessageSender,
+  TaskStatus,
+  TaskType,
+} from '@prisma/client';
 import { MetaService } from '../meta/meta.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConversationsService } from './conversations.service';
@@ -18,8 +23,12 @@ describe('ConversationsService', () => {
     auditLog: { create: jest.fn() },
   };
   const prisma = {
-    conversation: { findUnique: jest.fn() },
-    message: { findFirst: jest.fn() },
+    conversation: {
+      findMany: jest.fn(),
+      findUnique: jest.fn(),
+      count: jest.fn(),
+    },
+    message: { findFirst: jest.fn(), groupBy: jest.fn() },
     $transaction: jest.fn((callback: (client: typeof tx) => unknown) =>
       callback(tx),
     ),
@@ -146,5 +155,109 @@ describe('ConversationsService', () => {
       service.reopen('conversation-1', 'user-1'),
     ).rejects.toBeInstanceOf(ConflictException);
     expect(tx.conversation.update).not.toHaveBeenCalled();
+  });
+
+  it('exposes the last Hermes incident and open review task in conversation detail', async () => {
+    const occurredAt = '2026-09-20T18:00:00.000Z';
+    (prisma.conversation.findUnique as unknown as jest.Mock).mockResolvedValue({
+      id: 'conversation-1',
+      metadata: {
+        otherField: 'preserved internally',
+        lastHermesIncident: {
+          category: 'PROVIDER_ERROR',
+          code: 'HERMES_PROVIDER_UNAVAILABLE',
+          summary: 'HTTP 503 secret=provider-value',
+          attempts: 2,
+          recovered: false,
+          requiresHumanReview: true,
+          sourceMessageId: 'inbound-1',
+          taskId: 'task-1',
+          occurredAt,
+          providerStack: 'must not leave the server',
+        },
+      },
+      messages: [],
+      tasks: [
+        {
+          id: 'task-1',
+          title: 'Revisar incidencia de Hermes',
+          type: TaskType.GENERAL,
+          status: TaskStatus.PENDING,
+          createdAt: new Date(occurredAt),
+          metadata: {
+            actionStatus: 'PENDING_REVIEW',
+            providerStack: 'must not leave the server',
+          },
+        },
+      ],
+    });
+    (prisma.message.findFirst as unknown as jest.Mock).mockResolvedValue(null);
+
+    const result = await service.findOne('conversation-1');
+
+    expect(result.hermesIncident).toEqual(
+      expect.objectContaining({
+        category: 'PROVIDER_ERROR',
+        code: 'HERMES_PROVIDER_UNAVAILABLE',
+        summary: 'HTTP 503 secret=[REDACTED]',
+      }),
+    );
+    expect(result.hermesReviewTask).toEqual(
+      expect.objectContaining({ status: TaskStatus.PENDING }),
+    );
+    expect(JSON.stringify(result.hermesIncident)).not.toContain(
+      'providerStack',
+    );
+    expect(JSON.stringify(result.hermesReviewTask)).not.toContain('metadata');
+  });
+
+  it('returns a safe Hermes incident summary and review task in the conversation list', async () => {
+    (prisma.conversation.findMany as unknown as jest.Mock).mockResolvedValue([
+      {
+        id: 'conversation-1',
+        updatedAt: new Date('2026-09-20T18:00:00.000Z'),
+        metadata: {
+          lastHermesIncident: {
+            category: 'OUTPUT_BLOCKED',
+            code: 'HERMES_OUTPUT_STRUCTURED_PAYLOAD',
+            summary: 'token=private-value',
+            attempts: 1,
+            recovered: false,
+            requiresHumanReview: false,
+            sourceMessageId: 'inbound-1',
+            occurredAt: '2026-09-20T18:00:00.000Z',
+            rawPayload: '{"token":"private-value"}',
+          },
+        },
+        handoffs: [],
+        messages: [],
+        tasks: [
+          {
+            id: 'task-1',
+            title: 'Revisar incidencia de Hermes',
+            type: TaskType.GENERAL,
+            status: TaskStatus.IN_PROGRESS,
+            createdAt: new Date('2026-09-20T18:00:00.000Z'),
+            metadata: { actionStatus: 'PENDING_REVIEW', secret: 'private' },
+          },
+        ],
+      },
+    ]);
+    (prisma.conversation.count as unknown as jest.Mock).mockResolvedValue(1);
+    (prisma.message.groupBy as unknown as jest.Mock).mockResolvedValue([]);
+
+    const result = await service.findAll({ page: 1, limit: 20 });
+
+    expect(result.data[0].hermesIncident).toEqual(
+      expect.objectContaining({
+        category: 'OUTPUT_BLOCKED',
+        summary: 'token=[REDACTED]',
+      }),
+    );
+    expect(result.data[0].hermesReviewTask).toEqual(
+      expect.objectContaining({ status: TaskStatus.IN_PROGRESS }),
+    );
+    expect(JSON.stringify(result.data[0])).not.toContain('rawPayload');
+    expect(JSON.stringify(result.data[0])).not.toContain('private-value');
   });
 });

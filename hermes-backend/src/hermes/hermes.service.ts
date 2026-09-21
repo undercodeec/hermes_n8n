@@ -8,7 +8,14 @@ import {
   HermesRequestDto,
   HermesResponseDto,
 } from './dto/hermes-request.dto';
-import { commercialCatalogContext } from './commercial-catalog';
+import {
+  commercialCatalogContext,
+  monetaryAmountsIn,
+  organizationLocationContext,
+  publishedPriceAnswer,
+  responseContainsOnlyAuthorizedPrices,
+} from './commercial-catalog';
+import { sanitizeDiagnosticSummary } from './hermes-diagnostics';
 import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 
 type ParsedHermesResponse = Pick<
@@ -19,7 +26,21 @@ type ParsedHermesResponse = Pick<
   | 'nextAction'
   | 'decision'
   | 'commercialProfile'
+  | 'diagnostic'
 >;
+
+type HardPolicyViolation = {
+  code:
+    | 'UNAUTHORIZED_MEETING'
+    | 'UNAUTHORIZED_PLAN_RECOMMENDATION'
+    | 'UNAUTHORIZED_PRICE'
+    | 'UNAUTHORIZED_TIMELINE'
+    | 'UNAUTHORIZED_LOCATION_DETAIL'
+    | 'MISSING_REQUIRED_WEB_OPTIONS'
+    | 'EXCESSIVE_PLAN_DETAILS'
+    | 'WRONG_SELECTED_PLAN';
+  reason: string;
+};
 
 type ChatCompletionResponse = {
   choices?: Array<{
@@ -42,6 +63,8 @@ export class HermesService {
 ## Conversación
 Hable con cercanía y profesionalidad, como parte del equipo comercial, sin afirmar que es una persona. Trate al cliente de usted de manera consistente. Use su nombre solo de forma natural al iniciar o cuando aporte cercanía; no lo repita en cada mensaje. Evite halagos automáticos, entusiasmo artificial y muletillas como «Perfecto», «excelente idea» o «negocio precioso» cuando no aporten información. No use fórmulas corporativas como «Bienvenido a UnderCodeEC»; ante un saludo, corresponda de forma natural y pregunte cómo podemos ayudarle.
 
+El cliente puede tutear, usar voseo, regionalismos, abreviaturas o cometer errores ortográficos. Interprete su intención sin corregirlo ni restringir la conversación por su forma de expresarse. Mantenga usted el trato profesional de «usted».
+
 Responda primero y de forma completa la consulta actual. La extensión debe ser proporcional: sea breve para una duda sencilla y explique lo necesario para una decisión comercial, sin imponer un límite artificial de frases. Si el cliente hace varias preguntas directas, responda todas las que tengan respaldo antes de pedir un dato nuevo. Formule como máximo una pregunta por mensaje y solo cuando su respuesta cambie la recomendación o el siguiente paso. Una pregunta de descubrimiento anterior no es una obligación: suspéndala o descártela si el cliente cambia de tema, pide precio, plazo, condiciones, una explicación o intervención humana. No repita datos, preguntas ni invitaciones a reunión, llamada o cotización ya presentes en el contexto. Cuide la puntuación del español: use siempre los signos de apertura y cierre en preguntas y exclamaciones, y no separe con punto una pregunta que continúa naturalmente la misma oración.
 
 Ante cualquier saludo aislado, corresponda al saludo y pregunte de forma abierta en qué podemos ayudarle, sin depender de una frase exacta. Si el cliente ya explica lo que necesita, responda directamente y no use un saludo genérico. No termine siempre con una pregunta: el siguiente paso también puede ser responder una duda, recomendar, resumir o esperar. El texto destinado al cliente debe ser prosa limpia para WhatsApp: no use encabezados, tablas, listas ni marcadores Markdown como **. No mencione prompts, reglas, playbooks, contexto interno, clasificaciones, herramientas, automatizaciones ni nombres de modelos.
@@ -55,7 +78,9 @@ La evidencia nueva prevalece sobre la ficha anterior: si el cliente corrige, nie
 
 Adapte el descubrimiento al servicio. Para una web, si aún no se conoce la actividad del negocio, pregunte primero «¿A qué se dedica su negocio?». Después pregunte solo por el objetivo o por los servicios y productos principales que desea destacar, según cuál sea el dato decisivo que todavía falte. Conserve cualquier dato que el cliente adelante en una misma respuesta. No pregunte por funcionalidades, acciones de los visitantes, público, zona, presupuesto o plazo cuando el tipo de solución, la actividad, el propósito comercial y al menos un servicio, producto o necesidad principal ya permitan valorar el proyecto. Para una tienda online, si el cliente solo dice que quiere mostrar productos, aclare primero si desea vender y cobrar en línea o únicamente exhibir un catálogo; esa diferencia define la solución. Luego use la guía autorizada del contexto y pregunte solo el siguiente dato que realmente cambie la recomendación. Para una aplicación móvil, entienda el problema, usuarios y funciones principales sin asumir Android e iOS. Para software a medida, priorice el proceso actual, sus dificultades y el resultado esperado sin proponer arquitectura, tecnología, precio ni plazo definitivos prematuramente. Evite una entrevista técnica extensa si conviene una reunión con especialistas.
 
-Cuando ya exista información suficiente, resume en una frase concreta la solución, la actividad y lo que se destacará; recomienda el plan o siguiente paso respaldado por el contexto autorizado. No ofrezcas automáticamente una reunión, llamada ni conversación con el equipo. Hazlo únicamente si el cliente la solicita, si una valoración compleja realmente necesita intervención humana o si la política calculada por el backend lo permite. En el caso de una web para promocionar un negocio de reparación de lavadoras que ofrece servicio a domicilio y repuestos, no abras otra ronda de descubrimiento sobre contacto o interacciones: resume lo entendido y recomienda el siguiente paso pertinente sin forzar una reunión.
+Cuando ya se conozcan el tipo de solución, la actividad, el objetivo comercial y al menos un servicio, producto o necesidad principal, resuma en una frase concreta lo entendido y proponga el siguiente paso respaldado, sin abrir otra entrevista ni forzar una reunión. No ofrezca automáticamente una reunión, llamada ni conversación con el equipo. Hágalo únicamente si el cliente la solicita, si una valoración compleja realmente necesita intervención humana o si la política calculada por el backend lo permite.
+
+UnderCodeEC trabaja de forma remota, tiene presencia en algunos países de Latinoamérica, Europa y Estados Unidos, y su sede principal está en Quito, Ecuador. No invente oficinas, direcciones físicas, ciudades adicionales ni presencia en países concretos.
 
 Aplica divulgación progresiva al hablar de planes. Cuando dos opciones puedan servir, presenta primero sus nombres, precios y una diferencia esencial para que el cliente elija; no vuelques de inmediato todas las prestaciones. Para promocionar servicios, considera tanto una Landing Básica de USD $250 como el Plan de Lanzamiento web de USD $360 cuando ambos estén autorizados. Detalla qué incluye un plan solo cuando el cliente muestre interés claro en esa opción o pregunte por sus prestaciones. Si no está claro a qué plan se refiere, solicita una única aclaración breve.
 
@@ -158,7 +183,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
             `Priorice currentTopic. Si directAnswerRequired es true, responda ese tema antes que cualquier descubrimiento. ` +
             `Si allowDiscoveryQuestion es false, no añada una pregunta comercial nueva. Si topicShift es true, abandone la pregunta anterior. ` +
             `Si requiredClarification es CATALOG_VS_ONLINE_SALES, aclare si el cliente solo quiere exhibir el catálogo o también vender y cobrar en la página antes de recomendar un plan. ` +
-            `Si allowPlanRecommendation es false, no recomiende un plan ni un precio. Si allowMeetingOffer es false, no proponga reunión, llamada ni contacto con un asesor. ` +
+            `Si allowPriceAnswer es true, puede informar precios publicados pertinentes; priceAnswerRequired indica que debe resolver esa consulta. allowPlanRecommendation controla por separado las recomendaciones definitivas y recommendedPlan. Si allowPlanRecommendation es false, no recomiende un plan. Si allowMeetingOffer es false, no proponga reunión, llamada ni contacto con un asesor. ` +
             `Si offerWebAlternatives es true, presente Landing Page y Sitio Web como opciones breves con su diferencia principal. Si allowPlanDetails es false, no enumere todas las prestaciones. Si interestedPlan existe, detalle únicamente ese tipo de plan. ` +
             `No formule preguntas cuyos temas aparezcan en recentQuestionTopics salvo que el mensaje actual las responda y una aclaración sea imprescindible.`,
         );
@@ -256,9 +281,26 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           const candidate = this.parseHermesResponse(
             choice.message?.content || '',
           );
-          candidate.response = this.polishSpanishPunctuation(
-            this.removeCorporateWelcome(candidate.response),
-          );
+          if (
+            request.conversationGuidance?.allowPlanRecommendation === false &&
+            candidate.commercialProfile
+          ) {
+            candidate.commercialProfile = { ...candidate.commercialProfile };
+            delete candidate.commercialProfile.recommendedPlan;
+          }
+          const style = this.applySoftStyleCleanup(candidate.response);
+          candidate.response = style.content;
+          if (style.needsFormalRewrite) {
+            if (attempt === maxAttempts) {
+              parsedResponse = this.buildStyleFallback(candidate, request);
+              break;
+            }
+            retryInstruction =
+              'Reescriba exclusivamente el mensaje para usar trato formal de usted. Preserve todo el contenido comercial, los hechos autorizados y la intención; no agregue ni elimine información.';
+            throw new Error(
+              'La respuesta requiere una reescritura enfocada de trato formal',
+            );
+          }
           const policyViolation = this.outputPolicyViolation(
             candidate,
             request,
@@ -270,24 +312,30 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
                     candidate,
                     request,
                     policyViolation,
+                    attempt,
                   ) ??
-                  this.buildPolicyFallback(candidate, request, policyViolation))
+                  this.buildPolicyFallback(
+                    candidate,
+                    request,
+                    policyViolation,
+                    attempt,
+                  ))
                 : undefined;
             if (recovered) {
               this.logger.warn(
                 JSON.stringify({
                   event: 'hermes_completion_recovered',
                   attempt,
-                  reason: policyViolation,
+                  reason: policyViolation.reason,
                 }),
               );
               parsedResponse = recovered;
               break;
             }
             retryInstruction =
-              `Corrija la respuesta anterior antes de contestar. Incumplimiento detectado: ${policyViolation}. ` +
-              'Devuelva un JSON nuevo que respete el trato formal de usted, evite aperturas prefabricadas y no ofrezca reuniones, llamadas, planes ni precios cuando la política no los autorice.';
-            throw new Error(`Política de salida: ${policyViolation}`);
+              `Corrija la respuesta anterior antes de contestar. Incumplimiento detectado: ${policyViolation.reason}. ` +
+              'Devuelva un JSON nuevo que conserve el contenido comercial autorizado y no ofrezca reuniones, llamadas, planes ni precios cuando la política no los autorice.';
+            throw new Error(`Política de salida: ${policyViolation.reason}`);
           }
           parsedResponse = candidate;
           break;
@@ -341,13 +389,32 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           ? error.message
           : String(error);
       this.logger.error(`Error llamando a Hermes: ${message}`);
+      const invalidProviderResponse =
+        /json|estructurad|respuesta completa|respuesta de hermes/i.test(message);
       return {
-        response:
-          'Disculpe, tuve un inconveniente temporal al procesar su mensaje. Por favor, envíelo nuevamente para poder continuar.',
+        response: 'Disculpe, no pude completar la respuesta en este momento.',
         tokensUsed: 0,
         costEstimate: 0,
         detectedIntent: 'error',
         nextAction: 'sin_accion',
+        ...(request.commercialProfile
+          ? { commercialProfile: { ...request.commercialProfile } }
+          : {}),
+        diagnostic: {
+          category: invalidProviderResponse
+            ? 'INVALID_PROVIDER_RESPONSE'
+            : 'PROVIDER_ERROR',
+          code: invalidProviderResponse
+            ? 'HERMES_INVALID_PROVIDER_RESPONSE'
+            : 'HERMES_PROVIDER_UNAVAILABLE',
+          summary: sanitizeDiagnosticSummary(message),
+          attempts: Math.min(
+            this.positiveInteger('HERMES_COMPLETION_ATTEMPTS', 2),
+            3,
+          ),
+          recovered: false,
+          requiresHumanReview: true,
+        },
       };
     }
   }
@@ -703,7 +770,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     const normalized = value
       .toLocaleLowerCase('es')
       .normalize('NFD')
-      .replace(/[\u0300-\u036f]/g, ' ')
+      .replace(/[\u0300-\u036f]/g, '')
       .replace(/[^a-z0-9]+/g, ' ')
       .trim();
     return normalizeCommonSpanishTypos(normalized);
@@ -888,44 +955,86 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
   private outputPolicyViolation(
     response: ParsedHermesResponse,
     request: HermesRequestDto,
-  ): string | undefined {
+  ): HardPolicyViolation | undefined {
     const normalized = this.normalizeSearch(response.response);
-    if (
-      /\b(?:tu|tus|te|ti|contigo|tienes|quieres|puedes|necesitas|cuentame|dime|ayudarte|orientarte|confirmarte|enviarte)\b/.test(
-        normalized,
-      )
-    ) {
-      return 'usa tuteo o formas informales dirigidas al cliente';
-    }
-    if (
-      /^(?:perfecto|excelente|entendido|genial|comprendo perfectamente)\b/.test(
-        normalized,
-      )
-    ) {
-      return 'abre con una muletilla o una aprobación prefabricada';
-    }
-    if (/\bbienvenid[oa]s? a undercodeec\b/.test(normalized)) {
-      return 'usa una bienvenida corporativa innecesaria';
-    }
     if (
       request.conversationGuidance?.allowMeetingOffer === false &&
       (['proponer_reunion', 'solicitar_confirmacion_reunion'].includes(
         response.nextAction || '',
-      ) ||
-        /\b(?:coordinar|agendar|programar|reservar)\b.{0,70}\b(?:reunion|llamada|conversacion|cita)\b|\b(?:reunion|llamada|videollamada)\b.{0,70}\b(?:equipo|asesor|especialista)\b/.test(
-          normalized,
-        ))
+      )
+        ? !this.containsOnlyNegativeMeetingStatement(response.response)
+        : this.containsAffirmativeMeetingOffer(response.response))
     ) {
-      return 'ofrece una reunión o llamada que la política no autoriza';
+      return {
+        code: 'UNAUTHORIZED_MEETING',
+        reason: 'ofrece una reunión o llamada que la política no autoriza',
+      };
     }
     if (
       request.conversationGuidance?.allowPlanRecommendation === false &&
-      (Boolean(response.commercialProfile?.recommendedPlan) ||
-        /\b(?:plan de (?:lanzamiento|crecimiento)|tienda (?:de )?(?:lanzamiento|crecimiento|elite))\b|\busd\s*\$?\s*\d/.test(
-          normalized,
-        ))
+      /\b(?:le|te)?\s*recomiend(?:o|a|amos|an)\b|\b(?:la mejor opcion|el plan ideal|deberia elegir)\b/.test(
+        normalized,
+      )
     ) {
-      return 'recomienda un plan o precio antes de contar con criterios suficientes';
+      return {
+        code: 'UNAUTHORIZED_PLAN_RECOMMENDATION',
+        reason: 'recomienda un plan antes de contar con criterios suficientes',
+      };
+    }
+    const hasMonetaryValue = monetaryAmountsIn(response.response).length > 0;
+    if (hasMonetaryValue) {
+      const scope = this.commercialScope(request);
+      const pricesAreAuthorized = responseContainsOnlyAuthorizedPrices(
+        scope,
+        response.response,
+      );
+      const priceContextAllowed = Boolean(
+        request.conversationGuidance?.allowPriceAnswer ||
+          request.conversationGuidance?.allowPlanRecommendation ||
+          request.conversationGuidance?.offerWebAlternatives,
+      );
+      if (!pricesAreAuthorized || !priceContextAllowed) {
+        return {
+          code: 'UNAUTHORIZED_PRICE',
+          reason: 'incluye un precio no autorizado para el alcance actual',
+        };
+      }
+    }
+    if (
+      request.conversationGuidance?.currentTopic === 'timeline' &&
+      /\b\d+\s*(?:dias?|semanas?|meses?)\b/.test(normalized) &&
+      !/\b(?:depende|estimad[oa]|aproximad[oa]|requiere|necesita|sujeto a|por confirmar|sin confirmar)\b/.test(
+        normalized,
+      )
+    ) {
+      return {
+        code: 'UNAUTHORIZED_TIMELINE',
+        reason: 'incluye un plazo de entrega no autorizado',
+      };
+    }
+    if (request.conversationGuidance?.currentTopic === 'business_location') {
+      const hasAuthorizedLocation =
+        /\bremot[oa]\b/.test(normalized) &&
+        /\bquito\b/.test(normalized) &&
+        /\becuador\b/.test(normalized);
+      const inventsSpecificLocation =
+        /\b(?:calle|avenida|oficina (?:en|ubicada|queda)|numero de oficina)\b/.test(
+          normalized,
+        );
+      const unconfirmedExactAddress =
+        /\bdireccion (?:fisica )?exacta\b/.test(normalized) &&
+        !/\b(?:requiere|necesita|debe)\b.{0,35}\bconfirmacion\b/.test(
+          normalized,
+        );
+      const inventsLocationDetail =
+        inventsSpecificLocation || unconfirmedExactAddress;
+      if (!hasAuthorizedLocation || inventsLocationDetail) {
+        return {
+          code: 'UNAUTHORIZED_LOCATION_DETAIL',
+          reason:
+            'la respuesta de ubicación omite los datos autorizados o inventa una dirección',
+        };
+      }
     }
     if (
       request.conversationGuidance?.offerWebAlternatives === true &&
@@ -934,13 +1043,21 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         !/\b250\b/.test(normalized) ||
         !/\b360\b/.test(normalized))
     ) {
-      return 'omite una de las dos alternativas web que debe presentar brevemente';
+      return {
+        code: 'MISSING_REQUIRED_WEB_OPTIONS',
+        reason:
+          'omite una de las dos alternativas web que debe presentar brevemente',
+      };
     }
     if (
       request.conversationGuidance?.allowPlanDetails === false &&
       this.planDetailSignalCount(normalized) >= 3
     ) {
-      return 'enumera demasiadas prestaciones antes de que el cliente elija un plan';
+      return {
+        code: 'EXCESSIVE_PLAN_DETAILS',
+        reason:
+          'enumera demasiadas prestaciones antes de que el cliente elija un plan',
+      };
     }
     const interestedPlan = request.conversationGuidance?.interestedPlan;
     if (
@@ -949,13 +1066,19 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         normalized,
       )
     ) {
-      return 'describe un plan distinto de la landing elegida por el cliente';
+      return {
+        code: 'WRONG_SELECTED_PLAN',
+        reason: 'describe un plan distinto de la landing elegida por el cliente',
+      };
     }
     if (
       interestedPlan === 'WEBSITE' &&
       /\b(?:landing|tienda online|tienda de)\b/.test(normalized)
     ) {
-      return 'describe un plan distinto del sitio web elegido por el cliente';
+      return {
+        code: 'WRONG_SELECTED_PLAN',
+        reason: 'describe un plan distinto del sitio web elegido por el cliente',
+      };
     }
     if (
       interestedPlan === 'ONLINE_STORE' &&
@@ -963,9 +1086,64 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         normalized,
       )
     ) {
-      return 'describe un plan distinto de la tienda online elegida por el cliente';
+      return {
+        code: 'WRONG_SELECTED_PLAN',
+        reason:
+          'describe un plan distinto de la tienda online elegida por el cliente',
+      };
     }
     return undefined;
+  }
+
+  private meetingStatements(response: string): string[] {
+    const meetingPattern =
+      /\b(?:coordinar|agendar|programar|reservar)\b.{0,70}\b(?:reunion|llamada|conversacion|cita)\b|\b(?:reunion|llamada|videollamada)\b.{0,70}\b(?:equipo|asesor|especialista)\b/;
+    return (response.match(/[^.!?¿]+(?:[.!?]|$)/gu) || [response])
+      .map((part) => this.normalizeSearch(part))
+      .filter((part) => meetingPattern.test(part));
+  }
+
+  private containsAffirmativeMeetingOffer(response: string): boolean {
+    return this.meetingStatements(response).some(
+      (statement) =>
+        !/^(?:no\b|sin necesidad de\b|no hace falta\b)/.test(statement),
+    );
+  }
+
+  private containsOnlyNegativeMeetingStatement(response: string): boolean {
+    const statements = this.meetingStatements(response);
+    return (
+      statements.length > 0 &&
+      statements.every((statement) =>
+        /^(?:no\b|sin necesidad de\b|no hace falta\b)/.test(statement),
+      )
+    );
+  }
+
+  private applySoftStyleCleanup(response: string): {
+    content: string;
+    needsFormalRewrite: boolean;
+  } {
+    let content = this.removeCorporateWelcome(response)
+      .replace(
+        /^\s*[¡!¿?]*\s*(?:perfecto|excelente|entendido|genial|comprendo perfectamente)\s*[,.:;!¡-]*\s*/iu,
+        '',
+      )
+      .trim();
+    if (!content) content = response.trim();
+    content = content
+      .replace(/\bte explico\b/giu, 'le explico')
+      .replace(/\bte ayudo\b/giu, 'le ayudo')
+      .replace(/\btu sitio\b/giu, 'su sitio')
+      .replace(/\btus servicios\b/giu, 'sus servicios')
+      .replace(/^(\p{Ll})/u, (letter) => letter.toLocaleUpperCase('es'));
+    content = this.polishSpanishPunctuation(content);
+    const normalized = this.normalizeSearch(content);
+    const needsFormalRewrite =
+      /\b(?:tu|tus|te|ti|contigo|tienes|quieres|puedes|necesitas|cuentame|dime|ayudarte|orientarte|confirmarte|enviarte)\b/.test(
+        normalized,
+      );
+    return { content, needsFormalRewrite };
   }
 
   private removeCorporateWelcome(response: string): string {
@@ -993,44 +1171,34 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
   }
 
   private recoverPolicyViolation(
-    response: ParsedHermesResponse,
+    _response: ParsedHermesResponse,
     request: HermesRequestDto,
-    violation: string,
+    violation: HardPolicyViolation,
+    attempts: number,
   ): ParsedHermesResponse | undefined {
-    if (violation === 'abre con una muletilla o una aprobación prefabricada') {
-      const cleaned = response.response
-        .replace(
-          /^\s*[¡!¿?]*\s*(?:perfecto|excelente|entendido|genial|comprendo perfectamente)\s*[,.:;!¡-]*\s*/iu,
-          '',
-        )
-        .replace(/^(\p{Ll})/u, (letter) => letter.toLocaleUpperCase('es'))
-        .trim();
-      if (cleaned) {
-        const recovered = { ...response, response: cleaned };
-        if (!this.outputPolicyViolation(recovered, request)) return recovered;
-      }
-    }
-
     if (
-      violation !==
-        'omite una de las dos alternativas web que debe presentar brevemente' ||
+      violation.code !== 'MISSING_REQUIRED_WEB_OPTIONS' ||
       request.conversationGuidance?.offerWebAlternatives !== true
     ) {
       return undefined;
     }
 
-    const commercialProfile = response.commercialProfile
-      ? { ...response.commercialProfile }
-      : undefined;
-    if (commercialProfile) delete commercialProfile.recommendedPlan;
-
     return {
-      ...response,
       response:
         'Para mostrar sus servicios, puede elegir una Landing Básica de USD $250, que concentra la información en una sola página, o el Plan de Lanzamiento de USD $360, que la organiza en un sitio web de hasta cinco páginas. ¿Cuál de las dos opciones le interesa conocer?',
       detectedIntent: 'consulta_servicio',
       nextAction: 'continuar_descubrimiento',
-      ...(commercialProfile ? { commercialProfile } : {}),
+      ...(request.commercialProfile
+        ? { commercialProfile: { ...request.commercialProfile } }
+        : {}),
+      diagnostic: {
+        category: 'POLICY_VIOLATION',
+        code: violation.code,
+        summary: sanitizeDiagnosticSummary(violation.reason),
+        attempts,
+        recovered: true,
+        requiresHumanReview: false,
+      },
     };
   }
 
@@ -1043,24 +1211,39 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
   private buildPolicyFallback(
     response: ParsedHermesResponse,
     request: HermesRequestDto,
-    violation: string,
+    violation: HardPolicyViolation,
+    attempts: number,
   ): ParsedHermesResponse {
-    const commercialProfile = response.commercialProfile
-      ? { ...response.commercialProfile }
+    const commercialProfile = request.commercialProfile
+      ? { ...request.commercialProfile }
       : undefined;
-    if (
-      commercialProfile &&
-      (request.conversationGuidance?.allowPlanRecommendation === false ||
-        !request.conversationGuidance?.interestedPlan)
-    ) {
-      delete commercialProfile.recommendedPlan;
-    }
 
     let content: string;
     let nextAction = 'sin_accion';
-    if (request.conversationGuidance?.directAnswerRequired) {
+    let requiresHumanReview = false;
+    const topic = request.conversationGuidance?.currentTopic;
+    if (topic === 'business_location') {
+      content = this.organizationLocationAnswer(request);
+      requiresHumanReview = this.requestsExactLocation(request);
+    } else if (topic === 'price') {
+      const published = request.conversationGuidance?.allowPriceAnswer
+        ? publishedPriceAnswer(this.commercialScope(request))
+        : undefined;
+      if (published) {
+        content = published;
+      } else {
+        content =
+          'El valor específico requiere una valoración según el alcance solicitado.';
+        requiresHumanReview = true;
+      }
+    } else if (topic === 'timeline') {
       content =
-        'Voy a revisar ese punto con la información comercial disponible para darle una respuesta precisa.';
+        'El plazo depende del alcance y requiere confirmación antes de comunicar una fecha.';
+      requiresHumanReview = true;
+    } else if (request.conversationGuidance?.directAnswerRequired) {
+      content =
+        'Este dato no está autorizado para confirmación automática y requiere validación humana.';
+      requiresHumanReview = true;
     } else if (request.conversationGuidance?.allowDiscoveryQuestion) {
       const conversationScope = this.normalizeSearch(
         [
@@ -1085,7 +1268,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     this.logger.warn(
       JSON.stringify({
         event: 'hermes_policy_fallback',
-        reason: violation,
+        reason: violation.reason,
         conversationId: request.conversationId,
         correlationId: request.correlationId,
       }),
@@ -1093,10 +1276,84 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     return {
       ...response,
       response: content,
-      detectedIntent: response.detectedIntent || 'consulta_servicio',
+      detectedIntent: 'info_general',
       nextAction,
       ...(commercialProfile ? { commercialProfile } : {}),
+      ...(!commercialProfile ? { commercialProfile: undefined } : {}),
+      diagnostic: {
+        category: 'POLICY_VIOLATION',
+        code: violation.code,
+        summary: sanitizeDiagnosticSummary(violation.reason),
+        attempts,
+        recovered: true,
+        requiresHumanReview,
+      },
     };
+  }
+
+  private buildStyleFallback(
+    response: ParsedHermesResponse,
+    request: HermesRequestDto,
+  ): ParsedHermesResponse {
+    const topic = request.conversationGuidance?.currentTopic;
+    let content: string;
+    let nextAction = 'sin_accion';
+    if (topic === 'business_location') {
+      content = this.organizationLocationAnswer(request);
+    } else if (topic === 'price') {
+      content =
+        publishedPriceAnswer(this.commercialScope(request)) ||
+        'El valor depende del alcance específico de su solicitud.';
+    } else if (request.conversationGuidance?.allowDiscoveryQuestion) {
+      content = '¿Qué resultado principal espera obtener con su proyecto?';
+      nextAction = 'continuar_descubrimiento';
+    } else {
+      content = 'Gracias por la información. Podemos continuar con su solicitud.';
+    }
+    return {
+      ...response,
+      response: content,
+      detectedIntent: 'info_general',
+      nextAction,
+      ...(request.commercialProfile
+        ? { commercialProfile: { ...request.commercialProfile } }
+        : { commercialProfile: undefined }),
+      diagnostic: undefined,
+    };
+  }
+
+  private requestsExactLocation(request: HermesRequestDto): boolean {
+    return /\b(?:direccion (?:fisica )?exacta|direccion fisica|calle|avenida|como llegar)\b/.test(
+      this.normalizeSearch(request.messageContent),
+    );
+  }
+
+  private organizationLocationAnswer(request: HermesRequestDto): string {
+    const authorizedLocation = organizationLocationContext();
+    return this.requestsExactLocation(request)
+      ? `${authorizedLocation} La dirección física exacta requiere confirmación del equipo.`
+      : authorizedLocation;
+  }
+
+  private commercialScope(request: HermesRequestDto): string {
+    return [
+      request.messageContent,
+      request.productOfInterest,
+      request.commercialProfile?.service,
+      request.commercialProfile?.need,
+      request.conversationGuidance?.offerWebAlternatives
+        ? 'sitio web landing'
+        : undefined,
+      request.conversationGuidance?.interestedPlan === 'LANDING_PAGE'
+        ? 'landing'
+        : request.conversationGuidance?.interestedPlan === 'WEBSITE'
+          ? 'sitio web'
+          : request.conversationGuidance?.interestedPlan === 'ONLINE_STORE'
+            ? 'tienda online'
+            : undefined,
+    ]
+      .filter(Boolean)
+      .join(' ');
   }
 
   private planDetailSignalCount(normalized: string): number {

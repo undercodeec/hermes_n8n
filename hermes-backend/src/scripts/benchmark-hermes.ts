@@ -32,6 +32,22 @@ type ProviderPayload = {
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
 
+const sufficientSectorScenarios: Scenario[] = [
+  ['sector_refrigerator_repair', 'Reparamos refrigeradores a domicilio.'],
+  ['sector_restaurant', 'Tenemos un restaurante de comida ecuatoriana.'],
+  ['sector_florist', 'Vendemos arreglos florales para eventos.'],
+  ['sector_professional_services', 'Ofrecemos servicios de asesoría legal.'],
+].map(([id, answer]) => ({
+  id,
+  messages: [
+    { role: 'user', content: 'Necesito una web para promocionar mi negocio.' },
+    { role: 'assistant', content: '¿A qué se dedica su negocio?' },
+    { role: 'user', content: answer },
+  ],
+  context:
+    'El alcance ya es suficiente para valorar. Resuma lo entendido sin abrir otra ronda de descubrimiento.',
+}));
+
 const scenarios: Scenario[] = [
   {
     id: 'initial',
@@ -192,22 +208,29 @@ const scenarios: Scenario[] = [
     context:
       'No hay condiciones de pago del proyecto autorizadas. No confunda esta consulta con una pasarela de tienda y responda sin abrir otra pregunta de descubrimiento.',
   },
+  ...sufficientSectorScenarios,
   {
-    id: 'washer_sufficient',
+    id: 'organization_location',
+    messages: [{ role: 'user', content: '¿Desde dónde trabajan?' }],
+    context:
+      'Responda con trabajo remoto, presencia general en Latinoamérica, Europa y Estados Unidos, y sede principal en Quito, Ecuador. No invente una dirección.',
+  },
+  {
+    id: 'customer_tuteo',
     messages: [
       {
         role: 'user',
-        content: 'Necesito una web para promocionar mi negocio.',
-      },
-      { role: 'assistant', content: '¿A qué se dedica su negocio?' },
-      {
-        role: 'user',
-        content:
-          'Reparamos lavadoras, vamos a domicilio y también vendemos repuestos.',
+        content: 'Oye, ¿me ayudas con una web pa mi negocio?',
       },
     ],
     context:
-      'El alcance ya es suficiente para valorar. No abra otra ronda de descubrimiento.',
+      'Interprete el registro informal del cliente y responda con trato profesional de usted.',
+  },
+  {
+    id: 'direct_published_price',
+    messages: [{ role: 'user', content: '¿Cuánto cuesta un sitio web?' }],
+    context:
+      'Puede informar el precio publicado desde USD $360 sin guardar una recomendación definitiva de plan.',
   },
   {
     id: 'provider_error',
@@ -241,7 +264,13 @@ const expectedIntents: Record<string, string[]> = {
   hosting_topic_shift: ['info_general', 'consulta_servicio'],
   store_gateway: ['consulta_cobro_tienda'],
   project_50_50: ['consulta_pago_proyecto'],
-  washer_sufficient: ['consulta_servicio', 'cotizacion'],
+  sector_refrigerator_repair: ['consulta_servicio', 'cotizacion'],
+  sector_restaurant: ['consulta_servicio', 'cotizacion'],
+  sector_florist: ['consulta_servicio', 'cotizacion'],
+  sector_professional_services: ['consulta_servicio', 'cotizacion'],
+  organization_location: ['info_general'],
+  customer_tuteo: ['info_general', 'consulta_servicio'],
+  direct_published_price: ['consulta_precio'],
 };
 
 function semanticPass(
@@ -325,13 +354,25 @@ function semanticPass(
         !/pasarela|compradores|carrito/.test(normalized) &&
         !response.includes('?')
       );
-    case 'washer_sufficient':
-      return (
-        /lavadoras|domicilio|repuestos/.test(normalized) &&
-        !/(?:cual es su publico|en que zona|que presupuesto|que funcionalidades)/.test(
-          normalized,
-        )
+    case 'sector_refrigerator_repair':
+    case 'sector_restaurant':
+    case 'sector_florist':
+    case 'sector_professional_services':
+      return !/(?:cual es su publico|en que zona|que presupuesto|que funcionalidades)/.test(
+        normalized,
       );
+    case 'organization_location':
+      return (
+        /remot/.test(normalized) &&
+        /quito/.test(normalized) &&
+        !/calle|avenida|direccion exacta/.test(normalized)
+      );
+    case 'customer_tuteo':
+      return !/\b(?:tu|tus|te|puedes|quieres|necesitas|cuentame|dime)\b/.test(
+        normalized,
+      );
+    case 'direct_published_price':
+      return /(?:usd\s*)?\$\s*360/.test(response);
     default:
       return true;
   }

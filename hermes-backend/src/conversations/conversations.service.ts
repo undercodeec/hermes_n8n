@@ -12,7 +12,13 @@ import {
   MessageSender,
   MessageType,
   Prisma,
+  TaskStatus,
+  TaskType,
 } from '@prisma/client';
+import {
+  HermesDiagnosticCategory,
+  sanitizeDiagnosticSummary,
+} from '../hermes/hermes-diagnostics';
 import { MetaService } from '../meta/meta.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateConversationDto } from './dto/create-conversation.dto';
@@ -28,6 +34,17 @@ const OPEN_HANDOFF_STATUSES: HandoffStatus[] = [
   HandoffStatus.ASSIGNED,
   HandoffStatus.IN_PROGRESS,
 ];
+const OPEN_TASK_STATUSES: TaskStatus[] = [
+  TaskStatus.PENDING,
+  TaskStatus.IN_PROGRESS,
+];
+const HERMES_DIAGNOSTIC_CATEGORIES = new Set<HermesDiagnosticCategory>([
+  'POLICY_VIOLATION',
+  'PROVIDER_ERROR',
+  'INVALID_PROVIDER_RESPONSE',
+  'OUTPUT_BLOCKED',
+  'CONTEXT_ERROR',
+]);
 
 @Injectable()
 export class ConversationsService {
@@ -46,6 +63,93 @@ export class ConversationsService {
       lastInboundAt,
       closesAt,
       templateRequired: !isOpen,
+    };
+  }
+
+  private objectValue(value: unknown): Record<string, unknown> | null {
+    return value !== null && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  }
+
+  private hermesIncident(metadata: unknown) {
+    const incident = this.objectValue(
+      this.objectValue(metadata)?.lastHermesIncident,
+    );
+    if (
+      !incident ||
+      typeof incident.category !== 'string' ||
+      !HERMES_DIAGNOSTIC_CATEGORIES.has(
+        incident.category as HermesDiagnosticCategory,
+      ) ||
+      typeof incident.code !== 'string' ||
+      typeof incident.summary !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      category: incident.category as HermesDiagnosticCategory,
+      code: sanitizeDiagnosticSummary(incident.code),
+      summary: sanitizeDiagnosticSummary(incident.summary),
+      attempts:
+        typeof incident.attempts === 'number' ? incident.attempts : 0,
+      recovered:
+        typeof incident.recovered === 'boolean' ? incident.recovered : false,
+      requiresHumanReview:
+        typeof incident.requiresHumanReview === 'boolean'
+          ? incident.requiresHumanReview
+          : false,
+      sourceMessageId:
+        typeof incident.sourceMessageId === 'string'
+          ? sanitizeDiagnosticSummary(incident.sourceMessageId)
+          : '',
+      ...(typeof incident.taskId === 'string'
+        ? { taskId: sanitizeDiagnosticSummary(incident.taskId) }
+        : {}),
+      occurredAt:
+        typeof incident.occurredAt === 'string'
+          ? sanitizeDiagnosticSummary(incident.occurredAt)
+          : '',
+    };
+  }
+
+  private hermesReviewTask(task: unknown) {
+    const value = this.objectValue(task);
+    if (
+      !value ||
+      typeof value.id !== 'string' ||
+      typeof value.title !== 'string' ||
+      typeof value.status !== 'string'
+    ) {
+      return null;
+    }
+
+    return {
+      id: value.id,
+      title: value.title,
+      status: value.status,
+      ...(value.createdAt instanceof Date ? { createdAt: value.createdAt } : {}),
+      ...(value.updatedAt instanceof Date ? { updatedAt: value.updatedAt } : {}),
+    };
+  }
+
+  private hermesReviewTaskQuery() {
+    return {
+      where: {
+        type: TaskType.GENERAL,
+        status: { in: OPEN_TASK_STATUSES },
+        metadata: { path: ['actionStatus'], equals: 'PENDING_REVIEW' },
+      },
+      orderBy: { createdAt: Prisma.SortOrder.desc },
+      take: 1,
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        createdAt: true,
+        updatedAt: true,
+      },
     };
   }
 
@@ -119,6 +223,7 @@ export class ConversationsService {
             take: 1,
             include: { assignedAgent: true },
           },
+          tasks: this.hermesReviewTaskQuery(),
           _count: { select: { messages: true } },
         },
       }),
@@ -144,13 +249,18 @@ export class ConversationsService {
     );
 
     const data = conversations
-      .map((conversation) => ({
-        ...conversation,
-        isPriority: conversation.handoffs.length > 0,
-        replyWindow: this.replyWindow(
-          lastInboundByConversation.get(conversation.id) ?? null,
-        ),
-      }))
+      .map((conversation) => {
+        const { metadata, tasks, ...safeConversation } = conversation;
+        return {
+          ...safeConversation,
+          hermesIncident: this.hermesIncident(metadata),
+          hermesReviewTask: this.hermesReviewTask(tasks[0]),
+          isPriority: conversation.handoffs.length > 0,
+          replyWindow: this.replyWindow(
+            lastInboundByConversation.get(conversation.id) ?? null,
+          ),
+        };
+      })
       .sort(
         (left, right) =>
           Number(right.isPriority) - Number(left.isPriority) ||
@@ -179,6 +289,7 @@ export class ConversationsService {
             orderBy: { createdAt: 'desc' },
             include: { assignedAgent: true },
           },
+          tasks: this.hermesReviewTaskQuery(),
         },
       }),
       this.prisma.message.findFirst({
@@ -192,9 +303,12 @@ export class ConversationsService {
       throw new NotFoundException('Conversación no encontrada');
     }
 
+    const { metadata, tasks, ...safeConversation } = conversation;
     return {
-      ...conversation,
+      ...safeConversation,
       messages: conversation.messages.reverse(),
+      hermesIncident: this.hermesIncident(metadata),
+      hermesReviewTask: this.hermesReviewTask(tasks[0]),
       replyWindow: this.replyWindow(lastInbound?.createdAt ?? null),
     };
   }

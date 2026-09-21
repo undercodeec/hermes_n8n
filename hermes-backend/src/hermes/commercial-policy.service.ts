@@ -6,6 +6,7 @@ import {
   PaymentContext,
 } from './dto/hermes-request.dto';
 import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
+import { hasPublishedPriceFor } from './commercial-catalog';
 
 export type PendingQuestion =
   'price' | 'timeline' | 'proposal' | 'availability';
@@ -82,6 +83,7 @@ export class CommercialPolicyService {
       'project_payment',
       'technical_explanation',
       'plan_details',
+      'business_location',
     ].includes(currentTopic);
     const topicShift = Boolean(
       previousQuestionTopic &&
@@ -91,6 +93,8 @@ export class CommercialPolicyService {
     );
     const sufficientContext = this.hasSufficientContext(
       context.commercialProfile,
+      normalized,
+      context.conversationHistory || [],
     );
     const commercialScope = this.normalize(
       [
@@ -102,10 +106,21 @@ export class CommercialPolicyService {
         .join(' '),
     );
     const complexValuation =
-      sufficientContext &&
-      /\b(?:software a medida|sistema personalizado|integracion(?:es)?|automatizacion(?:es)?|aplicacion movil)\b/.test(
-        commercialScope,
-      );
+      (sufficientContext &&
+        /\b(?:software a medida|sistema personalizado|integracion(?:es)?|automatizacion(?:es)?|aplicacion movil)\b/.test(
+          commercialScope,
+        )) ||
+      (/\b(?:software a medida|sistema personalizado)\b/.test(normalized) &&
+        /\b(?:integrado|integracion(?:es)?|inventario|automatizacion(?:es)?)\b/.test(
+          normalized,
+        ) &&
+        /\b(?:equipo|usuarios?|socios?|personal|bodega|ventas?)\b/.test(
+          normalized,
+        ));
+    const priceAnswerRequired =
+      currentTopic === 'price' || pending.has('price');
+    const allowPriceAnswer =
+      priceAnswerRequired && hasPublishedPriceFor(commercialScope);
     const requiredClarification = this.requiresCatalogClarification(
       normalized,
       context.conversationHistory || [],
@@ -114,7 +129,6 @@ export class CommercialPolicyService {
       ? 'CATALOG_VS_ONLINE_SALES'
       : undefined;
     const allowMeetingOffer =
-      requestsHuman ||
       requestsCall ||
       complexValuation ||
       /\b(?:reunion|asesor(?:a|ia)?|especialista|videollamada|llamada)\b/.test(
@@ -176,6 +190,8 @@ export class CommercialPolicyService {
         ...(requiredClarification ? { requiredClarification } : {}),
         allowMeetingOffer,
         allowPlanRecommendation,
+        allowPriceAnswer,
+        priceAnswerRequired,
         allowPlanDetails,
         ...(interestedPlan ? { interestedPlan } : {}),
         offerWebAlternatives,
@@ -215,7 +231,7 @@ export class CommercialPolicyService {
 
     let content = this.enforceQuestionPolicy(response.response, decision);
     if (!decision.guidance.allowMeetingOffer) {
-      content = this.stripUnrequestedMeetingOffer(content);
+      content = this.stripUnrequestedMeetingOffer(content, decision);
     }
     const commercialProfile = { ...response.commercialProfile };
     if (
@@ -265,7 +281,7 @@ export class CommercialPolicyService {
       .replace(/\s+([.,;:])/g, '$1')
       .replace(/\s{2,}/g, ' ')
       .trim();
-    return filtered || response;
+    return filtered || this.safePolicyContinuation(decision);
   }
 
   remainingPendingQuestions(
@@ -368,19 +384,31 @@ export class CommercialPolicyService {
     ]);
   }
 
-  private stripUnrequestedMeetingOffer(response: string): string {
+  private stripUnrequestedMeetingOffer(
+    response: string,
+    decision: CommercialPolicyDecision,
+  ): string {
     const parts = response.match(/[^.!?¿]+(?:[.!?]|$)/gu) || [response];
-    const filtered = parts.filter(
-      (part) =>
-        !/\b(?:coordinar|agendar|programar)\b.{0,70}\b(?:reunion|llamada|conversacion)\b|\b(?:reunion|llamada|conversacion)\b.{0,70}\b(?:equipo|asesor|especialista)\b|\b(?:asesor|especialista)\b.{0,70}\b(?:revisar|contactar|conversar|propuesta)\b/i.test(
-          this.normalize(part),
-        ),
-    );
+    const filtered = parts.filter((part) => {
+      const normalized = this.normalize(part);
+      if (/^(?:no\b|sin necesidad de\b|no hace falta\b)/.test(normalized)) {
+        return true;
+      }
+      return !/\b(?:coordinar|agendar|programar)\b.{0,70}\b(?:reunion|llamada|conversacion)\b|\b(?:reunion|llamada|conversacion)\b.{0,70}\b(?:equipo|asesor|especialista)\b|\b(?:asesor|especialista)\b.{0,70}\b(?:revisar|contactar|conversar|propuesta)\b/i.test(
+        normalized,
+      );
+    });
     const content = filtered
       .join(' ')
       .replace(/\s{2,}/g, ' ')
       .trim();
-    return content || response;
+    return content || this.safePolicyContinuation(decision);
+  }
+
+  private safePolicyContinuation(decision: CommercialPolicyDecision): string {
+    return decision.guidance.sufficientContext
+      ? 'Con la información disponible ya podemos avanzar con la recomendación o valoración correspondiente.'
+      : 'Gracias por la información. Podemos continuar con su solicitud.';
   }
 
   private hasPlanRecommendationBasis(
@@ -480,6 +508,7 @@ export class CommercialPolicyService {
   private currentTopic(value: string, paymentContext?: PaymentContext): string {
     if (paymentContext === 'PROJECT_PAYMENT') return 'project_payment';
     if (paymentContext === 'STORE_CHECKOUT') return 'store_payment';
+    if (this.isOrganizationLocationQuestion(value)) return 'business_location';
     if (
       /\b(?:renovacion|renovar|segundo ano|despues del primer ano)\b/.test(
         value,
@@ -581,15 +610,20 @@ export class CommercialPolicyService {
       budget: /\b(?:usd|dolares?|euros?|presupuesto|no se|aun no)\b|[$€]\s*\d/,
       timeline:
         /\b\d+\s*(?:dias?|semanas?|meses?)\b|\b(?:urgente|sin prisa|fecha)\b/,
-      business: /\b(?:vendo|ofrezco|reparo|servicio|tienda|empresa|negocio)\b/,
+      business:
+        /\b(?:vendo|venta|ofrezco|reparo|reparacion|reparaciones|servicio|restaurante|floristeria|consultoria|asesoria|abogado|comercio|tienda|empresa|negocio|nos dedicamos a)\b/,
       goal: /\b(?:quiero|necesito|busco|objetivo|para)\b/,
     };
     return patterns[topic]?.test(value) ?? false;
   }
 
-  private hasSufficientContext(profile?: CommercialProfile): boolean {
+  private hasSufficientContext(
+    profile: CommercialProfile | undefined,
+    current: string,
+    history: Array<{ role: string; content: string }>,
+  ): boolean {
     if (!profile?.service || !profile.need) return false;
-    return Boolean(
+    const persistedEvidence = Boolean(
       profile.sector ||
       profile.company ||
       profile.currentSituation ||
@@ -601,6 +635,75 @@ export class CommercialPolicyService {
       profile.integrations ||
       profile.timeline ||
       profile.location,
+    );
+    if (persistedEvidence) return true;
+
+    const latestAssistantQuestion = [...history]
+      .reverse()
+      .find(
+        (message) =>
+          message.role === 'assistant' && /[?¿]/.test(message.content),
+      );
+    if (!latestAssistantQuestion) return false;
+
+    const topic = this.questionTopic(
+      this.normalize(latestAssistantQuestion.content),
+    );
+    if (
+      topic === 'business' &&
+      /\b(?:no tengo|no hay|sin|ningun[oa]?)\b.{0,30}\b(?:negocio|empresa|actividad|servicio|sector)\b/.test(
+        current,
+      )
+    ) {
+      return false;
+    }
+    if (topic === 'general' || !this.looksLikeAnswerTo(current, topic)) {
+      return false;
+    }
+
+    const stopWords = new Set([
+      'a',
+      'de',
+      'el',
+      'en',
+      'la',
+      'las',
+      'los',
+      'mi',
+      'un',
+      'una',
+      'y',
+    ]);
+    const meaningfulTokens = (current.match(/\b[a-z]{2,}\b/g) || []).filter(
+      (token) => !stopWords.has(token),
+    );
+    return meaningfulTokens.length >= 2;
+  }
+
+  private isOrganizationLocationQuestion(value: string): boolean {
+    if (
+      /\bdonde estan(?: ubicad[oa]s?)?\b|\bdesde donde (?:trabaja[n]?|opera[n]?|atiende[n]?)\b/.test(
+        value,
+      )
+    ) {
+      return true;
+    }
+    if (/\b(?:tienen|cuentan con|hay)\b.{0,25}\bsede\b/.test(value)) {
+      return true;
+    }
+    if (
+      /\b(?:direccion (?:fisica )?(?:exacta)?|como llegar)\b/.test(value) &&
+      /\b(?:undercodeec|ustedes|su sede|su oficina)\b/.test(value)
+    ) {
+      return true;
+    }
+    return (
+      /\b(?:undercodeec|ustedes)\b.{0,45}\b(?:ubicacion|ubicad[oa]s?|pais|ciudad|sede)\b/.test(
+        value,
+      ) ||
+      /\b(?:ubicacion|ubicad[oa]s?|pais|ciudad|sede)\b.{0,45}\b(?:undercodeec|ustedes)\b/.test(
+        value,
+      )
     );
   }
 

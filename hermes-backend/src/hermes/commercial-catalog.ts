@@ -1,3 +1,61 @@
+export type CommercialSolutionKind =
+  | 'LANDING_PAGE'
+  | 'WEBSITE'
+  | 'ONLINE_STORE';
+
+export const COMMERCIAL_OFFERS = {
+  LANDING_BASIC: {
+    kind: 'LANDING_PAGE',
+    name: 'Landing Básica',
+    price: 250,
+  },
+  LANDING_PRO: { kind: 'LANDING_PAGE', name: 'Landing Pro', price: 600 },
+  LANDING_PREMIUM: {
+    kind: 'LANDING_PAGE',
+    name: 'Landing Premium',
+    price: 1500,
+  },
+  WEBSITE_LAUNCH: {
+    kind: 'WEBSITE',
+    name: 'Plan de Lanzamiento',
+    price: 360,
+  },
+  WEBSITE_GROWTH: {
+    kind: 'WEBSITE',
+    name: 'Plan de Crecimiento',
+    price: 510,
+  },
+  WEBSITE_AUTHORITY: {
+    kind: 'WEBSITE',
+    name: 'Plan de Autoridad',
+    price: 1010,
+  },
+  STORE_LAUNCH: {
+    kind: 'ONLINE_STORE',
+    name: 'Tienda de Lanzamiento',
+    price: 550,
+  },
+  STORE_GROWTH: {
+    kind: 'ONLINE_STORE',
+    name: 'Tienda de Crecimiento',
+    price: 850,
+  },
+  STORE_ELITE: {
+    kind: 'ONLINE_STORE',
+    name: 'Tienda Élite',
+    price: 3490,
+  },
+} as const;
+
+type CommercialOffer = (typeof COMMERCIAL_OFFERS)[keyof typeof COMMERCIAL_OFFERS];
+
+const offerValues = Object.values(COMMERCIAL_OFFERS) as readonly CommercialOffer[];
+const BASIC_HOSTING_RENEWAL_PRICE = 40;
+
+function formatPrice(price: number): string {
+  return price.toLocaleString('es-EC');
+}
+
 const INFRASTRUCTURE_POLICY = `Política de infraestructura web:
 - Cuando el plan indique dominio, hosting y SSL por 1 año, esos elementos están incluidos durante el primer año.
 - Hosting es el espacio del servidor donde funciona la web; dominio es la dirección, por ejemplo minegocio.com; SSL protege la conexión y muestra HTTPS.
@@ -17,24 +75,24 @@ const STORE_DISCOVERY = `Guía de descubrimiento para tienda online:
 - No fuerces una reunión para una tienda estándar que encaja claramente en un plan.`;
 
 const STORE_CATALOG = `Catálogo oficial del configurador — Tienda Online (USD, IVA incluido):
-1. Tienda de Lanzamiento — USD $550. Para iniciar ventas online.
+1. ${COMMERCIAL_OFFERS.STORE_LAUNCH.name} — USD $${formatPrice(COMMERCIAL_OFFERS.STORE_LAUNCH.price)}. Para iniciar ventas online.
    Incluye: catálogo administrable; carga inicial de hasta 20 productos; carrito y pago seguro; dominio .com, hosting y SSL por 1 año; diseño adaptable; configuración de envíos; configuración inicial en Google; 5 correos corporativos; capacitación para gestionar la tienda; 1 mes de soporte técnico.
-2. Tienda de Crecimiento — USD $850. Para escalar ventas.
+2. ${COMMERCIAL_OFFERS.STORE_GROWTH.name} — USD $${formatPrice(COMMERCIAL_OFFERS.STORE_GROWTH.price)}. Para escalar ventas.
    Incluye todo lo de Tienda de Lanzamiento, más filtros avanzados, SEO técnico avanzado, recuperación de carritos abandonados, inventario en tiempo real, estrategia de envíos por zonas y condiciones, y 3 meses de soporte técnico.
-3. Tienda Élite — USD $3.490. Arquitectura de alto rendimiento.
+3. ${COMMERCIAL_OFFERS.STORE_ELITE.name} — USD $${formatPrice(COMMERCIAL_OFFERS.STORE_ELITE.price)}. Arquitectura de alto rendimiento.
    Incluye todo lo de Tienda de Crecimiento, más tecnología ultra rápida, conexión con sistemas empresariales, recomendador con IA, ventas internacionales, automatización de marketing, facturación electrónica, seguridad reforzada, respaldos automáticos y soporte VIP por 6 meses.`;
 
 const WEBSITE_CATALOG = `Catálogo oficial del configurador — Sitio Web (USD, IVA incluido):
-1. Plan de Lanzamiento — USD $360. Hasta 5 páginas, diseño profesional adaptable, dominio .com y hosting por 1 año, SSL, hasta 5 correos corporativos, formulario y WhatsApp, configuración inicial en Google y 1 mes de soporte.
-2. Plan de Crecimiento — USD $510. Todo lo anterior, hasta 8 páginas, textos persuasivos, optimización de velocidad, posicionamiento local, Analytics y Search Console, integraciones y 3 meses de soporte.
-3. Plan de Autoridad — USD $1.010. Todo lo anterior, diseño totalmente personalizado, automatización con IA, sistemas avanzados a medida, seguridad reforzada, campaña de Google Ads por 1 mes, seguimiento y soporte VIP por 6 meses.`;
+1. ${COMMERCIAL_OFFERS.WEBSITE_LAUNCH.name} — USD $${formatPrice(COMMERCIAL_OFFERS.WEBSITE_LAUNCH.price)}. Hasta 5 páginas, diseño profesional adaptable, dominio .com y hosting por 1 año, SSL, hasta 5 correos corporativos, formulario y WhatsApp, configuración inicial en Google y 1 mes de soporte.
+2. ${COMMERCIAL_OFFERS.WEBSITE_GROWTH.name} — USD $${formatPrice(COMMERCIAL_OFFERS.WEBSITE_GROWTH.price)}. Todo lo anterior, hasta 8 páginas, textos persuasivos, optimización de velocidad, posicionamiento local, Analytics y Search Console, integraciones y 3 meses de soporte.
+3. ${COMMERCIAL_OFFERS.WEBSITE_AUTHORITY.name} — USD $${formatPrice(COMMERCIAL_OFFERS.WEBSITE_AUTHORITY.price)}. Todo lo anterior, diseño totalmente personalizado, automatización con IA, sistemas avanzados a medida, seguridad reforzada, campaña de Google Ads por 1 mes, seguimiento y soporte VIP por 6 meses.`;
 
 const LANDING_CATALOG = `Catálogo oficial del configurador — Landing Page (USD, IVA incluido):
-1. Landing Básica — USD $250. Una página, diseño adaptable, WhatsApp y llamada, formulario, beneficios, dominio .com y hosting básico por 1 año, 5 correos corporativos, SEO técnico base y 1 mes de soporte.
-2. Landing Pro — USD $600. Todo lo de Landing Básica, textos persuasivos, formulario optimizado, recurso promocional, Analytics e integración con WhatsApp y respuestas iniciales.
-3. Landing Premium — USD $1.500. Todo lo de Landing Básica, palabras clave para Google, campaña de Google Ads por 1 mes y diseño personalizado con animaciones inmersivas.`;
+1. ${COMMERCIAL_OFFERS.LANDING_BASIC.name} — USD $${formatPrice(COMMERCIAL_OFFERS.LANDING_BASIC.price)}. Una página, diseño adaptable, WhatsApp y llamada, formulario, beneficios, dominio .com y hosting básico por 1 año, 5 correos corporativos, SEO técnico base y 1 mes de soporte.
+2. ${COMMERCIAL_OFFERS.LANDING_PRO.name} — USD $${formatPrice(COMMERCIAL_OFFERS.LANDING_PRO.price)}. Todo lo de Landing Básica, textos persuasivos, formulario optimizado, recurso promocional, Analytics e integración con WhatsApp y respuestas iniciales.
+3. ${COMMERCIAL_OFFERS.LANDING_PREMIUM.name} — USD $${formatPrice(COMMERCIAL_OFFERS.LANDING_PREMIUM.price)}. Todo lo de Landing Básica, palabras clave para Google, campaña de Google Ads por 1 mes y diseño personalizado con animaciones inmersivas.`;
 
-const GENERAL_SUMMARY = `Resumen de planes web autorizados (USD, IVA incluido): Sitio Web desde $360; Landing Page desde $250; Tienda Online desde $550. Antes de recomendar uno, identifica cuál de estos proyectos necesita el cliente.`;
+const GENERAL_SUMMARY = `Resumen de planes web autorizados (USD, IVA incluido): Sitio Web desde $${COMMERCIAL_OFFERS.WEBSITE_LAUNCH.price}; Landing Page desde $${COMMERCIAL_OFFERS.LANDING_BASIC.price}; Tienda Online desde $${COMMERCIAL_OFFERS.STORE_LAUNCH.price}. Antes de recomendar uno, identifica cuál de estos proyectos necesita el cliente.`;
 
 const WEB_OPTIONS_GUIDE = `Guía para presentar opciones de presencia web:
 - Para un negocio que quiere promocionar servicios, captar contactos o empezar con una presencia sencilla, compara primero en forma breve la Landing Básica de USD $250 y el Plan de Lanzamiento de USD $360.
@@ -49,6 +107,123 @@ function normalize(value: string): string {
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '')
     .replace(/[^a-z0-9]+/g, ' ');
+}
+
+function requestedSolutionKinds(query: string): CommercialSolutionKind[] {
+  const normalized = normalize(query);
+  if (
+    /\b(software a medida|sistema a medida|aplicacion movil|app movil)\b/.test(
+      normalized,
+    )
+  ) {
+    return [];
+  }
+  const kinds = new Set<CommercialSolutionKind>();
+  if (
+    /\b(tienda online|ecommerce|comercio electronico|carrito|checkout|pasarela|vender online|venta online|comprar online|pagar online)\b/.test(
+      normalized,
+    )
+  ) {
+    kinds.add('ONLINE_STORE');
+  }
+  if (
+    /\b(landing|pagina de aterrizaje|captar leads?|campana publicitaria)\b/.test(
+      normalized,
+    )
+  ) {
+    kinds.add('LANDING_PAGE');
+  }
+  if (
+    /\b(sitio web|pagina web|web corporativa|presencia web|portal web)\b/.test(
+      normalized,
+    )
+  ) {
+    kinds.add('WEBSITE');
+  }
+  if (
+    kinds.size === 0 &&
+    /\b(planes?|precios?|tarifas?|paquetes?)\b/.test(normalized)
+  ) {
+    return ['LANDING_PAGE', 'WEBSITE', 'ONLINE_STORE'];
+  }
+  return [...kinds];
+}
+
+export function organizationLocationContext(): string {
+  return 'UnderCodeEC trabaja de forma remota, tiene presencia en algunos países de Latinoamérica, Europa y Estados Unidos, y su sede principal está en Quito, Ecuador.';
+}
+
+export function authorizedPricesFor(query: string): readonly number[] {
+  const kinds = requestedSolutionKinds(query);
+  const prices: number[] = offerValues
+    .filter((offer) => kinds.includes(offer.kind))
+    .map((offer) => offer.price);
+  const normalized = normalize(query);
+  if (
+    /\bhosting\b/.test(normalized) &&
+    /\b(?:renovacion|renovar|segundo ano|despues del primer ano)\b/.test(
+      normalized,
+    )
+  ) {
+    prices.push(BASIC_HOSTING_RENEWAL_PRICE);
+  }
+  return prices;
+}
+
+export function hasPublishedPriceFor(query: string): boolean {
+  return authorizedPricesFor(query).length > 0;
+}
+
+export function publishedPriceAnswer(query: string): string | undefined {
+  const kinds = requestedSolutionKinds(query);
+  if (kinds.length === 0) return undefined;
+
+  const summaries: Record<CommercialSolutionKind, string> = {
+    LANDING_PAGE: `Landing Page desde USD $${COMMERCIAL_OFFERS.LANDING_BASIC.price}.`,
+    WEBSITE: `Sitio Web desde USD $${COMMERCIAL_OFFERS.WEBSITE_LAUNCH.price}.`,
+    ONLINE_STORE: `Tienda Online desde USD $${COMMERCIAL_OFFERS.STORE_LAUNCH.price}.`,
+  };
+  return kinds.map((kind) => summaries[kind]).join(' ');
+}
+
+export function responseContainsOnlyAuthorizedPrices(
+  query: string,
+  response: string,
+): boolean {
+  const authorized = new Set(authorizedPricesFor(query));
+  const amounts = monetaryAmountsIn(response);
+  return amounts.every((amount) => authorized.has(amount));
+}
+
+export function monetaryAmountsIn(value: string): number[] {
+  const pattern =
+    /(?:\b(?:USD|dólares?)\s*\$?\s*([0-9]+(?:[.,][0-9]+)*)|\$\s*([0-9]+(?:[.,][0-9]+)*)|([0-9]+(?:[.,][0-9]+)*)\s*(?:USD|dólares?))/giu;
+  return [...value.matchAll(pattern)]
+    .map((match) => parseMoneyAmount(match[1] || match[2] || match[3]))
+    .filter((amount): amount is number => amount !== undefined);
+}
+
+function parseMoneyAmount(value: string): number | undefined {
+  const lastDot = value.lastIndexOf('.');
+  const lastComma = value.lastIndexOf(',');
+  let normalized = value;
+  if (lastDot >= 0 && lastComma >= 0) {
+    const decimalSeparator = lastDot > lastComma ? '.' : ',';
+    const thousandsSeparator = decimalSeparator === '.' ? ',' : '.';
+    normalized = normalized.split(thousandsSeparator).join('');
+    normalized = normalized.replace(decimalSeparator, '.');
+  } else {
+    const separator = lastDot >= 0 ? '.' : lastComma >= 0 ? ',' : undefined;
+    if (separator) {
+      const fractionLength = value.length - value.lastIndexOf(separator) - 1;
+      normalized =
+        fractionLength === 2
+          ? value.replace(separator, '.')
+          : value.split(separator).join('');
+    }
+  }
+  const amount = Number(normalized);
+  return Number.isFinite(amount) ? amount : undefined;
 }
 
 export function commercialCatalogContext(query: string): string[] {

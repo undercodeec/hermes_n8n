@@ -1,5 +1,6 @@
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
+import { CommercialPolicyService } from './commercial-policy.service';
 import { HermesService } from './hermes.service';
 
 describe('HermesService commercial contract', () => {
@@ -89,7 +90,7 @@ describe('HermesService commercial contract', () => {
     const systemMessage = post.mock.calls[0][1].messages[0].content as string;
     expect(systemMessage).toContain('¿A qué se dedica su negocio?');
     expect(systemMessage).toContain(
-      'no abras otra ronda de descubrimiento sobre contacto o interacciones',
+      'sin abrir otra entrevista ni forzar una reunión',
     );
     expect(systemMessage).toContain(
       'su petición ya autoriza iniciar la derivación',
@@ -126,6 +127,8 @@ describe('HermesService commercial contract', () => {
       sufficientContext: true,
       allowMeetingOffer: false,
       allowPlanRecommendation: true,
+      allowPriceAnswer: false,
+      priceAnswerRequired: false,
       allowPlanDetails: false,
       offerWebAlternatives: false,
       paymentContext: 'PROJECT_PAYMENT' as const,
@@ -226,7 +229,9 @@ describe('HermesService commercial contract', () => {
 
     expect(result.detectedIntent).toBe('error');
     expect(result.nextAction).toBe('sin_accion');
-    expect(result.response).toContain('inconveniente temporal');
+    expect(result.response).toContain(
+      'no pude completar la respuesta en este momento',
+    );
     expect(result.response).not.toContain('derivar');
     expect(result.response).not.toContain('respuesta sin JSON');
     expect(result.response).not.toContain('"response"');
@@ -287,6 +292,335 @@ describe('HermesService commercial contract', () => {
     expect(result.response).toBe('Podemos continuar con su solicitud.');
   });
 
+  it('accepts customer tuteo while keeping the formal system instruction', async () => {
+    const { service, post } = setup(
+      JSON.stringify({
+        response: 'Con gusto le explico las opciones disponibles.',
+        detectedIntent: 'consulta_servicio',
+        suggestedTags: [],
+        nextAction: 'sin_accion',
+        commercialProfile: {},
+      }),
+    );
+
+    const result = await service.generateResponse({
+      messageContent: 'Oye, ¿me ayudas con una web pa mi negocio?',
+      conversationHistory: [],
+    });
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(result.response).toContain('le explico');
+    const systemMessage = post.mock.calls[0][1].messages[0].content as string;
+    expect(systemMessage).toContain('trato profesional de «usted»');
+  });
+
+  it('formalizes a simple accidental tuteo locally without another provider call', async () => {
+    const { service, post } = setup(
+      JSON.stringify({
+        response:
+          'Te explico las dos opciones publicadas para tu sitio web.',
+        detectedIntent: 'consulta_servicio',
+        suggestedTags: [],
+        nextAction: 'sin_accion',
+        commercialProfile: {},
+      }),
+    );
+
+    const result = await service.generateResponse({
+      messageContent: 'Explícame las opciones',
+      conversationHistory: [],
+    });
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(result.response).toBe(
+      'Le explico las dos opciones publicadas para su sitio web.',
+    );
+  });
+
+  it('uses a contextual formal fallback when both style rewrites use tuteo', async () => {
+    const informal = JSON.stringify({
+      response: 'Puedes contarme qué quieres lograr.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'continuar_descubrimiento',
+      commercialProfile: { company: 'Inventada SA' },
+    });
+    const { service, post } = setup([informal, informal]);
+
+    const result = await service.generateResponse({
+      messageContent: 'Necesito una web',
+      conversationHistory: [],
+      commercialProfile: { service: 'sitio web' },
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result.response).not.toMatch(/puedes|quieres|inconveniente temporal/i);
+    expect(result.response).toMatch(/usted|su solicitud|su proyecto/i);
+    expect(result.commercialProfile).toEqual({ service: 'sitio web' });
+  });
+
+  it('recovers an organization-location answer from authorized context', async () => {
+    const invalid = JSON.stringify({
+      response:
+        'Nuestra oficina queda en una dirección que no está autorizada.',
+      detectedIntent: 'info_general',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: {},
+    });
+    const { service } = setup([invalid, invalid]);
+
+    const result = await service.generateResponse({
+      messageContent: '¿Desde dónde trabajan?',
+      conversationHistory: [],
+      conversationGuidance: {
+        currentTopic: 'business_location',
+        directAnswerRequired: true,
+        allowDiscoveryQuestion: false,
+        topicShift: false,
+        recentQuestionTopics: [],
+        sufficientContext: false,
+        allowMeetingOffer: false,
+        allowPlanRecommendation: false,
+        allowPriceAnswer: false,
+        priceAnswerRequired: false,
+        allowPlanDetails: false,
+        offerWebAlternatives: false,
+      },
+    });
+
+    expect(result.response).toContain('remota');
+    expect(result.response).toContain('Quito, Ecuador');
+    expect(result.response).not.toMatch(/calle|dirección exacta|oficina en/i);
+    expect(result.diagnostic?.category).toBe('POLICY_VIOLATION');
+  });
+
+  it('requires confirmation for an exact address without inventing street data', async () => {
+    const invalid = JSON.stringify({
+      response: 'Nuestra oficina está en la avenida Inventada 123, Quito.',
+      detectedIntent: 'info_general',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: {},
+    });
+    const { service } = setup([invalid, invalid]);
+
+    const messageContent = '¿Cuál es la dirección física exacta de UnderCodeEC?';
+    const policy = new CommercialPolicyService().analyze(
+      messageContent,
+      new Date('2026-09-20T18:00:00.000Z'),
+    );
+    const result = await service.generateResponse({
+      messageContent,
+      conversationHistory: [],
+      conversationGuidance: policy.guidance,
+    });
+
+    expect(result.response).toMatch(
+      /dirección (?:física )?exacta.*requiere confirmación/i,
+    );
+    expect(result.response).not.toMatch(/avenida Inventada|calle \w+|\b123\b/i);
+  });
+
+  it('answers published prices without saving a recommended plan', async () => {
+    const priced = JSON.stringify({
+      response: 'El sitio web publicado empieza en USD $360.',
+      detectedIntent: 'consulta_precio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: { recommendedPlan: 'Plan de Lanzamiento' },
+    });
+    const { service, post } = setup(priced);
+
+    const result = await service.generateResponse({
+      messageContent: '¿Cuánto cuesta un sitio web?',
+      conversationHistory: [],
+      conversationGuidance: {
+        currentTopic: 'price',
+        directAnswerRequired: true,
+        allowDiscoveryQuestion: false,
+        topicShift: false,
+        recentQuestionTopics: [],
+        sufficientContext: false,
+        allowMeetingOffer: false,
+        allowPlanRecommendation: false,
+        allowPriceAnswer: true,
+        priceAnswerRequired: true,
+        allowPlanDetails: false,
+        offerWebAlternatives: false,
+      },
+    });
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(result.response).toContain('USD $360');
+    expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
+  });
+
+  it('rejects an unauthorized price written after the amount', async () => {
+    const invalid = JSON.stringify({
+      response: 'El sitio web cuesta 999 USD.',
+      detectedIntent: 'consulta_precio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: {},
+    });
+    const { service, post } = setup([invalid, invalid]);
+    const messageContent = '¿Cuánto cuesta un sitio web?';
+    const policy = new CommercialPolicyService().analyze(
+      messageContent,
+      new Date('2026-09-20T18:00:00.000Z'),
+    );
+
+    const result = await service.generateResponse({
+      messageContent,
+      conversationHistory: [],
+      conversationGuidance: policy.guidance,
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result.response).toContain('USD $360');
+    expect(result.diagnostic?.code).toBe('UNAUTHORIZED_PRICE');
+  });
+
+  it('accepts the authorized basic-hosting renewal price', async () => {
+    const valid = JSON.stringify({
+      response: 'La renovación del hosting básico cuesta USD $40 al año.',
+      detectedIntent: 'consulta_precio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: {},
+    });
+    const { service, post } = setup(valid);
+    const messageContent =
+      '¿Cuánto cuesta renovar el hosting básico después del primer año?';
+    const policy = new CommercialPolicyService().analyze(
+      messageContent,
+      new Date('2026-09-20T18:00:00.000Z'),
+    );
+
+    const result = await service.generateResponse({
+      messageContent,
+      conversationHistory: [],
+      conversationGuidance: policy.guidance,
+    });
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(result.response).toContain('USD $40');
+    expect(result.diagnostic).toBeUndefined();
+  });
+
+  it('recovers an invented delivery commitment with human confirmation', async () => {
+    const invalid = JSON.stringify({
+      response: 'Su sitio web estará listo en 3 días.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: {},
+    });
+    const { service, post } = setup([invalid, invalid]);
+    const messageContent = '¿Cuánto tarda un sitio web?';
+    const policy = new CommercialPolicyService().analyze(
+      messageContent,
+      new Date('2026-09-20T18:00:00.000Z'),
+    );
+
+    const result = await service.generateResponse({
+      messageContent,
+      conversationHistory: [],
+      conversationGuidance: policy.guidance,
+    });
+
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(result.response).toContain('requiere confirmación');
+    expect(result.diagnostic).toEqual(
+      expect.objectContaining({
+        code: 'UNAUTHORIZED_TIMELINE',
+        requiresHumanReview: true,
+      }),
+    );
+  });
+
+  it('accepts a negative meeting statement without retrying', async () => {
+    const valid = JSON.stringify({
+      response: 'No necesita una reunión con el equipo.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: {},
+    });
+    const { service, post } = setup(valid);
+    const policy = new CommercialPolicyService().analyze(
+      'También debe organizar expedientes.',
+      new Date('2026-09-20T18:00:00.000Z'),
+      [],
+      {
+        commercialProfile: {
+          service: 'portal interno',
+          need: 'organizar expedientes',
+          sector: 'servicio legal',
+        },
+      },
+    );
+
+    const result = await service.generateResponse({
+      messageContent: 'También debe organizar expedientes.',
+      conversationHistory: [],
+      commercialProfile: {
+        service: 'portal interno',
+        need: 'organizar expedientes',
+        sector: 'servicio legal',
+      },
+      conversationGuidance: policy.guidance,
+    });
+
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(result.response).toBe('No necesita una reunión con el equipo.');
+    expect(result.diagnostic).toBeUndefined();
+  });
+
+  it('keeps the persisted profile when both policy responses carry a rejected profile', async () => {
+    const invalid = JSON.stringify({
+      response: 'Le recomiendo el Plan inventado por USD $9999.',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'sin_accion',
+      commercialProfile: {
+        company: 'Inventada SA',
+        budget: 'USD $9999',
+        recommendedPlan: 'Plan inventado',
+      },
+    });
+    const { service } = setup([invalid, invalid]);
+
+    const result = await service.generateResponse({
+      messageContent: 'Necesito información sobre una web',
+      conversationHistory: [],
+      commercialProfile: { service: 'sitio web' },
+      conversationGuidance: {
+        currentTopic: 'general',
+        directAnswerRequired: false,
+        allowDiscoveryQuestion: true,
+        topicShift: false,
+        recentQuestionTopics: [],
+        sufficientContext: false,
+        allowMeetingOffer: false,
+        allowPlanRecommendation: false,
+        allowPriceAnswer: false,
+        priceAnswerRequired: false,
+        allowPlanDetails: false,
+        offerWebAlternatives: false,
+      },
+    });
+
+    expect(result.commercialProfile).toEqual({ service: 'sitio web' });
+    expect(result.diagnostic).toEqual(
+      expect.objectContaining({
+        category: 'POLICY_VIOLATION',
+        recovered: true,
+      }),
+    );
+  });
+
   it('retries a response that uses tuteo and adds a focused correction', async () => {
     const informal = JSON.stringify({
       response: 'Cuéntame qué necesitas y te ayudo.',
@@ -315,7 +649,9 @@ describe('HermesService commercial contract', () => {
       expect.arrayContaining([
         expect.objectContaining({
           role: 'system',
-          content: expect.stringContaining('usa tuteo'),
+          content: expect.stringContaining(
+            'Preserve todo el contenido comercial',
+          ),
         }),
       ]),
     );
@@ -381,6 +717,8 @@ describe('HermesService commercial contract', () => {
         sufficientContext: true,
         allowMeetingOffer: false,
         allowPlanRecommendation: true,
+        allowPriceAnswer: false,
+        priceAnswerRequired: false,
         allowPlanDetails: false,
         offerWebAlternatives: false,
       },
@@ -412,7 +750,7 @@ describe('HermesService commercial contract', () => {
     expect(post.mock.calls[0][1].reasoning_effort).toBe('low');
   });
 
-  it('retries a mechanical opening even when the rest is formally written', async () => {
+  it('cleans a mechanical opening locally when the rest is useful', async () => {
     const templated = JSON.stringify({
       response: '¡Perfecto! Podemos ayudarle con su proyecto.',
       detectedIntent: 'consulta_servicio',
@@ -434,7 +772,7 @@ describe('HermesService commercial contract', () => {
       conversationHistory: [],
     });
 
-    expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenCalledTimes(1);
     expect(result.response).toBe('Podemos ayudarle con su proyecto.');
   });
 
@@ -468,6 +806,8 @@ describe('HermesService commercial contract', () => {
         sufficientContext: false,
         allowMeetingOffer: false,
         allowPlanRecommendation: false,
+        allowPriceAnswer: false,
+        priceAnswerRequired: false,
         allowPlanDetails: false,
         offerWebAlternatives: false,
       },
@@ -573,6 +913,8 @@ describe('HermesService commercial contract', () => {
         sufficientContext: true,
         allowMeetingOffer: false,
         allowPlanRecommendation: true,
+        allowPriceAnswer: false,
+        priceAnswerRequired: false,
         allowPlanDetails: false,
         offerWebAlternatives: true,
       },
@@ -607,6 +949,8 @@ describe('HermesService commercial contract', () => {
         sufficientContext: true,
         allowMeetingOffer: false,
         allowPlanRecommendation: true,
+        allowPriceAnswer: false,
+        priceAnswerRequired: false,
         allowPlanDetails: false,
         offerWebAlternatives: true,
       },
@@ -658,13 +1002,15 @@ describe('HermesService commercial contract', () => {
         sufficientContext: false,
         allowMeetingOffer: false,
         allowPlanRecommendation: false,
+        allowPriceAnswer: false,
+        priceAnswerRequired: false,
         allowPlanDetails: false,
         offerWebAlternatives: false,
       },
     });
 
     expect(post).toHaveBeenCalledTimes(2);
-    expect(result.detectedIntent).toBe('consulta_servicio');
+    expect(result.detectedIntent).toBe('info_general');
     expect(result.nextAction).toBe('continuar_descubrimiento');
     expect(result.response).toContain('resultado principal');
     expect(result.response).not.toContain('inconveniente temporal');
