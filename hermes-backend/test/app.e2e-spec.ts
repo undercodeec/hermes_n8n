@@ -8,6 +8,7 @@ import {
 import { Test } from '@nestjs/testing';
 import { DocumentBuilder, SwaggerModule } from '@nestjs/swagger';
 import { ConversationStatus, LeadStage, UserRole } from '@prisma/client';
+import { of } from 'rxjs';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AnalyticsController } from '../src/analytics/analytics.controller';
@@ -19,6 +20,7 @@ import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter
 import { JwtAuthGuard } from '../src/common/guards/jwt-auth.guard';
 import { RolesGuard } from '../src/common/guards/roles.guard';
 import { ConversationsController } from '../src/conversations/conversations.controller';
+import { ConversationEventsService } from '../src/conversations/conversation-events.service';
 import { ConversationsService } from '../src/conversations/conversations.service';
 import {
   HandoffResolutionAction,
@@ -54,6 +56,9 @@ describe('Contratos HTTP del CRM (e2e aislado)', () => {
     reply: jest.fn(),
     close: jest.fn(),
     reopen: jest.fn(),
+  };
+  const conversationEventsService = {
+    stream: jest.fn(() => of({ type: 'connected', data: {} })),
   };
   const handoffService = {
     create: jest.fn(),
@@ -103,6 +108,10 @@ describe('Contratos HTTP del CRM (e2e aislado)', () => {
         { provide: AuthService, useValue: authService },
         { provide: LeadsService, useValue: leadsService },
         { provide: ConversationsService, useValue: conversationsService },
+        {
+          provide: ConversationEventsService,
+          useValue: conversationEventsService,
+        },
         { provide: HandoffService, useValue: handoffService },
         { provide: AnalyticsService, useValue: analyticsService },
         { provide: CampaignsService, useValue: campaignsService },
@@ -131,7 +140,7 @@ describe('Contratos HTTP del CRM (e2e aislado)', () => {
   });
 
   afterAll(async () => {
-    await app.close();
+    if (app) await app.close();
   });
 
   it('publica login como HTTP 200 y valida sus credenciales', async () => {
