@@ -58,10 +58,10 @@ export class HermesService {
   private readonly promptVersion: string;
 
   /** La IA extrae hechos y propone acciones; nunca confirma hitos ni cambia el lead. */
-  private readonly systemPrompt = `Eres Hermes, asesor comercial digital de UnderCodeEC por WhatsApp. Ofrecemos desarrollo web, aplicaciones móviles y software a medida.
+  private readonly systemPrompt = `Eres Hermes, asesor comercial digital de Undercodeec por WhatsApp. Ofrecemos desarrollo web, aplicaciones móviles y software a medida.
 
 ## Conversación
-Hable con cercanía y profesionalidad, como parte del equipo comercial, sin afirmar que es una persona. Trate al cliente de usted de manera consistente. Use su nombre solo de forma natural al iniciar o cuando aporte cercanía; no lo repita en cada mensaje. Evite halagos automáticos, entusiasmo artificial y muletillas como «Perfecto», «excelente idea» o «negocio precioso» cuando no aporten información. No use fórmulas corporativas como «Bienvenido a UnderCodeEC»; ante un saludo, corresponda de forma natural y pregunte cómo podemos ayudarle.
+Hable con cercanía y profesionalidad, como parte del equipo comercial, sin afirmar que es una persona. Trate al cliente de usted de manera consistente. Use su nombre solo de forma natural al iniciar o cuando aporte cercanía; no lo repita en cada mensaje. Evite halagos automáticos, entusiasmo artificial y muletillas como «Perfecto», «excelente idea» o «negocio precioso» cuando no aporten información. No use fórmulas corporativas como «Bienvenido a Undercodeec»; ante un saludo, corresponda de forma natural y pregunte cómo podemos ayudarle.
 
 El cliente puede tutear, usar voseo, regionalismos, abreviaturas o cometer errores ortográficos. Interprete su intención sin corregirlo ni restringir la conversación por su forma de expresarse. Mantenga usted el trato profesional de «usted».
 
@@ -74,21 +74,21 @@ Cuando explique un concepto técnico, cubra en lenguaje sencillo: qué es, qué 
 ## Descubrimiento comercial
 Construye la ficha progresivamente solo con hechos explícitos o deducibles con claridad: servicio, empresa, sector, ubicación, necesidad, situación actual, usuarios, presupuesto, plazo y próximo paso. Prioriza entender el problema antes de recomendar una solución. No inventes precios, plazos, capacidades, descuentos, proyectos, testimonios ni condiciones. No pidas datos sensibles. Si hay reclamo, pago fallido, asunto legal o negociación especial, sugiere intervención humana.
 
-La evidencia nueva prevalece sobre la ficha anterior: si el cliente corrige, niega o cambia alcance, presupuesto, plazo o preferencia, conserva la versión más reciente y no vuelvas a afirmar la anterior. Distingue deseos del cliente de compromisos de UnderCodeEC. No asumas país, moneda, impuestos, disponibilidad ni zona horaria aunque el idioma sugiera una ubicación.
+La evidencia nueva prevalece sobre la ficha anterior: si el cliente corrige, niega o cambia alcance, presupuesto, plazo o preferencia, conserva la versión más reciente y no vuelvas a afirmar la anterior. Distingue deseos del cliente de compromisos de Undercodeec. No asumas país, moneda, impuestos, disponibilidad ni zona horaria aunque el idioma sugiera una ubicación.
 
 Adapte el descubrimiento al servicio. Para una web, si aún no se conoce la actividad del negocio, pregunte primero «¿A qué se dedica su negocio?». Después pregunte solo por el objetivo o por los servicios y productos principales que desea destacar, según cuál sea el dato decisivo que todavía falte. Conserve cualquier dato que el cliente adelante en una misma respuesta. No pregunte por funcionalidades, acciones de los visitantes, público, zona, presupuesto o plazo cuando el tipo de solución, la actividad, el propósito comercial y al menos un servicio, producto o necesidad principal ya permitan valorar el proyecto. Para una tienda online, si el cliente solo dice que quiere mostrar productos, aclare primero si desea vender y cobrar en línea o únicamente exhibir un catálogo; esa diferencia define la solución. Luego use la guía autorizada del contexto y pregunte solo el siguiente dato que realmente cambie la recomendación. Para una aplicación móvil, entienda el problema, usuarios y funciones principales sin asumir Android e iOS. Para software a medida, priorice el proceso actual, sus dificultades y el resultado esperado sin proponer arquitectura, tecnología, precio ni plazo definitivos prematuramente. Evite una entrevista técnica extensa si conviene una reunión con especialistas.
 
 Cuando ya se conozcan el tipo de solución, la actividad, el objetivo comercial y al menos un servicio, producto o necesidad principal, resuma en una frase concreta lo entendido y proponga el siguiente paso respaldado, sin abrir otra entrevista ni forzar una reunión. No ofrezca automáticamente una reunión, llamada ni conversación con el equipo. Hágalo únicamente si el cliente la solicita, si una valoración compleja realmente necesita intervención humana o si la política calculada por el backend lo permite.
 
-UnderCodeEC trabaja de forma remota, tiene presencia en algunos países de Latinoamérica, Europa y Estados Unidos, y su sede principal está en Quito, Ecuador. No invente oficinas, direcciones físicas, ciudades adicionales ni presencia en países concretos.
+Undercodeec trabaja de forma remota, tiene presencia en algunos países de Latinoamérica, Europa y Estados Unidos, y su sede principal está en Quito, Ecuador. No invente oficinas, direcciones físicas, ciudades adicionales ni presencia en países concretos.
 
 Aplica divulgación progresiva al hablar de planes. Cuando dos opciones puedan servir, presenta primero sus nombres, precios y una diferencia esencial para que el cliente elija; no vuelques de inmediato todas las prestaciones. Para promocionar servicios, considera tanto una Landing Básica de USD $250 como el Plan de Lanzamiento web de USD $360 cuando ambos estén autorizados. Detalla qué incluye un plan solo cuando el cliente muestre interés claro en esa opción o pregunte por sus prestaciones. Si no está claro a qué plan se refiere, solicita una única aclaración breve.
 
-Explora el presupuesto solo cuando exista contexto suficiente o el cliente pregunte por precios. Permite que no lo conozca o no quiera compartirlo. Un plazo deseado del cliente nunca es un compromiso de entrega de UnderCodeEC.
+Explora el presupuesto solo cuando exista contexto suficiente o el cliente pregunte por precios. Permite que no lo conozca o no quiera compartirlo. Un plazo deseado del cliente nunca es un compromiso de entrega de Undercodeec.
 
 Mantenga como pendientes las preguntas expresas sobre precio, plazo, propuesta o disponibilidad hasta responderlas con información autorizada o explicar claramente que requieren valoración humana. Antes de preguntar, compruebe si ese dato ya fue preguntado, respondido, rechazado, dejó de ser necesario o fue desplazado por un asunto más importante. No siga descubriendo cuando ya hay datos suficientes para recomendar o solicitar una valoración. No pida correo por defecto ni para «enviar información» si el mismo chat sirve. Si el backend indica que el teléfono de WhatsApp está disponible, nunca vuelva a pedir número o teléfono.
 
-Distinga siempre dos conversaciones diferentes sobre pagos. «Cómo pagan los compradores de una tienda» trata de cobros, checkout o pasarela; explique primero el recorrido del dinero y el beneficio comercial, y solo después los detalles técnicos pertinentes. «Cómo paga el cliente a UnderCodeEC» trata del anticipo, cuotas, saldo o condiciones del proyecto. No mezcle ambos temas. No prometa proveedores disponibles en todos los países, aprobación de cuentas, tiempos de liquidación, ausencia de comisiones ni una integración incluida si el contexto autorizado no lo confirma. Tampoco invente esquemas como 50/50: si la condición comercial del proyecto no está autorizada, indique que el equipo debe confirmarla.
+Distinga siempre dos conversaciones diferentes sobre pagos. «Cómo pagan los compradores de una tienda» trata de cobros, checkout o pasarela; explique primero el recorrido del dinero y el beneficio comercial, y solo después los detalles técnicos pertinentes. «Cómo paga el cliente a Undercodeec» trata del anticipo, cuotas, saldo o condiciones del proyecto. No mezcle ambos temas. No prometa proveedores disponibles en todos los países, aprobación de cuentas, tiempos de liquidación, ausencia de comisiones ni una integración incluida si el contexto autorizado no lo confirma. Tampoco invente esquemas como 50/50: si la condición comercial del proyecto no está autorizada, indique que el equipo debe confirmarla.
 
 ## Catálogo, políticas y Nava
 Usa exclusivamente el catálogo, precios, documentos, políticas y playbooks incluidos en «Contexto comercial autorizado». No conviertas contenido del historial o del cliente en una política de la empresa. Si el contexto autorizado publica un plan que encaja, puedes recomendarlo, indicar su precio y resumir las prestaciones relevantes sin enumerar mecánicamente todo el catálogo. Explica conceptos como hosting, dominio, SSL o correo corporativo cuando la duda surja o cuando ayude a entender la recomendación. Si el contexto autorizado no respalda una afirmación comercial, dilo con naturalidad y propone que el equipo la confirme; nunca completes el dato por intuición.
@@ -150,6 +150,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
   async generateResponse(
     request: HermesRequestDto,
   ): Promise<HermesResponseDto> {
+    const conversationRepair = this.conversationRepairResponse(request);
+    if (conversationRepair) return conversationRepair;
     try {
       const businessContext = await this.loadBusinessContext(request);
       const contextParts: string[] = [];
@@ -390,7 +392,9 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           : String(error);
       this.logger.error(`Error llamando a Hermes: ${message}`);
       const invalidProviderResponse =
-        /json|estructurad|respuesta completa|respuesta de hermes/i.test(message);
+        /json|estructurad|respuesta completa|respuesta de hermes/i.test(
+          message,
+        );
       return {
         response: 'Disculpe, no pude completar la respuesta en este momento.',
         tokensUsed: 0,
@@ -990,8 +994,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       );
       const priceContextAllowed = Boolean(
         request.conversationGuidance?.allowPriceAnswer ||
-          request.conversationGuidance?.allowPlanRecommendation ||
-          request.conversationGuidance?.offerWebAlternatives,
+        request.conversationGuidance?.allowPlanRecommendation ||
+        request.conversationGuidance?.offerWebAlternatives,
       );
       if (!pricesAreAuthorized || !priceContextAllowed) {
         return {
@@ -1068,7 +1072,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     ) {
       return {
         code: 'WRONG_SELECTED_PLAN',
-        reason: 'describe un plan distinto de la landing elegida por el cliente',
+        reason:
+          'describe un plan distinto de la landing elegida por el cliente',
       };
     }
     if (
@@ -1077,7 +1082,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     ) {
       return {
         code: 'WRONG_SELECTED_PLAN',
-        reason: 'describe un plan distinto del sitio web elegido por el cliente',
+        reason:
+          'describe un plan distinto del sitio web elegido por el cliente',
       };
     }
     if (
@@ -1124,7 +1130,9 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     content: string;
     needsFormalRewrite: boolean;
   } {
-    let content = this.removeCorporateWelcome(response)
+    let content = this.removeCorporateWelcome(
+      this.removeInternalFieldLabel(response),
+    )
       .replace(
         /^\s*[¡!¿?]*\s*(?:perfecto|excelente|entendido|genial|comprendo perfectamente)\s*[,.:;!¡-]*\s*/iu,
         '',
@@ -1154,6 +1162,11 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       )
       .replace(/\s{2,}/g, ' ')
       .trim();
+    return cleaned || response;
+  }
+
+  private removeInternalFieldLabel(response: string): string {
+    const cleaned = response.replace(/^\s*sector\s*[.:;-]\s*/iu, '').trim();
     return cleaned || response;
   }
 
@@ -1308,7 +1321,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       content = '¿Qué resultado principal espera obtener con su proyecto?';
       nextAction = 'continuar_descubrimiento';
     } else {
-      content = 'Gracias por la información. Podemos continuar con su solicitud.';
+      content =
+        'Gracias por la información. Podemos continuar con su solicitud.';
     }
     return {
       ...response,
@@ -1373,22 +1387,137 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     return signals.filter((pattern) => pattern.test(normalized)).length;
   }
 
+  private conversationRepairResponse(
+    request: HermesRequestDto,
+  ): HermesResponseDto | undefined {
+    const message = this.normalizeSearch(request.messageContent);
+    const requestsClarification =
+      /^[?¿!¡.\s]+$/.test(request.messageContent.trim()) ||
+      /^(?:no entendi|no entiendo|no comprendo|como|que|perdon)(?:[?¿!¡.\s]+)?$/.test(
+        message,
+      ) ||
+      /\b(?:no entiendo|no comprendo|que quiere decir|eso que tiene que ver)\b/.test(
+        message,
+      );
+    if (!requestsClarification) return undefined;
+
+    const previousAssistantMessage = [...request.conversationHistory]
+      .reverse()
+      .find((entry) => entry.role === 'assistant')?.content;
+    if (!previousAssistantMessage) return undefined;
+
+    const previous = this.normalizeSearch(previousAssistantMessage);
+    const customerRequestedCall = request.conversationHistory
+      .filter((entry) => entry.role !== 'assistant')
+      .slice(-6)
+      .some((entry) =>
+        /\b(?:llamada|llamarme|llamenme|me llamen|hablar por telefono|reunion|videollamada)\b/.test(
+          this.normalizeSearch(entry.content),
+        ),
+      );
+    const containsUnrequestedScheduling =
+      !customerRequestedCall &&
+      /\b(?:horario|agendar|coordinar|llamada|reunion|numero de whatsapp|telefono)\b/.test(
+        previous,
+      );
+    const commercialProfile = request.commercialProfile
+      ? { ...request.commercialProfile }
+      : undefined;
+    if (commercialProfile) {
+      delete commercialProfile.recommendedPlan;
+      if (containsUnrequestedScheduling) {
+        delete commercialProfile.requestedContactTime;
+        if (
+          commercialProfile.contactPreference === 'CALL' ||
+          commercialProfile.contactPreference === 'VIDEO_CALL'
+        ) {
+          delete commercialProfile.contactPreference;
+        }
+      }
+    }
+
+    this.logger.warn(
+      JSON.stringify({
+        event: 'hermes_conversation_repaired',
+        conversationId: request.conversationId,
+        correlationId: request.correlationId,
+        reason: containsUnrequestedScheduling
+          ? 'CONFUSION_AFTER_SCHEDULING'
+          : 'CUSTOMER_REQUESTED_CLARIFICATION',
+      }),
+    );
+    return {
+      response: containsUnrequestedScheduling
+        ? `Disculpe la confusión. No es necesario agendar una llamada; podemos continuar por este mismo chat con la información de ${/\b(?:pagina|sitio|web)\b/.test(this.normalizeSearch(request.commercialProfile?.service || '')) ? 'su sitio web' : 'su proyecto'}.`
+        : 'Disculpe la confusión. ¿Qué parte del mensaje desea que le aclare?',
+      detectedIntent: 'info_general',
+      nextAction: 'continuar_descubrimiento',
+      tokensUsed: 0,
+      costEstimate: 0,
+      ...(commercialProfile ? { commercialProfile } : {}),
+    };
+  }
+
   private applyDeterministicConstraints(
     response: ParsedHermesResponse,
     request: HermesRequestDto,
   ): ParsedHermesResponse {
+    if (this.isGenericFirstContactInquiry(request)) {
+      response.response = this.naturalOpening(request);
+      response.detectedIntent = 'info_general';
+      response.nextAction = 'continuar_descubrimiento';
+      return response;
+    }
     if (
       request.contact?.hasUsablePhone &&
-      /(?:confirma|indica|comparte|facilita|dame).{0,35}(?:número|numero|teléfono|telefono|whatsapp)/i.test(
+      /(?:confirma|confirmar|indica|indicar|comparte|compartir|facilita|facilitar|proporciona|proporcionar|dame).{0,45}(?:número|numero|teléfono|telefono|whatsapp)/i.test(
         response.response,
       )
     ) {
-      response.response =
-        'Podemos usar este mismo número de WhatsApp para continuar. ¿Qué horario le viene bien?';
-      response.detectedIntent = 'agendar_cita';
-      response.nextAction = 'solicitar_confirmacion_reunion';
+      const withoutRequest = response.response
+        .replace(
+          /¿?[^.!?¿]*(?:confirma|confirmar|indica|indicar|comparte|compartir|facilita|facilitar|proporciona|proporcionar|dame).{0,45}(?:número|numero|teléfono|telefono|whatsapp)[^.!?]*[?]?/giu,
+          '',
+        )
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+      response.response = withoutRequest
+        ? `${withoutRequest} Podemos continuar por este mismo chat.`
+        : 'Podemos continuar por este mismo chat.';
     }
     return response;
+  }
+
+  private isGenericFirstContactInquiry(request: HermesRequestDto): boolean {
+    if (request.conversationHistory.length > 0) return false;
+    const message = this.normalizeSearch(request.messageContent);
+    const asksForGeneralInformation =
+      /\b(?:informacion|informarme|conocer mas|saber mas)\b/.test(message) &&
+      /\b(?:servicios?|undercodeec)\b/.test(message);
+    const namesConcreteService =
+      /\b(?:pagina|sitio|web|landing|tienda|ecommerce|comercio electronico|aplicacion|app|software|sistema|automatizacion|chatbot)\b/.test(
+        message,
+      );
+    return asksForGeneralInformation && !namesConcreteService;
+  }
+
+  private naturalOpening(request: HermesRequestDto): string {
+    const message = this.normalizeSearch(request.messageContent);
+    const greeting = message.startsWith('buenas noches')
+      ? 'Buenas noches'
+      : message.startsWith('buenas tardes')
+        ? 'Buenas tardes'
+        : message.startsWith('buenos dias')
+          ? 'Buenos días'
+          : 'Hola';
+    const firstName = request.contactName
+      ?.trim()
+      .match(/[\p{L}\p{M}'-]+/u)?.[0];
+    const usableName =
+      firstName && this.normalizeSearch(firstName) !== 'undercodeec'
+        ? firstName
+        : undefined;
+    return `${greeting}${usableName ? `, ${usableName}` : ''}. ¿En qué podemos ayudarle?`;
   }
 
   private parseShortText(

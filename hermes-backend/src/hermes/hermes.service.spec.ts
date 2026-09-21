@@ -173,8 +173,53 @@ describe('HermesService commercial contract', () => {
       contact: { id: 'contact-1', hasUsablePhone: true, hasEmail: false },
     });
 
-    expect(result.response).toContain('este mismo número de WhatsApp');
-    expect(result.response).not.toMatch(/confirmar tu número/i);
+    expect(result.response).toBe('Podemos continuar por este mismo chat.');
+    expect(result.response).not.toMatch(/confirmar.*número|horario/i);
+  });
+
+  it('does not turn a redundant WhatsApp request into an unsolicited call', async () => {
+    const { service } = setup(
+      JSON.stringify({
+        response:
+          'Podemos preparar una web para mostrar sus arreglos. ¿Puede compartir su número de WhatsApp?',
+        detectedIntent: 'consulta_servicio',
+        suggestedTags: [],
+        nextAction: 'continuar_descubrimiento',
+        commercialProfile: {
+          service: 'Sitio web',
+          sector: 'Floristería',
+          need: 'Mostrar arreglos florales',
+        },
+      }),
+    );
+
+    const result = await service.generateResponse({
+      contactName: 'Christopher',
+      messageContent: 'Mostrar mis arreglos florales',
+      conversationHistory: [],
+      contact: { id: 'contact-1', hasUsablePhone: true, hasEmail: false },
+      conversationGuidance: {
+        currentTopic: 'general',
+        directAnswerRequired: false,
+        allowDiscoveryQuestion: false,
+        topicShift: false,
+        recentQuestionTopics: [],
+        sufficientContext: true,
+        allowMeetingOffer: false,
+        allowPlanRecommendation: true,
+        allowPriceAnswer: false,
+        priceAnswerRequired: false,
+        allowPlanDetails: false,
+        offerWebAlternatives: false,
+      },
+    });
+
+    expect(result.response).toBe(
+      'Podemos preparar una web para mostrar sus arreglos. Podemos continuar por este mismo chat.',
+    );
+    expect(result.response).not.toMatch(/horario|llamada|reunión/i);
+    expect(result.detectedIntent).toBe('consulta_servicio');
+    expect(result.nextAction).toBe('continuar_descubrimiento');
   });
 
   it('adds the store plans to context and keeps ecommerce discovery facts', async () => {
@@ -317,8 +362,7 @@ describe('HermesService commercial contract', () => {
   it('formalizes a simple accidental tuteo locally without another provider call', async () => {
     const { service, post } = setup(
       JSON.stringify({
-        response:
-          'Te explico las dos opciones publicadas para tu sitio web.',
+        response: 'Te explico las dos opciones publicadas para tu sitio web.',
         detectedIntent: 'consulta_servicio',
         suggestedTags: [],
         nextAction: 'sin_accion',
@@ -354,7 +398,9 @@ describe('HermesService commercial contract', () => {
     });
 
     expect(post).toHaveBeenCalledTimes(2);
-    expect(result.response).not.toMatch(/puedes|quieres|inconveniente temporal/i);
+    expect(result.response).not.toMatch(
+      /puedes|quieres|inconveniente temporal/i,
+    );
     expect(result.response).toMatch(/usted|su solicitud|su proyecto/i);
     expect(result.commercialProfile).toEqual({ service: 'sitio web' });
   });
@@ -405,7 +451,8 @@ describe('HermesService commercial contract', () => {
     });
     const { service } = setup([invalid, invalid]);
 
-    const messageContent = '¿Cuál es la dirección física exacta de UnderCodeEC?';
+    const messageContent =
+      '¿Cuál es la dirección física exacta de UnderCodeEC?';
     const policy = new CommercialPolicyService().analyze(
       messageContent,
       new Date('2026-09-20T18:00:00.000Z'),
@@ -837,6 +884,127 @@ describe('HermesService commercial contract', () => {
 
     expect(post).toHaveBeenCalledTimes(1);
     expect(result.response).toBe('Buenos días. ¿En qué podemos ayudarle?');
+  });
+
+  it('turns a generic first-contact service inquiry into a natural opening', async () => {
+    const genericReply = JSON.stringify({
+      response:
+        'Hola, con gusto le ayudo. En UnderCodeEC desarrollamos páginas y sitios web, aplicaciones móviles y software a medida. ¿Qué tipo de proyecto o solución tiene en mente?',
+      detectedIntent: 'info_general',
+      suggestedTags: [],
+      nextAction: 'continuar_descubrimiento',
+      commercialProfile: {},
+    });
+    const { service } = setup(genericReply);
+
+    const result = await service.generateResponse({
+      contactName: 'Christopher',
+      messageContent:
+        'Hola, quisiera obtener información sobre los servicios de UnderCodeEC.',
+      conversationHistory: [],
+    });
+
+    expect(result.response).toBe(
+      'Hola, Christopher. ¿En qué podemos ayudarle?',
+    );
+  });
+
+  it('keeps a direct answer when the first contact names a concrete service', async () => {
+    const directReply = JSON.stringify({
+      response:
+        'Con gusto le ayudamos con su sitio web. ¿A qué se dedica su negocio?',
+      detectedIntent: 'consulta_servicio',
+      suggestedTags: [],
+      nextAction: 'continuar_descubrimiento',
+      commercialProfile: { service: 'Sitio web' },
+    });
+    const { service } = setup(directReply);
+
+    const result = await service.generateResponse({
+      contactName: 'Christopher',
+      messageContent: 'Hola, quisiera información sobre una página web.',
+      conversationHistory: [],
+    });
+
+    expect(result.response).toBe(
+      'Con gusto le ayudamos con su sitio web. ¿A qué se dedica su negocio?',
+    );
+  });
+
+  it('removes an internal sector label leaked into the customer reply', async () => {
+    const { service } = setup(
+      JSON.stringify({
+        response:
+          'Sector. Su objetivo principal es vender ramos directamente en la web o mostrar su catálogo y recibir consultas por WhatsApp?',
+        detectedIntent: 'consulta_servicio',
+        suggestedTags: [],
+        nextAction: 'continuar_descubrimiento',
+        commercialProfile: {
+          service: 'sitio web',
+          sector: 'floristería',
+        },
+      }),
+    );
+
+    const result = await service.generateResponse({
+      contactName: 'Christopher',
+      messageContent: 'Es una floristería',
+      conversationHistory: [
+        { role: 'user', content: 'Busco un sitio web, ¿me podría ayudar?' },
+        {
+          role: 'assistant',
+          content:
+            'Con gusto le ayudamos con su sitio web. ¿A qué se dedica su negocio?',
+        },
+      ],
+    });
+
+    expect(result.response).toBe(
+      '¿Su objetivo principal es vender ramos directamente en la web o mostrar su catálogo y recibir consultas por WhatsApp?',
+    );
+  });
+
+  it('repairs the conversation instead of recommending a plan after a confused question mark', async () => {
+    const { service, post } = setup(
+      JSON.stringify({
+        response:
+          'Para mostrar sus arreglos florales, la opción adecuada es nuestro Plan de Lanzamiento.',
+        detectedIntent: 'consulta_servicio',
+        suggestedTags: [],
+        nextAction: 'sin_accion',
+        commercialProfile: {
+          service: 'sitio web',
+          sector: 'floristería',
+          need: 'mostrar arreglos florales',
+          recommendedPlan: 'Plan de Lanzamiento',
+        },
+      }),
+    );
+
+    const result = await service.generateResponse({
+      contactName: 'Christopher',
+      messageContent: '?',
+      conversationHistory: [
+        { role: 'user', content: 'Mostrar mis arreglos florales' },
+        {
+          role: 'assistant',
+          content:
+            'Podemos usar este mismo número de WhatsApp para continuar. ¿Qué horario le viene bien?',
+        },
+      ],
+      commercialProfile: {
+        service: 'sitio web',
+        sector: 'floristería',
+        need: 'mostrar arreglos florales',
+      },
+    });
+
+    expect(result.response).toBe(
+      'Disculpe la confusión. No es necesario agendar una llamada; podemos continuar por este mismo chat con la información de su sitio web.',
+    );
+    expect(result.response).not.toMatch(/plan de lanzamiento|horario/i);
+    expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
+    expect(post).not.toHaveBeenCalled();
   });
 
   it('repairs missing opening question marks and joins a continued question with a comma', async () => {

@@ -69,7 +69,10 @@ export class CommercialPolicyService {
       ? new Date(receivedAt.getTime() + relativeMinutes * 60_000)
       : undefined;
     const paymentContext = this.paymentContext(normalized);
-    const currentTopic = this.currentTopic(normalized, paymentContext);
+    const clarificationRequest = this.isClarificationRequest(normalized);
+    const currentTopic = clarificationRequest
+      ? 'clarification'
+      : this.currentTopic(normalized, paymentContext);
     const recentQuestionTopics = this.recentQuestionTopics(
       context.conversationHistory || [],
     );
@@ -84,6 +87,7 @@ export class CommercialPolicyService {
       'technical_explanation',
       'plan_details',
       'business_location',
+      'clarification',
     ].includes(currentTopic);
     const topicShift = Boolean(
       previousQuestionTopic &&
@@ -139,6 +143,7 @@ export class CommercialPolicyService {
       context.conversationHistory || [],
     );
     const allowPlanRecommendation =
+      !clarificationRequest &&
       !requiredClarification &&
       (Boolean(interestedPlan) ||
         this.hasPlanRecommendationBasis(
@@ -147,8 +152,9 @@ export class CommercialPolicyService {
           context.commercialProfile,
           sufficientContext,
         ));
-    const allowPlanDetails = Boolean(interestedPlan);
+    const allowPlanDetails = !clarificationRequest && Boolean(interestedPlan);
     const offerWebAlternatives =
+      !clarificationRequest &&
       !interestedPlan &&
       /\b(?:sitio web|pagina web|desarrollo web|presencia (?:web|en internet))\b/.test(
         commercialScope,
@@ -157,6 +163,7 @@ export class CommercialPolicyService {
         commercialScope,
       );
     const allowDiscoveryQuestion =
+      !clarificationRequest &&
       !requestsHuman &&
       !(requestsCall || hasRelativeCallTime) &&
       !directAnswerRequired &&
@@ -536,6 +543,18 @@ export class CommercialPolicyService {
     if (/\b(?:catalogo|ver|mostrar)\b.{0,35}\bproductos?\b/.test(value))
       return 'store_goal';
     return 'general';
+  }
+
+  private isClarificationRequest(value: string): boolean {
+    return (
+      /^[?¿!¡.\s]+$/.test(value) ||
+      /^(?:no entend[íi]|no comprendo|c[oó]mo|qu[eé]|perd[oó]n)(?:[?¿!¡.\s]+)?$/.test(
+        value,
+      ) ||
+      /\b(?:no entiendo|no comprendo|que quiere decir|eso que tiene que ver)\b/.test(
+        value,
+      )
+    );
   }
 
   private recentQuestionTopics(

@@ -95,6 +95,25 @@ export class WebhookService {
       return;
     }
 
+    const values = dto.entry.flatMap((entry) =>
+      entry.changes.map((change) => change.value),
+    );
+    const messageIds = values
+      .flatMap((value) => value.messages || [])
+      .map((message) => message.id);
+    this.logger.log(
+      JSON.stringify({
+        event: 'meta_webhook_received',
+        entries: dto.entry.length,
+        messages: messageIds.length,
+        statuses: values.reduce(
+          (count, value) => count + (value.statuses?.length || 0),
+          0,
+        ),
+        messageIds,
+      }),
+    );
+
     for (const entry of dto.entry) {
       for (const change of entry.changes) {
         if (change.field !== 'messages') continue;

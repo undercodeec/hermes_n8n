@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
 import { ConversationStatus, HandoffReason } from '@prisma/client';
@@ -14,6 +15,40 @@ import { AdvertisingService } from '../advertising/advertising.service';
 import { ConversationEventsService } from '../conversations/conversation-events.service';
 
 describe('WebhookService campaign replies', () => {
+  it('records every accepted Meta webhook before processing its entries', async () => {
+    const service = new WebhookService(
+      { get: jest.fn() } as unknown as ConfigService,
+      {} as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      {} as CampaignsService,
+      {} as AutoReplyService,
+      {} as ConversationGuardService,
+      {} as AdvertisingService,
+      {} as ConversationEventsService,
+    );
+    const log = jest.spyOn(
+      (service as unknown as { logger: Logger }).logger,
+      'log',
+    );
+
+    await service.processWebhook({
+      object: 'whatsapp_business_account',
+      entry: [],
+    });
+
+    const event = JSON.parse(log.mock.calls[0][0] as string);
+    expect(event).toEqual({
+      event: 'meta_webhook_received',
+      entries: 0,
+      messages: 0,
+      statuses: 0,
+      messageIds: [],
+    });
+  });
+
   it('accepts only a valid Meta HMAC signature', () => {
     const secret = 'test-meta-secret';
     const payload = Buffer.from('{"object":"whatsapp_business_account"}');

@@ -42,4 +42,38 @@ describe('MetaService typing indicator', () => {
       service.showTypingIndicator('wamid.inbound'),
     ).resolves.toBeUndefined();
   });
+
+  it('rejects a text send when Meta does not accept the request', async () => {
+    const service = new MetaService({
+      get: jest.fn((_key: string, fallback?: string) => fallback),
+    } as unknown as ConfigService);
+    const post = jest.fn().mockRejectedValue(new Error('Meta unavailable'));
+    const client = (service as unknown as { httpClient: { post: typeof post } })
+      .httpClient;
+    client.post = post;
+
+    await expect(
+      service.sendTextMessage('593991234567', 'Mensaje de prueba'),
+    ).rejects.toThrow('Meta no pudo enviar el mensaje');
+  });
+
+  it('rejects a text send when Meta omits the outbound wamid', async () => {
+    const service = new MetaService({
+      get: jest.fn((_key: string, fallback?: string) => fallback),
+    } as unknown as ConfigService);
+    const post = jest.fn().mockResolvedValue({
+      data: {
+        messaging_product: 'whatsapp',
+        contacts: [{ input: '593991234567', wa_id: '593991234567' }],
+        messages: [],
+      },
+    });
+    const client = (service as unknown as { httpClient: { post: typeof post } })
+      .httpClient;
+    client.post = post;
+
+    await expect(
+      service.sendTextMessage('593991234567', 'Mensaje de prueba'),
+    ).rejects.toThrow('Meta no confirmó el envío del mensaje');
+  });
 });

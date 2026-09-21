@@ -71,10 +71,8 @@ export class MetaService {
     return this.wabaId;
   }
 
-  async sendTextMessage(
-    to: string,
-    text: string,
-  ): Promise<MetaSendResponse | null> {
+  async sendTextMessage(to: string, text: string): Promise<MetaSendResponse> {
+    let data: MetaSendResponse;
     try {
       const response = await this.httpClient.post<MetaSendResponse>(
         '/messages',
@@ -86,17 +84,23 @@ export class MetaService {
           text: { body: text },
         },
       );
-      this.logger.log(
-        `Mensaje enviado; wamid: ${response.data.messages?.[0]?.id}`,
-      );
-      return response.data;
+      data = response.data;
     } catch (error) {
       const safe = this.toSafeError(error);
       this.logger.error(
         `Error enviando mensaje: ${safe.code || 'META_ERROR'} ${safe.message}`,
       );
-      return null;
+      throw new ServiceUnavailableException('Meta no pudo enviar el mensaje');
     }
+    const wamid = data.messages?.[0]?.id;
+    if (!wamid) {
+      this.logger.error('Meta no confirmó el envío: respuesta sin wamid');
+      throw new ServiceUnavailableException(
+        'Meta no confirmó el envío del mensaje',
+      );
+    }
+    this.logger.log(`Mensaje enviado; wamid: ${wamid}`);
+    return data;
   }
 
   async getApprovedMessageTemplates(): Promise<MetaTemplate[]> {

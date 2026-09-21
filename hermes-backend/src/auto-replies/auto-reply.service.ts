@@ -1,5 +1,9 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ConversationStatus,
@@ -12,7 +16,7 @@ import {
 } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { HermesService } from '../hermes/hermes.service';
-import { MetaService } from '../meta/meta.service';
+import { MetaSendResponse, MetaService } from '../meta/meta.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { LeadsService } from '../leads/leads.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -77,19 +81,28 @@ export class AutoReplyService {
         contactId: true,
       },
     });
-    if (!inbound || inbound.conversationId !== data.conversationId) return;
+    if (!inbound || inbound.conversationId !== data.conversationId) {
+      this.logSkip(data, 'INBOUND_NOT_FOUND_OR_MISMATCH');
+      return;
+    }
 
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: data.conversationId },
       include: { contact: true },
     });
     if (!conversation || conversation.status !== ConversationStatus.ACTIVE) {
+      this.logSkip(data, 'CONVERSATION_NOT_ACTIVE', {
+        status: conversation?.status ?? 'NOT_FOUND',
+      });
       return;
     }
 
     // Si el cliente escribió de nuevo durante la pausa, el job más reciente
     // contestará con todo el contexto y este se descarta para no fragmentar el chat.
-    if (await this.hasNewerInbound(data.conversationId, inbound)) return;
+    if (await this.hasNewerInbound(data.conversationId, inbound)) {
+      this.logSkip(data, 'NEWER_INBOUND');
+      return;
+    }
 
     const context = await this.buildConversationContext(
       data.contactId,
@@ -178,9 +191,7 @@ export class AutoReplyService {
     }
 
     if (!(await this.conversationGuard.consumeAiQuota(data.contactId))) {
-      this.logger.warn(
-        `Respuesta automática omitida por cuota de IA en conversación ${data.conversationId}`,
-      );
+      this.logSkip(data, 'AI_QUOTA_EXCEEDED');
       return;
     }
 
@@ -227,8 +238,9 @@ export class AutoReplyService {
       this.commercialPolicy.enforceResponsePolicy(response, policy),
     );
 
-    const outputDecision =
-      this.conversationGuard.inspectGeneratedResponse(response.response);
+    const outputDecision = this.conversationGuard.inspectGeneratedResponse(
+      response.response,
+    );
     if (outputDecision.action === 'BLOCK') {
       this.logger.error(
         `Respuesta de Gemini bloqueada por ${outputDecision.reason} en conversación ${data.conversationId}`,
@@ -285,9 +297,10 @@ export class AutoReplyService {
             summary: response.diagnostic.summary,
           });
           reviewTaskId = reviewTask.id;
-          response.response = ['PROVIDER_ERROR', 'INVALID_PROVIDER_RESPONSE'].includes(
-            response.diagnostic.category,
-          )
+          response.response = [
+            'PROVIDER_ERROR',
+            'INVALID_PROVIDER_RESPONSE',
+          ].includes(response.diagnostic.category)
             ? 'Disculpe, no pude completar la respuesta en este momento. Ya dejé registrado el caso para revisarlo y continuar por este mismo chat.'
             : 'Permítame consultar este punto con el equipo. Le confirmaremos por este mismo chat.';
         } catch (error) {
@@ -316,9 +329,15 @@ export class AutoReplyService {
     });
     if (
       !currentConversation ||
-      currentConversation.status !== ConversationStatus.ACTIVE ||
-      (await this.hasNewerInbound(data.conversationId, inbound))
+      currentConversation.status !== ConversationStatus.ACTIVE
     ) {
+      this.logSkip(data, 'CONVERSATION_CHANGED_DURING_GENERATION', {
+        status: currentConversation?.status ?? 'NOT_FOUND',
+      });
+      return;
+    }
+    if (await this.hasNewerInbound(data.conversationId, inbound)) {
+      this.logSkip(data, 'NEWER_INBOUND_DURING_GENERATION');
       return;
     }
 
@@ -384,6 +403,7 @@ export class AutoReplyService {
           : [ConversationStatus.ACTIVE],
       ))
     ) {
+      this.logSkip(data, 'CONVERSATION_STATUS_REJECTED_BEFORE_SEND');
       return;
     }
     const messageParts = splitWhatsAppMessage(
@@ -406,6 +426,10 @@ export class AutoReplyService {
           !canContinue ||
           (await this.hasNewerInbound(data.conversationId, inbound))
         ) {
+          this.logSkip(data, 'MULTIPART_DELIVERY_INTERRUPTED', {
+            sentParts,
+            nextPart: index + 1,
+          });
           break;
         }
       }
@@ -413,6 +437,7 @@ export class AutoReplyService {
         conversation.contact.waId,
         content,
       );
+      const outboundWamid = this.confirmedWamid(sentMessage);
       const partLatencyMs = Date.now() - startedAt;
       await this.prisma.message.create({
         data: {
@@ -422,7 +447,7 @@ export class AutoReplyService {
           sender: MessageSender.HERMES,
           type: MessageType.TEXT,
           content,
-          wamid: sentMessage?.messages?.[0]?.id,
+          wamid: outboundWamid,
           tokensUsed: index === 0 ? response.tokensUsed : 0,
           latencyMs: partLatencyMs,
           costEstimate: index === 0 ? response.costEstimate : 0,
@@ -430,7 +455,7 @@ export class AutoReplyService {
             ? {
                 metadata: {
                   hermesIncident: incident,
-                } as Prisma.InputJsonValue,
+                },
               }
             : {}),
         },
@@ -672,7 +697,7 @@ export class AutoReplyService {
         metadata: {
           ...existing,
           lastHermesIncident: incident,
-        } as Prisma.InputJsonValue,
+        },
       },
     });
   }
@@ -696,6 +721,7 @@ export class AutoReplyService {
     }
     await this.showTypingIndicator(params.inboundWamid);
     const sent = await this.meta.sendTextMessage(params.waId, params.content);
+    const outboundWamid = this.confirmedWamid(sent);
     await this.prisma.message.create({
       data: {
         conversationId: params.conversationId,
@@ -704,7 +730,7 @@ export class AutoReplyService {
         sender: MessageSender.SYSTEM,
         type: MessageType.TEXT,
         content: params.content,
-        wamid: sent?.messages?.[0]?.id,
+        wamid: outboundWamid,
         metadata: params.metadata as Prisma.InputJsonValue,
       },
     });
@@ -723,6 +749,34 @@ export class AutoReplyService {
       select: { status: true },
     });
     return Boolean(current && allowedStatuses.includes(current.status));
+  }
+
+  private confirmedWamid(
+    response: MetaSendResponse | null | undefined,
+  ): string {
+    const wamid = response?.messages?.[0]?.id;
+    if (!wamid) {
+      throw new ServiceUnavailableException(
+        'Meta no confirmó el envío del mensaje',
+      );
+    }
+    return wamid;
+  }
+
+  private logSkip(
+    data: AutoReplyJobData,
+    reason: string,
+    details: Record<string, unknown> = {},
+  ): void {
+    this.logger.warn(
+      JSON.stringify({
+        event: 'auto_reply_skipped',
+        reason,
+        conversationId: data.conversationId,
+        correlationId: data.inboundMessageId,
+        ...details,
+      }),
+    );
   }
 
   private async showTypingIndicator(

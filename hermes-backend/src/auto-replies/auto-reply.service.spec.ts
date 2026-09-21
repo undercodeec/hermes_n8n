@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { ConversationStatus, MessageDirection } from '@prisma/client';
 import { Queue } from 'bullmq';
@@ -36,6 +37,7 @@ describe('AutoReplyService', () => {
       qualifyFromConversation: jest.Mock;
     };
     handoffs: { create: jest.Mock };
+    guard: { consumeAiQuota: jest.Mock; inspectGeneratedResponse: jest.Mock };
     messageCreate: jest.Mock;
     conversationUpdate: jest.Mock;
   } {
@@ -53,9 +55,11 @@ describe('AutoReplyService', () => {
     const prisma = {
       message: {
         findUnique: jest.fn().mockResolvedValue(inbound),
-        findMany: jest.fn().mockImplementation(async (args) =>
-          args.where?.NOT ? [] : [inbound],
-        ),
+        findMany: jest
+          .fn()
+          .mockImplementation(async (args) =>
+            args.where?.NOT ? [] : [inbound],
+          ),
         create: messageCreate,
       },
       conversation: {
@@ -136,6 +140,7 @@ describe('AutoReplyService', () => {
       tasks,
       leads,
       handoffs,
+      guard,
       messageCreate,
       conversationUpdate,
     };
@@ -184,7 +189,8 @@ describe('AutoReplyService', () => {
         'Ya dejé registrado el caso para revisarlo y continuar por este mismo chat',
       ),
     );
-    const customerCopy = harness.meta.sendTextMessage.mock.calls[0][1] as string;
+    const customerCopy = harness.meta.sendTextMessage.mock
+      .calls[0][1] as string;
     expect(customerCopy).not.toMatch(/HTTP 503|HERMES_PROVIDER_UNAVAILABLE/);
     expect(harness.messageCreate).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -243,6 +249,60 @@ describe('AutoReplyService', () => {
         'Permítame consultar este punto con el equipo. Le confirmaremos por este mismo chat',
       ),
     );
+  });
+
+  it('does not persist an outbound reply when Meta returns no wamid', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: {
+        response: 'Podemos ayudarle con su sitio web.',
+        detectedIntent: 'consulta_servicio',
+        nextAction: 'continuar_descubrimiento',
+      },
+    });
+    harness.meta.sendTextMessage.mockResolvedValue(null);
+
+    await expect(
+      harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      }),
+    ).rejects.toThrow('Meta no confirmó el envío del mensaje');
+
+    expect(harness.messageCreate).not.toHaveBeenCalled();
+    expect(harness.conversationUpdate).not.toHaveBeenCalled();
+  });
+
+  it('records when an automatic reply is skipped by the AI quota', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: {
+        response: 'Podemos ayudarle con su sitio web.',
+        detectedIntent: 'consulta_servicio',
+        nextAction: 'continuar_descubrimiento',
+      },
+    });
+    harness.guard.consumeAiQuota.mockResolvedValue(false);
+    const warn = jest.spyOn(
+      (harness.service as unknown as { logger: Logger }).logger,
+      'warn',
+    );
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+
+    const event = JSON.parse(warn.mock.calls.at(-1)?.[0] as string);
+    expect(event).toEqual(
+      expect.objectContaining({
+        event: 'auto_reply_skipped',
+        reason: 'AI_QUOTA_EXCEEDED',
+        conversationId: 'conversation-1',
+        correlationId: 'inbound-recovery',
+      }),
+    );
+    expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
   });
 
   it('backs an accepted follow-up promise with a review task before sending', async () => {
@@ -343,7 +403,11 @@ describe('AutoReplyService', () => {
     );
     expect(harness.conversationUpdate.mock.calls).not.toEqual(
       expect.arrayContaining([
-        [expect.objectContaining({ data: expect.objectContaining({ status: expect.anything() }) })],
+        [
+          expect.objectContaining({
+            data: expect.objectContaining({ status: expect.anything() }),
+          }),
+        ],
       ]),
     );
   });
@@ -603,6 +667,10 @@ describe('AutoReplyService', () => {
       { consumeAiQuota: jest.fn() } as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
     );
+    const warn = jest.spyOn(
+      (service as unknown as { logger: Logger }).logger,
+      'warn',
+    );
 
     await service.process({
       conversationId: 'conversation-1',
@@ -612,6 +680,14 @@ describe('AutoReplyService', () => {
 
     expect(hermes.generateResponse).not.toHaveBeenCalled();
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(JSON.parse(warn.mock.calls[0][0] as string)).toEqual(
+      expect.objectContaining({
+        event: 'auto_reply_skipped',
+        reason: 'NEWER_INBOUND',
+        conversationId: 'conversation-1',
+        correlationId: 'inbound-1',
+      }),
+    );
   });
 
   it('does not answer a queued job after the conversation was closed', async () => {
@@ -648,6 +724,10 @@ describe('AutoReplyService', () => {
       {} as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
     );
+    const warn = jest.spyOn(
+      (service as unknown as { logger: Logger }).logger,
+      'warn',
+    );
 
     await service.process({
       conversationId: 'conversation-1',
@@ -657,6 +737,13 @@ describe('AutoReplyService', () => {
 
     expect(hermes.generateResponse).not.toHaveBeenCalled();
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(JSON.parse(warn.mock.calls[0][0] as string)).toEqual(
+      expect.objectContaining({
+        event: 'auto_reply_skipped',
+        reason: 'CONVERSATION_NOT_ACTIVE',
+        status: ConversationStatus.CLOSED,
+      }),
+    );
   });
 
   it('creates a pending callback task and reuses the WhatsApp number', async () => {
@@ -912,7 +999,9 @@ describe('AutoReplyService', () => {
       new CommercialPolicyService(),
       {
         consumeAiQuota: jest.fn().mockResolvedValue(true),
-        inspectGeneratedResponse: jest.fn().mockReturnValue({ action: 'ALLOW' }),
+        inspectGeneratedResponse: jest
+          .fn()
+          .mockReturnValue({ action: 'ALLOW' }),
       } as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
     );
@@ -1026,7 +1115,9 @@ describe('AutoReplyService', () => {
       new CommercialPolicyService(),
       {
         consumeAiQuota: jest.fn().mockResolvedValue(true),
-        inspectGeneratedResponse: jest.fn().mockReturnValue({ action: 'ALLOW' }),
+        inspectGeneratedResponse: jest
+          .fn()
+          .mockReturnValue({ action: 'ALLOW' }),
       } as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
     );

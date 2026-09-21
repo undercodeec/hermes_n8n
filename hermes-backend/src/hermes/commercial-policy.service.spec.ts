@@ -40,19 +40,24 @@ describe('CommercialPolicyService', () => {
   it.each(sectorCases)(
     '%s receives the same decision for equivalent evidence',
     (sector, _solution) => {
-      const decision = service.analyze(`Mi negocio es ${sector}`, receivedAt, [], {
-        conversationHistory: [
-          {
-            role: 'user',
-            content: 'Necesito una presencia web para promocionarme',
+      const decision = service.analyze(
+        `Mi negocio es ${sector}`,
+        receivedAt,
+        [],
+        {
+          conversationHistory: [
+            {
+              role: 'user',
+              content: 'Necesito una presencia web para promocionarme',
+            },
+            { role: 'assistant', content: '¿A qué se dedica su negocio?' },
+          ],
+          commercialProfile: {
+            service: 'sitio web',
+            need: 'promocionar servicios o productos',
           },
-          { role: 'assistant', content: '¿A qué se dedica su negocio?' },
-        ],
-        commercialProfile: {
-          service: 'sitio web',
-          need: 'promocionar servicios o productos',
         },
-      });
+      );
       expect(decision.guidance.sufficientContext).toBe(true);
       expect(decision.guidance.allowDiscoveryQuestion).toBe(false);
     },
@@ -113,6 +118,34 @@ describe('CommercialPolicyService', () => {
     }
   });
 
+  it('treats a lone question mark as confusion instead of permission to recommend a plan', () => {
+    const decision = service.analyze('?', receivedAt, [], {
+      conversationHistory: [
+        { role: 'user', content: 'Mostrar mis arreglos florales' },
+        {
+          role: 'assistant',
+          content:
+            'Podemos usar este mismo número de WhatsApp para continuar. ¿Qué horario le viene bien?',
+        },
+      ],
+      commercialProfile: {
+        service: 'sitio web',
+        sector: 'floristería',
+        need: 'mostrar arreglos florales',
+      },
+    });
+
+    expect(decision.guidance).toEqual(
+      expect.objectContaining({
+        currentTopic: 'clarification',
+        directAnswerRequired: true,
+        allowDiscoveryQuestion: false,
+        allowMeetingOffer: false,
+        allowPlanRecommendation: false,
+      }),
+    );
+  });
+
   it('classifies an exact UnderCodeEC address request as organization location', () => {
     const decision = service.analyze(
       '¿Cuál es la dirección física exacta de UnderCodeEC?',
@@ -155,9 +188,9 @@ describe('CommercialPolicyService', () => {
         decision,
       ).response;
 
-    expect(enforce('Podemos coordinar una reunión con el equipo.')).not.toContain(
-      'reunión',
-    );
+    expect(
+      enforce('Podemos coordinar una reunión con el equipo.'),
+    ).not.toContain('reunión');
     expect(
       enforce(
         'La solución cubre el alcance. Podemos coordinar una reunión con el equipo.',
@@ -265,9 +298,7 @@ describe('CommercialPolicyService', () => {
       normalizeCommonSpanishTypos(
         'nesesito conocer el presio de un sitio wep para mi restorante',
       ),
-    ).toBe(
-      'necesito conocer el precio de un sitio web para mi restaurante',
-    );
+    ).toBe('necesito conocer el precio de un sitio web para mi restaurante');
   });
 
   it('normalizes diacritics before recognizing a substantive business answer', () => {
