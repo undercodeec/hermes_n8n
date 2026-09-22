@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateProductDto } from './dto/create-product.dto';
 import { UpdateProductDto } from './dto/update-product.dto';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class ProductsService {
@@ -13,7 +14,7 @@ export class ProductsService {
 
   async findAll(page = 1, limit = 20, category?: string, activeOnly = true) {
     const skip = (page - 1) * limit;
-    const where: any = {};
+    const where: Prisma.ProductWhereInput = {};
     if (category) where.category = category;
     if (activeOnly) where.isActive = true;
 

@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateDocumentDto } from './dto/create-document.dto';
 import { UpdateDocumentDto } from './dto/update-document.dto';
-import { DocumentType } from '@prisma/client';
+import { DocumentType, Prisma } from '@prisma/client';
 
 @Injectable()
 export class KnowledgeService {
@@ -14,7 +14,7 @@ export class KnowledgeService {
 
   async findAll(page = 1, limit = 20, type?: DocumentType, activeOnly = true) {
     const skip = (page - 1) * limit;
-    const where: any = {};
+    const where: Prisma.KnowledgeDocumentWhereInput = {};
     if (type) where.type = type;
     if (activeOnly) where.isActive = true;
 
@@ -42,7 +42,7 @@ export class KnowledgeService {
   async update(id: string, dto: UpdateDocumentDto) {
     const doc = await this.findOne(id);
     // Incrementar versión si se actualiza contenido
-    const data: any = { ...dto };
+    const data: Prisma.KnowledgeDocumentUpdateInput = { ...dto };
     if (dto.content && dto.content !== doc.content) {
       data.version = doc.version + 1;
     }
@@ -58,7 +58,7 @@ export class KnowledgeService {
    * Búsqueda simple por contenido (para futuro reemplazo con embeddings)
    */
   async search(query: string, type?: DocumentType) {
-    const where: any = {
+    const where: Prisma.KnowledgeDocumentWhereInput = {
       isActive: true,
       OR: [
         { title: { contains: query, mode: 'insensitive' } },

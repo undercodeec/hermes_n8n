@@ -6,6 +6,12 @@ import { AuthService } from './auth.service';
 const secret = 'a-shared-secret-with-at-least-thirty-two-characters';
 const now = Math.floor(Date.now() / 1000);
 
+type UpsertArgs = {
+  where: { email: string };
+  create: { role: UserRole };
+  update: { role: UserRole; isActive: boolean };
+};
+
 function proof(overrides: Record<string, unknown> = {}) {
   const header = Buffer.from(
     JSON.stringify({ alg: 'HS256', typ: 'JWT' }),
@@ -29,7 +35,16 @@ function proof(overrides: Record<string, unknown> = {}) {
 }
 
 describe('AuthService CRM proof', () => {
-  const upsert = jest.fn();
+  let capturedUpsertArgs: UpsertArgs | undefined;
+  const upsert = jest.fn((args: UpsertArgs) => {
+    capturedUpsertArgs = args;
+    return Promise.resolve({
+      id: 'operator-1',
+      email: 'gerencia@undercodeec.com',
+      name: 'Gerencia Undercodeec',
+      role: UserRole.ADMIN,
+    });
+  });
   const sign = jest.fn().mockReturnValue('hermes-jwt');
   const config = {
     get: jest.fn((key: string, fallback?: string) => {
@@ -48,12 +63,7 @@ describe('AuthService CRM proof', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    upsert.mockResolvedValue({
-      id: 'operator-1',
-      email: 'gerencia@undercodeec.com',
-      name: 'Gerencia Undercodeec',
-      role: UserRole.ADMIN,
-    });
+    capturedUpsertArgs = undefined;
   });
 
   it('canjea una prueba válida y prepara al operador ADMIN', async () => {
@@ -62,16 +72,13 @@ describe('AuthService CRM proof', () => {
     );
 
     expect(result.accessToken).toBe('hermes-jwt');
-    expect(upsert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { email: 'gerencia@undercodeec.com' },
-        create: expect.objectContaining({ role: UserRole.ADMIN }),
-        update: expect.objectContaining({
-          role: UserRole.ADMIN,
-          isActive: true,
-        }),
-      }),
-    );
+    expect(capturedUpsertArgs?.where.email).toBe('gerencia@undercodeec.com');
+    expect(capturedUpsertArgs?.create.role).toBe(UserRole.ADMIN);
+    expect(capturedUpsertArgs?.update).toEqual({
+      name: 'Gerencia Undercodeec',
+      role: UserRole.ADMIN,
+      isActive: true,
+    });
   });
 
   it('rechaza una prueba cuya firma fue alterada', async () => {

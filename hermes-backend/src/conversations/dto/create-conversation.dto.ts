@@ -1,6 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsEnum } from 'class-validator';
-import { ConversationStatus } from '@prisma/client';
+import { IsString, IsOptional } from 'class-validator';
 
 export class CreateConversationDto {
   @ApiProperty({ description: 'ID del contacto' })

@@ -4,6 +4,15 @@ import { TasksService } from './tasks.service';
 
 describe('TasksService callback requests', () => {
   it('creates one pending Hermes review task per source message', async () => {
+    type CreateArgs = {
+      data: {
+        type: TaskType;
+        status: TaskStatus;
+        title: string;
+        metadata: { actionStatus: string; sourceMessageIds: string[] };
+      };
+    };
+    let capturedCreateArgs: CreateArgs | undefined;
     const created = {
       id: 'review-task-1',
       conversationId: 'conversation-1',
@@ -18,7 +27,10 @@ describe('TasksService callback requests', () => {
         .mockResolvedValueOnce(null)
         .mockResolvedValueOnce(created),
       update: jest.fn(),
-      create: jest.fn().mockResolvedValue(created),
+      create: jest.fn((args: CreateArgs) => {
+        capturedCreateArgs = args;
+        return Promise.resolve(created);
+      }),
     };
     const tx = {
       $executeRaw: jest.fn().mockResolvedValue(1),
@@ -44,18 +56,14 @@ describe('TasksService callback requests', () => {
     const second = await service.requestHermesReview(params);
 
     expect(second.id).toBe(first.id);
-    expect(prisma.task.create).toHaveBeenCalledTimes(1);
-    expect(prisma.task.create).toHaveBeenCalledWith(
+    expect(task.create).toHaveBeenCalledTimes(1);
+    expect(capturedCreateArgs?.data.type).toBe(TaskType.GENERAL);
+    expect(capturedCreateArgs?.data.status).toBe(TaskStatus.PENDING);
+    expect(capturedCreateArgs?.data.title).toBe('Revisar incidencia de Hermes');
+    expect(capturedCreateArgs?.data.metadata).toEqual(
       expect.objectContaining({
-        data: expect.objectContaining({
-          type: TaskType.GENERAL,
-          status: TaskStatus.PENDING,
-          title: 'Revisar incidencia de Hermes',
-          metadata: expect.objectContaining({
-            actionStatus: 'PENDING_REVIEW',
-            sourceMessageIds: ['message-1'],
-          }),
-        }),
+        actionStatus: 'PENDING_REVIEW',
+        sourceMessageIds: ['message-1'],
       }),
     );
   });
@@ -99,6 +107,11 @@ describe('TasksService callback requests', () => {
   });
 
   it('updates the open task with a later requested time instead of confirming it', async () => {
+    type UpdateArgs = {
+      where: { id: string };
+      data: { dueAt: Date; metadata: { actionStatus: string } };
+    };
+    let capturedUpdateArgs: UpdateArgs | undefined;
     const requestedAt = new Date('2026-09-18T20:20:00Z');
     const existing = {
       id: 'task-1',
@@ -114,9 +127,10 @@ describe('TasksService callback requests', () => {
       $executeRaw: jest.fn().mockResolvedValue(1),
       task: {
         findFirst: jest.fn().mockResolvedValue(existing),
-        update: jest
-          .fn()
-          .mockResolvedValue({ ...existing, dueAt: requestedAt }),
+        update: jest.fn((args: UpdateArgs) => {
+          capturedUpdateArgs = args;
+          return Promise.resolve({ ...existing, dueAt: requestedAt });
+        }),
         create: jest.fn(),
       },
     };
@@ -135,14 +149,11 @@ describe('TasksService callback requests', () => {
       requestedAt,
     });
 
-    expect(tx.task.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: 'task-1' },
-        data: expect.objectContaining({ dueAt: requestedAt }),
-      }),
-    );
+    expect(capturedUpdateArgs?.where.id).toBe('task-1');
+    expect(capturedUpdateArgs?.data.dueAt).toEqual(requestedAt);
     expect(tx.task.create).not.toHaveBeenCalled();
-    const metadata = tx.task.update.mock.calls[0][0].data.metadata;
-    expect(metadata.actionStatus).toBe('PENDING_CONFIRMATION');
+    expect(capturedUpdateArgs?.data.metadata.actionStatus).toBe(
+      'PENDING_CONFIRMATION',
+    );
   });
 });

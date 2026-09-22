@@ -8,10 +8,7 @@ export function splitWhatsAppMessage(
   maxParts = DEFAULT_MAX_PARTS,
   maxPartChars = DEFAULT_MAX_PART_CHARS,
 ): string[] {
-  const text = content
-    .replace(/\r\n/g, '\n')
-    .replace(/\s+/g, ' ')
-    .trim();
+  const text = content.replace(/\r\n/g, '\n').replace(/\s+/g, ' ').trim();
   if (!text) return [text];
   if (maxParts < 1 || maxPartChars < 1 || splitThreshold < 1) {
     throw new Error('Invalid WhatsApp message splitting limits');

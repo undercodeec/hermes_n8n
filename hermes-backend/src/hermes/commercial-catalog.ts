@@ -47,9 +47,12 @@ export const COMMERCIAL_OFFERS = {
   },
 } as const;
 
-type CommercialOffer = (typeof COMMERCIAL_OFFERS)[keyof typeof COMMERCIAL_OFFERS];
+type CommercialOffer =
+  (typeof COMMERCIAL_OFFERS)[keyof typeof COMMERCIAL_OFFERS];
 
-const offerValues = Object.values(COMMERCIAL_OFFERS) as readonly CommercialOffer[];
+const offerValues = Object.values(
+  COMMERCIAL_OFFERS,
+) as readonly CommercialOffer[];
 const BASIC_HOSTING_RENEWAL_PRICE = 40;
 
 function formatPrice(price: number): string {

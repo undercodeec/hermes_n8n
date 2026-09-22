@@ -1,5 +1,5 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsOptional, IsBoolean } from 'class-validator';
+import { IsString, IsOptional } from 'class-validator';
 
 export class CreateProductDto {
   @ApiProperty({ description: 'Nombre del producto', example: 'Plan Premium' })

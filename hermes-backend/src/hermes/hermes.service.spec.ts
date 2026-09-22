@@ -3,6 +3,29 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CommercialPolicyService } from './commercial-policy.service';
 import { HermesService } from './hermes.service';
 
+type HermesRequestBody = {
+  messages: Array<{ role: string; content: string }>;
+  response_format: {
+    type: string;
+    json_schema: {
+      schema: { properties: { detectedIntent: { enum: string[] } } };
+    };
+  };
+  max_tokens: number;
+  temperature?: number;
+  reasoning_effort?: string;
+};
+
+type HermesProviderResponse = {
+  data: {
+    choices: Array<{
+      message: { content: string };
+      finish_reason?: string;
+    }>;
+    usage: { prompt_tokens: number; completion_tokens: number };
+  };
+};
+
 describe('HermesService commercial contract', () => {
   function setup(content: string | string[], model = 'gemini-test') {
     const config = {
@@ -24,16 +47,27 @@ describe('HermesService commercial contract', () => {
     } as unknown as PrismaService;
     const service = new HermesService(config, prisma);
     const contents = Array.isArray(content) ? content : [content];
-    const post = jest.fn();
-    for (const responseContent of contents) {
-      post.mockResolvedValueOnce({
-        data: {
-          choices: [{ message: { content: responseContent } }],
-          usage: { prompt_tokens: 100, completion_tokens: 20 },
-        },
-      });
-    }
-    (service as any).httpClient.post = post;
+    let responseIndex = 0;
+    const post = jest.fn(
+      (
+        ...request: [string, HermesRequestBody]
+      ): Promise<HermesProviderResponse> => {
+        void request;
+        const responseContent =
+          contents[responseIndex++] ?? contents.at(-1) ?? '';
+        return Promise.resolve({
+          data: {
+            choices: [{ message: { content: responseContent } }],
+            usage: { prompt_tokens: 100, completion_tokens: 20 },
+          },
+        });
+      },
+    );
+    (
+      service as unknown as {
+        httpClient: { post: typeof post };
+      }
+    ).httpClient.post = post;
     return { service, post };
   }
 
@@ -87,7 +121,7 @@ describe('HermesService commercial contract', () => {
       ],
     });
 
-    const systemMessage = post.mock.calls[0][1].messages[0].content as string;
+    const systemMessage = post.mock.calls[0][1].messages[0].content;
     expect(systemMessage).toContain('¿A qué se dedica su negocio?');
     expect(systemMessage).toContain(
       'sin abrir otra entrevista ni forzar una reunión',
@@ -141,7 +175,7 @@ describe('HermesService commercial contract', () => {
     });
 
     const body = post.mock.calls[0][1];
-    const systemMessage = body.messages[0].content as string;
+    const systemMessage = body.messages[0].content;
     expect(systemMessage).toContain('Política conversacional calculada');
     expect(systemMessage).toContain('"allowDiscoveryQuestion":false');
     expect(
@@ -247,7 +281,7 @@ describe('HermesService commercial contract', () => {
     });
 
     const body = post.mock.calls[0][1];
-    const systemMessage = body.messages[0].content as string;
+    const systemMessage = body.messages[0].content;
     expect(systemMessage).toContain('Tienda de Lanzamiento — USD $550');
     expect(systemMessage).toContain('Tienda de Crecimiento — USD $850');
     expect(systemMessage).toContain('USD $40 al año');
@@ -355,7 +389,7 @@ describe('HermesService commercial contract', () => {
 
     expect(post).toHaveBeenCalledTimes(1);
     expect(result.response).toContain('le explico');
-    const systemMessage = post.mock.calls[0][1].messages[0].content as string;
+    const systemMessage = post.mock.calls[0][1].messages[0].content;
     expect(systemMessage).toContain('trato profesional de «usted»');
   });
 
@@ -692,16 +726,13 @@ describe('HermesService commercial contract', () => {
 
     expect(post).toHaveBeenCalledTimes(2);
     expect(result.response).toBe('Cuénteme qué necesita y con gusto le ayudo.');
-    expect(post.mock.calls[1][1].messages).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          role: 'system',
-          content: expect.stringContaining(
-            'Preserve todo el contenido comercial',
-          ),
-        }),
-      ]),
-    );
+    expect(
+      post.mock.calls[1][1].messages.some(
+        (message) =>
+          message.role === 'system' &&
+          message.content.includes('Preserve todo el contenido comercial'),
+      ),
+    ).toBe(true);
   });
 
   it('recovers a formal second attempt locally when it only starts with a mechanical opening', async () => {

@@ -17,7 +17,9 @@ describe('commercialCatalogContext', () => {
   it('publishes only the authorized organization location', () => {
     expect(organizationLocationContext()).toContain('trabaja de forma remota');
     expect(organizationLocationContext()).toContain('Quito, Ecuador');
-    expect(organizationLocationContext()).not.toMatch(/dirección|calle|oficina/i);
+    expect(organizationLocationContext()).not.toMatch(
+      /dirección|calle|oficina/i,
+    );
   });
 
   it('rejects a monetary value not present in the selected catalog context', () => {

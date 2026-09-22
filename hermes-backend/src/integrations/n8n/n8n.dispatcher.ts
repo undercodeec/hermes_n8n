@@ -37,11 +37,15 @@ export class N8nDispatcher {
         },
       });
       this.logger.log(`Dispatched ${payload.event} (${payload.eventId})`);
-    } catch (err: any) {
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : 'Error de transporte desconocido';
       this.logger.error(
-        `Dispatch failed for ${payload.event} (${payload.eventId}): ${err.message}`,
+        `Dispatch failed for ${payload.event} (${payload.eventId}): ${message}`,
       );
-      throw err; // dejar que BullMQ reintente
+      throw error; // dejar que BullMQ reintente
     }
   }
 }

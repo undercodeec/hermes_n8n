@@ -9,7 +9,10 @@ import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 import { hasPublishedPriceFor } from './commercial-catalog';
 
 export type PendingQuestion =
-  'price' | 'timeline' | 'proposal' | 'availability';
+  | 'price'
+  | 'timeline'
+  | 'proposal'
+  | 'availability';
 
 export type CommercialPolicyDecision = {
   intent?: string;

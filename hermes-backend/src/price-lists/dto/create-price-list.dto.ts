@@ -27,10 +27,13 @@ export class CreatePriceListDto {
   @IsDateString()
   validFrom?: string;
 
-  @ApiPropertyOptional({ description: 'Fecha de fin de vigencia' })
+  @ApiPropertyOptional({
+    description: 'Fecha de fin de vigencia',
+    nullable: true,
+  })
   @IsOptional()
   @IsDateString()
-  validUntil?: string;
+  validUntil?: string | null;
 
   @ApiPropertyOptional({ description: 'Restricciones' })
   @IsOptional()

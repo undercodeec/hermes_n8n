@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePriceListDto } from './dto/create-price-list.dto';
 import { UpdatePriceListDto } from './dto/update-price-list.dto';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class PriceListsService {
@@ -39,9 +40,14 @@ export class PriceListsService {
 
   async update(id: string, dto: UpdatePriceListDto) {
     await this.findOne(id);
-    const data: any = { ...dto };
-    if (dto.validFrom) data.validFrom = new Date(dto.validFrom);
-    if (dto.validUntil) data.validUntil = new Date(dto.validUntil);
+    const { validFrom, validUntil, ...fields } = dto;
+    const data: Prisma.PriceListUncheckedUpdateInput = {
+      ...fields,
+      ...(validFrom ? { validFrom: new Date(validFrom) } : {}),
+      ...(validUntil === undefined
+        ? {}
+        : { validUntil: validUntil === null ? null : new Date(validUntil) }),
+    };
     return this.prisma.priceList.update({ where: { id }, data });
   }
 

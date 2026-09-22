@@ -177,41 +177,53 @@ export class AuthService {
       .digest('base64url');
     if (!this.safeEqual(signature, expectedSignature)) this.invalidCrmProof();
 
-    let header: { alg?: string; typ?: string };
-    let payload: Partial<CrmProofPayload>;
+    let header: unknown;
+    let payload: unknown;
     try {
       header = JSON.parse(
         Buffer.from(encodedHeader, 'base64url').toString('utf8'),
-      );
+      ) as unknown;
       payload = JSON.parse(
         Buffer.from(encodedPayload, 'base64url').toString('utf8'),
-      );
+      ) as unknown;
     } catch {
+      this.invalidCrmProof();
+    }
+
+    if (!this.isRecord(header) || !this.isRecord(payload)) {
       this.invalidCrmProof();
     }
 
     const now = Math.floor(Date.now() / 1000);
     const email =
-      typeof payload!.sub === 'string' ? payload!.sub.trim().toLowerCase() : '';
+      typeof payload.sub === 'string' ? payload.sub.trim().toLowerCase() : '';
     if (
-      header!.alg !== 'HS256' ||
-      header!.typ !== 'JWT' ||
-      payload!.iss !== 'undercodeec-admin' ||
-      payload!.aud !== 'hermes-crm' ||
-      payload!.role !== 'ADMIN' ||
+      header.alg !== 'HS256' ||
+      header.typ !== 'JWT' ||
+      payload.iss !== 'undercodeec-admin' ||
+      payload.aud !== 'hermes-crm' ||
+      payload.role !== 'ADMIN' ||
       email !== operatorEmail ||
-      typeof payload!.jti !== 'string' ||
-      payload!.jti.length < 16 ||
-      typeof payload!.iat !== 'number' ||
-      typeof payload!.exp !== 'number' ||
-      payload!.iat > now + 30 ||
-      payload!.exp <= now ||
-      payload!.exp - payload!.iat > 180
+      typeof payload.jti !== 'string' ||
+      payload.jti.length < 16 ||
+      typeof payload.iat !== 'number' ||
+      typeof payload.exp !== 'number' ||
+      payload.iat > now + 30 ||
+      payload.exp <= now ||
+      payload.exp - payload.iat > 180
     ) {
       this.invalidCrmProof();
     }
 
-    return { ...payload!, sub: email } as CrmProofPayload;
+    return {
+      iss: 'undercodeec-admin',
+      aud: 'hermes-crm',
+      sub: email,
+      role: 'ADMIN',
+      jti: payload.jti,
+      iat: payload.iat,
+      exp: payload.exp,
+    };
   }
 
   private safeEqual(value: string, expected: string): boolean {
@@ -222,6 +234,10 @@ export class AuthService {
 
   private invalidCrmProof(): never {
     throw new UnauthorizedException('Prueba de acceso inválida o vencida');
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return typeof value === 'object' && value !== null;
   }
 }
 

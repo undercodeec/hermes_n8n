@@ -1,10 +1,15 @@
 import { ForbiddenException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { Queue } from 'bullmq';
 import {
   CampaignRecipientStatus,
   CampaignStatus,
   MarketingConsentStatus,
 } from '@prisma/client';
 import { CampaignsService } from './campaigns.service';
+import { CampaignJobData } from './campaigns.service';
+import { MetaService } from '../meta/meta.service';
+import { PrismaService } from '../prisma/prisma.service';
 
 const recipient = {
   id: 'recipient-1',
@@ -40,15 +45,20 @@ describe('CampaignsService send idempotency', () => {
       auditLog: { create: jest.fn() },
       $transaction: jest.fn(),
       ...overrides,
-    } as any;
-    const config = { get: jest.fn().mockReturnValue('false') } as any;
+    };
+    const config = { get: jest.fn().mockReturnValue('false') };
     const meta = {
       sendTemplateMessage: jest.fn(),
       toSafeError: jest.fn(),
-    } as any;
-    const queue = { add: jest.fn() } as any;
+    };
+    const queue = { add: jest.fn() };
     return {
-      service: new CampaignsService(prisma, config, meta, queue),
+      service: new CampaignsService(
+        prisma as unknown as PrismaService,
+        config as unknown as ConfigService,
+        meta as unknown as MetaService,
+        queue as unknown as Queue<CampaignJobData>,
+      ),
       prisma,
       config,
       meta,
@@ -64,7 +74,19 @@ describe('CampaignsService send idempotency', () => {
   });
 
   it('snapshots the video configured for the exact approved template language', async () => {
-    const create = jest.fn().mockResolvedValue({ id: 'campaign-3' });
+    type CreateCampaignArgs = {
+      data: {
+        templateMetaId: string;
+        templateHeaderType: string;
+        headerVideoAssetId: string;
+        headerVideoMediaId: string;
+      };
+    };
+    let capturedCreateArgs: CreateCampaignArgs | undefined;
+    const create = jest.fn((args: CreateCampaignArgs) => {
+      capturedCreateArgs = args;
+      return Promise.resolve({ id: 'campaign-3' });
+    });
     const template = {
       id: 'template-es',
       name: 'promo',
@@ -81,10 +103,11 @@ describe('CampaignsService send idempotency', () => {
         mimeType: 'video/mp4',
       },
     };
-    const { service, prisma } = makeService({
+    const findTemplateMedia = jest.fn().mockResolvedValue(templateMedia);
+    const { service } = makeService({
       campaign: { findUnique: jest.fn(), create, update: jest.fn() },
       campaignTemplateMedia: {
-        findUnique: jest.fn().mockResolvedValue(templateMedia),
+        findUnique: findTemplateMedia,
       },
     });
     service['meta'].getApprovedMessageTemplates = jest
@@ -101,7 +124,7 @@ describe('CampaignsService send idempotency', () => {
       { id: 'user-1' },
     );
 
-    expect(prisma.campaignTemplateMedia.findUnique).toHaveBeenCalledWith({
+    expect(findTemplateMedia).toHaveBeenCalledWith({
       where: {
         wabaId_templateName_templateLanguage_headerType: {
           wabaId: 'waba-1',
@@ -112,14 +135,12 @@ describe('CampaignsService send idempotency', () => {
       },
       include: { campaignMedia: true },
     });
-    expect(create).toHaveBeenCalledWith(
+    expect(capturedCreateArgs?.data).toEqual(
       expect.objectContaining({
-        data: expect.objectContaining({
-          templateMetaId: 'template-es',
-          templateHeaderType: 'VIDEO',
-          headerVideoAssetId: 'asset-1',
-          headerVideoMediaId: 'meta-media-1',
-        }),
+        templateMetaId: 'template-es',
+        templateHeaderType: 'VIDEO',
+        headerVideoAssetId: 'asset-1',
+        headerVideoMediaId: 'meta-media-1',
       }),
     );
   });
@@ -217,7 +238,7 @@ describe('CampaignsService send idempotency', () => {
     service['meta'].getConfiguredWabaId = jest.fn().mockReturnValue('waba-1');
 
     await expect(
-      (service as any).configureTemplateMedia(
+      service.configureTemplateMedia(
         {
           templateId: 'template-es',
           templateName: 'promo',
@@ -329,7 +350,7 @@ describe('CampaignsService send idempotency', () => {
     ]);
     service['meta'].getConfiguredWabaId = jest.fn().mockReturnValue('waba-1');
 
-    await (service as any).configureTemplateMedia(
+    await service.configureTemplateMedia(
       {
         templateId: 'template-es',
         templateName: 'promo',
@@ -367,12 +388,14 @@ describe('CampaignsService send idempotency', () => {
       recipientId: 'recipient-1',
     });
     expect(meta.sendTemplateMessage).toHaveBeenCalledTimes(1);
-    expect(prisma.campaignRecipient.update).toHaveBeenCalledWith(
+    const updateCalls = prisma.campaignRecipient.update.mock
+      .calls as unknown as Array<
+      [{ data: { status: CampaignRecipientStatus; errorCode: string } }]
+    >;
+    expect(updateCalls[0]?.[0].data).toEqual(
       expect.objectContaining({
-        data: expect.objectContaining({
-          status: CampaignRecipientStatus.FAILED,
-          errorCode: '500',
-        }),
+        status: CampaignRecipientStatus.FAILED,
+        errorCode: '500',
       }),
     );
   });

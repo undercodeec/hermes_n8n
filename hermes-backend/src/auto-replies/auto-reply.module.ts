@@ -10,6 +10,7 @@ import { LeadsModule } from '../leads/leads.module';
 import { ConversationGuardModule } from '../conversation-guard/conversation-guard.module';
 import { TasksModule } from '../tasks/tasks.module';
 import { AutomatedDeliveryModule } from '../automated-deliveries/automated-delivery.module';
+import { HermesModule } from '../hermes/hermes.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { AutomatedDeliveryModule } from '../automated-deliveries/automated-deliv
     ConversationGuardModule,
     TasksModule,
     AutomatedDeliveryModule,
+    HermesModule,
     BullModule.registerQueue({
       name: AUTO_REPLY_QUEUE,
       defaultJobOptions: {

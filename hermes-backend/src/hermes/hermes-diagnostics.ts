@@ -21,7 +21,17 @@ export type HermesIncidentMetadata = HermesDiagnostic & {
 };
 
 export function sanitizeDiagnosticSummary(value: unknown): string {
-  const text = value instanceof Error ? value.message : String(value ?? '');
+  let text = '';
+  if (value instanceof Error) text = value.message;
+  else if (typeof value === 'string') text = value;
+  else if (
+    typeof value === 'number' ||
+    typeof value === 'boolean' ||
+    typeof value === 'bigint' ||
+    typeof value === 'symbol'
+  ) {
+    text = String(value);
+  }
   return text
     .replace(/Bearer\s+[^\s]+/gi, 'Bearer [REDACTED]')
     .replace(

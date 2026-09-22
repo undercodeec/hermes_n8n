@@ -39,7 +39,7 @@ describe('CommercialPolicyService', () => {
 
   it.each(sectorCases)(
     '%s receives the same decision for equivalent evidence',
-    (sector, _solution) => {
+    (sector) => {
       const decision = service.analyze(
         `Mi negocio es ${sector}`,
         receivedAt,

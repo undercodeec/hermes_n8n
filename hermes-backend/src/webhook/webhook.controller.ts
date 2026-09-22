@@ -9,7 +9,6 @@ import {
   HttpCode,
   HttpStatus,
   Logger,
-  BadRequestException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiQuery } from '@nestjs/swagger';
@@ -42,7 +41,7 @@ export class WebhookController {
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Recibir eventos del webhook de Meta' })
   @ApiResponse({ status: 200, description: 'Evento recibido' })
-  async receive(
+  receive(
     // El ValidationPipe global corre con whitelist + forbidNonWhitelisted y
     // rechazaría el payload de Meta (DTO sin decoradores) con 400. Un pipe a nivel
     // de parámetro NO reemplaza al global (se suman), así que tipamos el body como
@@ -52,7 +51,7 @@ export class WebhookController {
     @Body() body: Record<string, unknown>,
     @RawBody() rawBody: Buffer | undefined,
     @Headers('x-hub-signature-256') signature: string,
-  ): Promise<string> {
+  ): string {
     // Validar firma (en producción se debería usar RawBody para esto)
     // La validación de firma completa requiere acceso al body crudo
     if (
@@ -67,11 +66,11 @@ export class WebhookController {
     // Procesar el webhook de forma asíncrona para responder rápido a Meta
     this.webhookService
       .processWebhook(body as unknown as MetaWebhookDto)
-      .catch((error) => {
-        this.logger.error(
-          `Error procesando webhook: ${error.message}`,
-          error.stack,
-        );
+      .catch((error: unknown) => {
+        const message =
+          error instanceof Error ? error.message : 'Error desconocido';
+        const stack = error instanceof Error ? error.stack : undefined;
+        this.logger.error(`Error procesando webhook: ${message}`, stack);
       });
 
     // Meta espera un 200 OK rápido

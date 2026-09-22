@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreatePlaybookDto } from './dto/create-playbook.dto';
 import { UpdatePlaybookDto } from './dto/update-playbook.dto';
-import { PlaybookType } from '@prisma/client';
+import { PlaybookType, Prisma } from '@prisma/client';
 
 @Injectable()
 export class PlaybooksService {
@@ -13,7 +13,7 @@ export class PlaybooksService {
   }
 
   async findAll(type?: PlaybookType, activeOnly = true) {
-    const where: any = {};
+    const where: Prisma.SalesPlaybookWhereInput = {};
     if (type) where.type = type;
     if (activeOnly) where.isActive = true;
 

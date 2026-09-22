@@ -32,7 +32,9 @@ export type CommercialProfile = {
 };
 
 export type PaymentContext =
-  'STORE_CHECKOUT' | 'PROJECT_PAYMENT' | 'UNDETERMINED';
+  | 'STORE_CHECKOUT'
+  | 'PROJECT_PAYMENT'
+  | 'UNDETERMINED';
 
 export type ConversationGuidance = {
   /** Tema semántico del mensaje actual, calculado por el backend. */
