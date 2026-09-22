@@ -37,6 +37,39 @@ describe('CommercialPolicyService', () => {
     },
   });
 
+  it('removes unsupported discounts, payment terms and delivery promises while preserving supported content', () => {
+    const result = service.repairNousCommercialClaims(
+      'El sitio web presenta sus servicios. Le doy 20% de descuento. Entrega garantizada en 2 semanas. Puede pagar en 12 cuotas.',
+      ['Sitio web para presentar servicios.'],
+    );
+    expect(result.response).toBe('El sitio web presenta sus servicios.');
+    expect(result.reasons).toEqual(
+      expect.arrayContaining([
+        'UNAUTHORIZED_DISCOUNT',
+        'UNAUTHORIZED_TIMELINE',
+        'UNAUTHORIZED_PAYMENT_TERMS',
+      ]),
+    );
+  });
+
+  it('removes an unlisted inclusion but retains a catalog-backed one', () => {
+    const result = service.repairNousCommercialClaims(
+      'Incluye dominio y hosting. Incluye un CRM empresarial.',
+      ['El plan incluye dominio y hosting por un año.'],
+    );
+    expect(result.response).toBe('Incluye dominio y hosting.');
+    expect(result.reasons).toContain('UNAUTHORIZED_INCLUSION');
+  });
+
+  it('does not hand off when the customer explicitly refuses a person', () => {
+    expect(
+      service.analyze(
+        'No quiero hablar con una persona; solo información',
+        receivedAt,
+      ).requestsHuman,
+    ).toBe(false);
+  });
+
   it.each(sectorCases)(
     '%s receives the same decision for equivalent evidence',
     (sector) => {

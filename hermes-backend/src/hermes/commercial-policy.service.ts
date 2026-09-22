@@ -31,6 +31,81 @@ type PolicyContext = {
 
 @Injectable()
 export class CommercialPolicyService {
+  /** Conserva información válida y retira condiciones que el catálogo no respalda. */
+  repairNousCommercialClaims(
+    response: string,
+    approvedKnowledge: string[],
+  ): { response: string; reasons: string[] } {
+    const catalog = this.normalize(approvedKnowledge.join(' '));
+    const catalogWords = new Set(catalog.match(/[a-z0-9]{3,}/g) ?? []);
+    const stopWords = new Set([
+      'con',
+      'para',
+      'por',
+      'del',
+      'las',
+      'los',
+      'una',
+      'uno',
+      'que',
+      'tambien',
+      'todos',
+      'todas',
+      'hasta',
+      'plan',
+      'servicio',
+      'servicios',
+    ]);
+    const reasons: string[] = [];
+    const sentences = response.split(/(?<=[.!?])\s+/u).filter(Boolean);
+    const kept = sentences.filter((sentence) => {
+      const normalized = this.normalize(sentence);
+      if (
+        /\b(?:descuento|rebaja|promocion|gratis|gratuito|sin costo|de por vida|ilimitad\w*)\b/.test(
+          normalized,
+        )
+      ) {
+        reasons.push('UNAUTHORIZED_DISCOUNT');
+        return false;
+      }
+      if (
+        /\b(?:entrega|entregado|listo|terminado|implementado|plazo)\b.{0,70}\b\d+\s*(?:dias?|semanas?|meses?)\b|\b\d+\s*(?:dias?|semanas?|meses?)\b.{0,70}\b(?:entrega|listo|terminado|implementado)\b/.test(
+          normalized,
+        )
+      ) {
+        reasons.push('UNAUTHORIZED_TIMELINE');
+        return false;
+      }
+      if (
+        /\b(?:cuotas?|anticipo|abono|financiacion|50\s*\/\s*50|pago[s]?\s+(?:a|en)\s+plazos?)\b/.test(
+          normalized,
+        )
+      ) {
+        reasons.push('UNAUTHORIZED_PAYMENT_TERMS');
+        return false;
+      }
+      const inclusion = normalized.match(
+        /\b(?:incluye|incluido|contiene|viene con)\b\s+(.+)/,
+      );
+      if (inclusion) {
+        const features = (inclusion[1].match(/[a-z0-9]{3,}/g) ?? []).filter(
+          (word) => !stopWords.has(word),
+        );
+        if (!catalog || features.some((word) => !catalogWords.has(word))) {
+          reasons.push('UNAUTHORIZED_INCLUSION');
+          return false;
+        }
+      }
+      return true;
+    });
+    return {
+      response:
+        kept.join(' ').trim() ||
+        'Este punto requiere una valoración del equipo antes de confirmar condiciones.',
+      reasons,
+    };
+  }
+
   analyze(
     content: string,
     receivedAt: Date,
@@ -58,10 +133,14 @@ export class CommercialPolicyService {
       pending.add('proposal');
     }
 
-    const requestsHuman = this.matches(normalized, [
-      /\b(hablar|conversar|comunicarme) con (una persona|alguien|un humano|un asesor|un comercial)\b/,
-      /\b(asesor|agente|persona) (real|humano)\b/,
-    ]);
+    const requestsHuman =
+      !/\b(?:no quiero|no necesito|no deseo|sin)\b.{0,40}\b(?:hablar|conversar|comunicarme)\b.{0,30}\b(?:persona|humano|asesor|agente)\b/.test(
+        normalized,
+      ) &&
+      this.matches(normalized, [
+        /\b(hablar|conversar|comunicarme) con (una persona|alguien|un humano|un asesor|un comercial)\b/,
+        /\b(asesor|agente|persona) (real|humano)\b/,
+      ]);
     const requestsCall = this.matches(normalized, [
       /\b(llamada|llamarme|llamenme|me llamen|hablar por telefono)\b/,
       /\b(puede[n]? llamar|podemos hablar)\b/,

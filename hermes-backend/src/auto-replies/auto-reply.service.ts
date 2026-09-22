@@ -1,4 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
+import { createHash } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -30,6 +31,8 @@ import {
   toIncidentMetadata,
 } from '../hermes/hermes-diagnostics';
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
+import { reviewAgentProposal } from '../conversation-engine/agent-proposal-policy';
+import { responseContainsOnlyAuthorizedPrices } from '../hermes/commercial-catalog';
 
 @Injectable()
 export class AutoReplyService {
@@ -131,6 +134,9 @@ export class AutoReplyService {
         commercialProfile: context.commercialProfile,
       },
     );
+    const selectedEngine = policy.requestsCall
+      ? this.conversationEngine.selectedEngine(data.conversationId)
+      : undefined;
 
     if (policy.requestsHuman) {
       await this.handoffs.create({
@@ -158,7 +164,7 @@ export class AutoReplyService {
       return;
     }
 
-    if (policy.requestsCall) {
+    if (policy.requestsCall && selectedEngine !== 'nous_hermes') {
       const callback = await this.tasks.requestCallback({
         conversationId: data.conversationId,
         contactId: data.contactId,
@@ -208,6 +214,17 @@ export class AutoReplyService {
 
     const startedAt = Date.now();
     await this.showTypingIndicator(inbound.wamid);
+    const approvedKnowledge = commercialCatalogContext(
+      [
+        inbound.content,
+        context.productOfInterest,
+        context.commercialProfile?.service,
+        context.commercialProfile?.need,
+        context.commercialProfile?.recommendedPlan,
+      ]
+        .filter(Boolean)
+        .join(' '),
+    );
     const engineResult = await this.conversationEngine.respond({
       conversationId: data.conversationId,
       inboundMessageId: inbound.id,
@@ -219,17 +236,8 @@ export class AutoReplyService {
           text: content,
         })),
         commercialProfile: context.commercialProfile,
-        approvedKnowledge: commercialCatalogContext(
-          [
-            inbound.content,
-            context.productOfInterest,
-            context.commercialProfile?.service,
-            context.commercialProfile?.need,
-            context.commercialProfile?.recommendedPlan,
-          ]
-            .filter(Boolean)
-            .join(' '),
-        ),
+        recentProfileChanges: context.recentProfileChanges,
+        approvedKnowledge,
         handoffActive: false,
         leadStage: context.leadStage,
         productOfInterest: context.productOfInterest,
@@ -244,6 +252,7 @@ export class AutoReplyService {
         pendingQuestions: policy.pendingQuestions,
         contactPreference: context.commercialProfile?.contactPreference,
         pendingActions: context.pendingActions,
+        recentCompletedActions: context.recentCompletedActions,
         actionCapabilities: {
           callbackTasks: true,
           calendarBooking: false,
@@ -262,6 +271,99 @@ export class AutoReplyService {
       commercialProfile: engineResult.business?.commercialProfile,
       diagnostic: engineResult.diagnostic,
     };
+    const isNous = engineResult.engine === 'nous_hermes';
+    const reviewedProposal =
+      isNous && !response.diagnostic
+        ? reviewAgentProposal(
+            engineResult,
+            inbound.content || '',
+            context.recentMessages
+              .filter((message) => message.role === 'user')
+              .map((message) => message.content),
+            this.csvConfig('HERMES_ALLOWED_TAGS', []),
+          )
+        : undefined;
+    if (reviewedProposal) {
+      response.commercialProfile = reviewedProposal.profilePatch;
+      response.suggestedTags = reviewedProposal.tags;
+      const allowedIntents = this.csvConfig('HERMES_ALLOWED_INTENTS', [
+        'info_general',
+        'consulta_servicio',
+        'consulta_precio',
+        'consulta_cobro_tienda',
+        'consulta_pago_proyecto',
+        'cotizacion',
+        'agendar_cita',
+        'solicitud_humano',
+        'queja',
+        'reclamo',
+        'pago_fallido',
+        'negociacion_especial',
+        'info_producto',
+        'interes_nava',
+        'soporte',
+        'otro',
+      ]);
+      if (
+        response.detectedIntent &&
+        !allowedIntents.includes(response.detectedIntent)
+      ) {
+        reviewedProposal.rejections.push('INTENT_NOT_ALLOWED');
+        response.detectedIntent = undefined;
+      }
+      const priceScope = [
+        inbound.content,
+        context.productOfInterest,
+        context.commercialProfile?.service,
+      ]
+        .filter(Boolean)
+        .join(' ');
+      if (
+        !responseContainsOnlyAuthorizedPrices(priceScope, response.response)
+      ) {
+        response.response = response.response.replace(
+          /(?:\b(?:USD|dólares?)\s*\$?\s*\d[\d.,]*|\$\s*\d[\d.,]*|\b\d[\d.,]*\s*(?:USD|dólares?)\b)/giu,
+          'un precio sujeto a valoración',
+        );
+        if (
+          !responseContainsOnlyAuthorizedPrices(priceScope, response.response)
+        ) {
+          response.response =
+            'El valor específico requiere una valoración del equipo.';
+        }
+        reviewedProposal.rejections.push('PRICE_NOT_AUTHORIZED');
+      }
+      // No hay calendario ni operación de cobro: estas afirmaciones nunca son confirmaciones reales.
+      const unconfirmedClaim =
+        /\b(?:(?:su|la|el)\s+)?(?:cita|reunión|llamada|cotización|propuesta|pago|cobro|reserva)\s+(?:ya\s+)?(?:está|quedó|ha sido)\s+(?:confirmad[oa]|agendad[oa]|reservad[oa]|enviad[oa]|aprobad[oa]|procesad[oa]|realizad[oa])\b/giu;
+      if (unconfirmedClaim.test(response.response)) {
+        response.response = response.response.replace(
+          unconfirmedClaim,
+          'solicitud pendiente de confirmación',
+        );
+        reviewedProposal.rejections.push('UNCONFIRMED_ACTION_CLAIM');
+      }
+      if (
+        reviewedProposal.action.type === 'none' &&
+        this.containsUnbackedFollowupPromise(response.response)
+      ) {
+        const kept = response.response
+          .split(/(?<=[.!?])\s+/u)
+          .filter(
+            (sentence) => !this.containsUnbackedFollowupPromise(sentence),
+          );
+        response.response =
+          kept.join(' ').trim() ||
+          'Puedo ayudarle con la información disponible por este chat.';
+        reviewedProposal.rejections.push('UNBACKED_FOLLOWUP_PROMISE');
+      }
+      const safetyReview = this.commercialPolicy.repairNousCommercialClaims(
+        response.response,
+        approvedKnowledge,
+      );
+      response.response = safetyReview.response;
+      reviewedProposal.rejections.push(...safetyReview.reasons);
+    }
     const acceptedProfile = response.diagnostic
       ? context.commercialProfile
       : { ...context.commercialProfile, ...response.commercialProfile };
@@ -272,10 +374,12 @@ export class AutoReplyService {
         response.response,
       ),
     };
-    Object.assign(
-      response,
-      this.commercialPolicy.enforceResponsePolicy(response, policy),
-    );
+    if (!isNous) {
+      Object.assign(
+        response,
+        this.commercialPolicy.enforceResponsePolicy(response, policy),
+      );
+    }
 
     const outputDecision = this.conversationGuard.inspectGeneratedResponse(
       response.response,
@@ -391,6 +495,7 @@ export class AutoReplyService {
       !/\b\d+\s*(?:días?|semanas?|meses?)\b/i.test(response.response);
     if (
       !response.diagnostic &&
+      !isNous &&
       (requestedPriceWithoutAuthorizedValue ||
         requestedTimelineWithoutAuthorizedValue) &&
       this.hasEnoughScopeForQuote(response.commercialProfile)
@@ -426,13 +531,61 @@ export class AutoReplyService {
 
     const shouldHandoff =
       !response.diagnostic &&
-      this.checkHandoffSignals(inbound.content || '', response.detectedIntent);
+      (isNous
+        ? reviewedProposal?.action.type === 'request_handoff'
+        : this.checkHandoffSignals(
+            inbound.content || '',
+            response.detectedIntent,
+          ));
+    let actionResult: string = 'MESSAGE_ONLY';
+    if (
+      isNous &&
+      !response.diagnostic &&
+      reviewedProposal?.action.type === 'request_callback'
+    ) {
+      const callback = await this.tasks.requestCallback({
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        leadId: context.leadId,
+        sourceMessageId: inbound.id,
+        requestedAt: policy.requestedCallAt,
+      });
+      actionResult = `CALLBACK_TASK_PENDING:${callback.id}`;
+      response.nextAction = 'solicitar_confirmacion_reunion';
+    }
+    if (
+      isNous &&
+      !response.diagnostic &&
+      reviewedProposal?.action.type === 'propose_quote_task'
+    ) {
+      const quote = await this.tasks.requestQuote({
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        leadId: context.leadId,
+        sourceMessageId: inbound.id,
+        scopeSummary: [
+          context.commercialProfile?.service,
+          context.commercialProfile?.need,
+          inbound.content,
+        ]
+          .filter(Boolean)
+          .join('; ')
+          .slice(0, 500),
+      });
+      actionResult = `QUOTE_TASK_PENDING:${quote.id}`;
+      response.nextAction = 'solicitar_cotizacion_humana';
+    }
     if (shouldHandoff) {
       await this.handoffs.create({
         conversationId: data.conversationId,
         reason: this.handoffReason(response.detectedIntent),
         reasonDetail: `Handoff automático. Mensaje trigger: ${(inbound.content || '').substring(0, 200)}`,
       });
+      actionResult = 'HUMAN_HANDOFF_CREATED';
+      if (isNous) {
+        response.detectedIntent = 'solicitud_humano';
+        response.nextAction = 'derivar_humano';
+      }
     }
     if (
       !(await this.hasConversationStatus(
@@ -467,6 +620,23 @@ export class AutoReplyService {
                 traceId: engineResult.traceId,
                 tokensUsed: response.tokensUsed,
                 latencyMs: Date.now() - startedAt,
+                ...(isNous
+                  ? {
+                      proposalUnchanged:
+                        engineResult.replyText === response.response,
+                      proposedReplySha256: createHash('sha256')
+                        .update(engineResult.replyText)
+                        .digest('hex'),
+                      ...(engineResult.replyText !== response.response &&
+                      !response.diagnostic
+                        ? { proposedReply: engineResult.replyText }
+                        : {}),
+                      proposalRejections: reviewedProposal?.rejections,
+                      proposedAction:
+                        engineResult.proposedActions[0]?.type ?? 'none',
+                      actionResult,
+                    }
+                  : {}),
                 costEstimate: response.costEstimate,
                 ...(incident ? { hermesIncident: incident } : {}),
               },
@@ -526,12 +696,17 @@ export class AutoReplyService {
         providerModel: engineResult.providerModel,
         detectedIntent: response.detectedIntent,
         suggestedAction: response.nextAction,
-        executedAction: shouldHandoff
-          ? 'HUMAN_HANDOFF_CREATED_AND_MESSAGE_SENT'
-          : response.nextAction === 'solicitar_cotizacion_humana'
-            ? 'QUOTE_TASK_CREATED_AND_MESSAGE_SENT'
-            : 'MESSAGE_SENT',
+        executedAction: isNous
+          ? actionResult
+          : shouldHandoff
+            ? 'HUMAN_HANDOFF_CREATED_AND_MESSAGE_SENT'
+            : response.nextAction === 'solicitar_cotizacion_humana'
+              ? 'QUOTE_TASK_CREATED_AND_MESSAGE_SENT'
+              : 'MESSAGE_SENT',
         outputValidation: 'passed',
+        ...(isNous
+          ? { proposalRejections: reviewedProposal?.rejections, actionResult }
+          : {}),
         messageParts: sentParts,
         latencyMs,
       }),
@@ -589,33 +764,40 @@ export class AutoReplyService {
     conversationId: string,
     excludedMessageId: string,
   ) {
-    const [recentMessages, state, lead, pendingTasks] = await Promise.all([
-      this.prisma.message.findMany({
-        where: { conversationId, NOT: { id: excludedMessageId } },
-        orderBy: { createdAt: 'desc' },
-        take: 20,
-        select: {
-          direction: true,
-          content: true,
-          createdAt: true,
-          rawPayload: true,
-        },
-      }),
-      this.prisma.conversationState.findUnique({ where: { conversationId } }),
-      this.prisma.lead.findFirst({
-        where: { contactId },
-        orderBy: { createdAt: 'desc' },
-      }),
-      this.prisma.task.findMany({
-        where: {
-          conversationId,
-          status: { in: [TaskStatus.PENDING, TaskStatus.IN_PROGRESS] },
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 5,
-        select: { type: true, status: true, dueAt: true },
-      }),
-    ]);
+    const [recentMessages, state, lead, pendingTasks, completedTasks] =
+      await Promise.all([
+        this.prisma.message.findMany({
+          where: { conversationId, NOT: { id: excludedMessageId } },
+          orderBy: { createdAt: 'desc' },
+          take: 20,
+          select: {
+            direction: true,
+            content: true,
+            createdAt: true,
+            rawPayload: true,
+          },
+        }),
+        this.prisma.conversationState.findUnique({ where: { conversationId } }),
+        this.prisma.lead.findFirst({
+          where: { contactId },
+          orderBy: { createdAt: 'desc' },
+        }),
+        this.prisma.task.findMany({
+          where: {
+            conversationId,
+            status: { in: [TaskStatus.PENDING, TaskStatus.IN_PROGRESS] },
+          },
+          orderBy: { createdAt: 'desc' },
+          take: 5,
+          select: { type: true, status: true, dueAt: true },
+        }),
+        this.prisma.task.findMany({
+          where: { conversationId, status: TaskStatus.COMPLETED },
+          orderBy: { completedAt: 'desc' },
+          take: 3,
+          select: { type: true, completedAt: true },
+        }),
+      ]);
     const orderedMessages = recentMessages.sort((left, right) => {
       const leftTime =
         this.providerTimestamp(left.rawPayload) ?? left.createdAt;
@@ -644,10 +826,15 @@ export class AutoReplyService {
       productOfInterest: lead?.productOfInterest || undefined,
       leadId: lead?.id,
       commercialProfile: this.commercialProfileFromMetadata(lead?.metadata),
+      recentProfileChanges: this.recentProfileChanges(lead?.metadata),
       pendingActions: pendingTasks.map((task) => ({
         type: task.type,
         status: task.status,
         dueAt: task.dueAt?.toISOString(),
+      })),
+      recentCompletedActions: completedTasks.map((task) => ({
+        type: task.type,
+        completedAt: task.completedAt?.toISOString(),
       })),
     };
   }
@@ -808,6 +995,51 @@ export class AutoReplyService {
     return profile && typeof profile === 'object' && !Array.isArray(profile)
       ? profile
       : undefined;
+  }
+
+  private recentProfileChanges(
+    metadata: unknown,
+  ): Array<Record<string, string>> {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata))
+      return [];
+    const history = (metadata as Record<string, unknown>)
+      .commercialProfileHistory;
+    if (!Array.isArray(history)) return [];
+    const safeKeys = new Set([
+      'service',
+      'sector',
+      'need',
+      'currentSituation',
+      'users',
+      'productCount',
+      'paymentNeeds',
+      'shippingNeeds',
+      'inventoryNeeds',
+      'domainStatus',
+      'corporateEmailNeeds',
+      'integrations',
+      'budget',
+      'timeline',
+      'contactPreference',
+      'lastObjection',
+    ]);
+    return history
+      .slice(-3)
+      .map((entry: unknown) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry))
+          return {};
+        const changes = (entry as Record<string, unknown>).changes;
+        if (!changes || typeof changes !== 'object' || Array.isArray(changes))
+          return {};
+        return Object.fromEntries(
+          Object.entries(changes)
+            .filter(
+              ([key, value]) => safeKeys.has(key) && typeof value === 'string',
+            )
+            .map(([key, value]) => [key, (value as string).slice(0, 160)]),
+        );
+      })
+      .filter((entry) => Object.keys(entry).length > 0);
   }
 
   private checkHandoffSignals(

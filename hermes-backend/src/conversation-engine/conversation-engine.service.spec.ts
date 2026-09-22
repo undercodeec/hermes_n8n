@@ -75,4 +75,26 @@ describe('ConversationEngineService', () => {
     expect(directRespond).toHaveBeenCalledTimes(1);
     expect(nousRespond).toHaveBeenCalledTimes(1);
   });
+
+  it('selects Nous for distinct inbound conversations only when open test mode is explicit', async () => {
+    const { service, directRespond, nousRespond } = setup({
+      HERMES_CONVERSATION_ENGINE: 'nous_hermes',
+      NOUS_HERMES_OPEN_INBOUND_TEST: 'true',
+    });
+    await service.respond(input('conversation-a'));
+    await service.respond(input('conversation-b'));
+    expect(nousRespond).toHaveBeenCalledTimes(2);
+    expect(directRespond).not.toHaveBeenCalled();
+  });
+
+  it('does not treat an empty allowlist or a non-true open flag as global consent', async () => {
+    const { service, directRespond, nousRespond } = setup({
+      HERMES_CONVERSATION_ENGINE: 'nous_hermes',
+      NOUS_HERMES_OPEN_INBOUND_TEST: '1',
+      NOUS_HERMES_CONVERSATION_ALLOWLIST: '',
+    });
+    await service.respond(input());
+    expect(directRespond).toHaveBeenCalledTimes(1);
+    expect(nousRespond).not.toHaveBeenCalled();
+  });
 });

@@ -37,6 +37,13 @@ export class ConversationEngineService {
       );
     }
 
+    if (
+      this.config.get<string>('NOUS_HERMES_OPEN_INBOUND_TEST', 'false') ===
+      'true'
+    ) {
+      return this.nousHermes;
+    }
+
     const allowlist = new Set(
       (this.config.get<string>('NOUS_HERMES_CONVERSATION_ALLOWLIST', '') || '')
         .split(',')

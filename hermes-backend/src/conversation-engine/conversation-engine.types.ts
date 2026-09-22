@@ -9,6 +9,7 @@ export type ConversationEngineId = 'gemini_direct' | 'nous_hermes';
 export type ProposedAction =
   | { type: 'none' }
   | { type: 'request_handoff'; reason: string }
+  | { type: 'request_callback' }
   | { type: 'propose_quote_task'; summary: string };
 
 export type ApprovedConversationMessage = {
@@ -25,6 +26,7 @@ export interface ConversationTurnInput {
   approvedContext: {
     recentMessages: ApprovedConversationMessage[];
     commercialProfile?: CommercialProfile;
+    recentProfileChanges?: Array<Record<string, string>>;
     approvedKnowledge: string[];
     handoffActive: boolean;
     contactName: string;
@@ -44,6 +46,10 @@ export interface ConversationTurnInput {
       type: string;
       status: string;
       dueAt?: string;
+    }>;
+    recentCompletedActions?: Array<{
+      type: string;
+      completedAt?: string;
     }>;
     actionCapabilities?: {
       callbackTasks: boolean;
@@ -69,6 +75,8 @@ export interface ConversationTurnResult {
     decision?: string;
     commercialProfile?: CommercialProfile;
   };
+  /** Untrusted literal customer evidence for proposed profile fields. */
+  proposalEvidence?: Record<string, string>;
   diagnostic?: HermesDiagnostic;
 }
 

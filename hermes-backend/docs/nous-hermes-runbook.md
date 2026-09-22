@@ -3,18 +3,23 @@
 ## Alcance y estado seguro
 
 Este runbook corresponde al contrato privado VPS `contract_version=1`. La
-implementación local no autoriza un canary ni conversaciones comerciales. Los
-valores versionados de operación y rollback son:
+arquitectura conversacional y el modo reversible de pruebas entrantes se
+documentan en `nous-hermes-conversational-integration.md`. Los valores
+versionados de operación y rollback son:
 
 ```dotenv
 HERMES_CONVERSATION_ENGINE=gemini_direct
 NOUS_HERMES_CONVERSATION_ALLOWLIST=
+NOUS_HERMES_OPEN_INBOUND_TEST=false
 ```
 
 Con estos valores todas las conversaciones usan `DirectGeminiEngine`; el CRM
-no depende de Nous. Aunque se configure `nous_hermes`, una conversación que no
-figure por su UUID interno en la allowlist continúa con Gemini directo. Un
-identificador de motor desconocido falla cerrado.
+no depende de Nous. Si se configura `nous_hermes` con el modo abierto en
+`false`, una conversación que no figure por su UUID interno en la allowlist
+continúa con Gemini directo. El valor literal `true` de
+`NOUS_HERMES_OPEN_INBOUND_TEST` selecciona Nous para las conversaciones
+entrantes de múltiples contactos. Un identificador de motor desconocido falla
+cerrado.
 
 ## Contrato privado fijado
 
@@ -35,9 +40,10 @@ ni herramientas.
 
 Una respuesta se acepta sólo si el HTTP es satisfactorio, no hay `error` de
 nivel superior, `finish_reason` existe y no es `error`, el contenido final es
-texto válido, y no hay `tool_calls`, `reasoning_content` ni contenido
-privilegiado. El modelo reportado sólo se conserva como `hermes-agent` cuando
-coincide exactamente; de otro modo se registra `unknown`.
+JSON con `replyText` válido, y no hay `tool_calls`, `reasoning_content` ni
+contenido privilegiado. Los campos propuestos se validan además en el CRM.
+El modelo reportado sólo se conserva como `hermes-agent` cuando coincide
+exactamente; de otro modo se registra `unknown`.
 
 ## Variables exactas
 
@@ -46,6 +52,7 @@ Mantener en el runtime del backend:
 ```dotenv
 HERMES_CONVERSATION_ENGINE=gemini_direct
 NOUS_HERMES_CONVERSATION_ALLOWLIST=
+NOUS_HERMES_OPEN_INBOUND_TEST=false
 NOUS_HERMES_CHAT_COMPLETIONS_URL=http://nous-hermes-api:8642/v1/chat/completions
 NOUS_HERMES_API_KEY_FILE=/run/secrets/nous_hermes_api_key
 NOUS_HERMES_TIMEOUT_MS=45000
@@ -95,9 +102,9 @@ El aprovisionamiento, permisos, rotación coordinada y rollback se detallan en
 Sólo `app` se conecta a `hermes_client_api`; PostgreSQL, Redis y n8n permanecen
 en la red predeterminada. No añadir `ports:` para `8642`.
 
-## Despliegue preparado, no autorizado por este cambio
+## Despliegue focalizado desde la VPS
 
-Con la allowlist todavía vacía:
+Con el modo abierto desactivado y la allowlist vacía, ejecutar en la VPS:
 
 ```bash
 COMPOSE_ENV=/etc/hermes-crm/compose.env
@@ -118,8 +125,9 @@ docker exec hermes-app node -e "const fs=require('node:fs');const k=fs.readFileS
 ```
 
 No imprimir la clave, headers, cuerpos completos de prompts/respuestas ni usar
-`set -x`. Una prueba sintética autorizada debe usar una conversación ficticia y
-una allowlist de un solo UUID. Vaciarla inmediatamente al terminar.
+`set -x`. Una prueba sintética inicial puede usar una conversación ficticia y
+una allowlist de un solo UUID. Vaciarla inmediatamente al terminar; después,
+el modo abierto permite pruebas reales de múltiples contactos entrantes.
 
 ## Cola, límites y fallos de Nous
 
@@ -194,7 +202,7 @@ No utilizar el estado de n8n como confirmación de entrega a Meta.
 
 ## Rollback
 
-1. Vaciar `NOUS_HERMES_CONVERSATION_ALLOWLIST`.
+1. Establecer `NOUS_HERMES_OPEN_INBOUND_TEST=false` y vaciar `NOUS_HERMES_CONVERSATION_ALLOWLIST`.
 2. Establecer `HERMES_CONVERSATION_ENGINE=gemini_direct`.
 3. Dejar de admitir nuevos jobs Nous, esperar los activos y revisar la cola
    `nous-hermes-inference`; no borrar jobs activos a ciegas.
@@ -228,6 +236,7 @@ docker compose --env-file /etc/hermes-crm/compose.env config --quiet
 
 La integración requiere `REDIS_INTEGRATION_URL` y
 `DATABASE_INTEGRATION_URL` apuntando exclusivamente a servicios desechables.
-Mocks no satisfacen esa puerta. Además se requiere una prueba conjunta
-autorizada desde `hermes-app` contra la VPS; esta entrega local no la realiza y
-no habilita conversaciones comerciales.
+Mocks no satisfacen esa puerta. Antes de activar tráfico real en la VPS,
+comprobar allí la salud de Nous y una conversación sintética con el agente
+configurado; las pruebas locales usan una respuesta simulada y no sustituyen
+esa comprobación operativa.

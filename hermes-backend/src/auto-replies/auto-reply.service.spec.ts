@@ -8,6 +8,7 @@
   -- This integration-style unit suite uses dynamic Nest, Prisma, and BullMQ doubles. */
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
 import { ConversationStatus, MessageDirection } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { AutoReplyService } from './auto-reply.service';
@@ -29,6 +30,8 @@ import {
 } from '../hermes/dto/hermes-request.dto';
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 import { PrepareAutomatedDeliveryBatch } from '../automated-deliveries/automated-delivery.types';
+import { AgentOutputValidator } from '../conversation-engine/agent-output.validator';
+import { NousHermesTransport } from '../conversation-engine/nous-hermes.transport';
 
 describe('AutoReplyService', () => {
   const toEngineResult = (response: HermesResponseDto) => ({
@@ -97,6 +100,7 @@ describe('AutoReplyService', () => {
 
   type ProcessHarnessOptions = {
     hermesResponse: HermesResponseDto;
+    inboundContent?: string;
     outputDecision?: GeneratedResponseDecision;
     reviewTask?: { id: string } | Error;
     persistedProfile?: CommercialProfile;
@@ -105,14 +109,18 @@ describe('AutoReplyService', () => {
   function setupProcessHarness(options: ProcessHarnessOptions): {
     service: AutoReplyService;
     meta: { sendTextMessage: jest.Mock; showTypingIndicator: jest.Mock };
-    tasks: { requestHermesReview: jest.Mock; requestQuote: jest.Mock };
+    tasks: {
+      requestHermesReview: jest.Mock;
+      requestQuote: jest.Mock;
+      requestCallback: jest.Mock;
+    };
     leads: {
       recordCommercialProfileFromConversation: jest.Mock;
       qualifyFromConversation: jest.Mock;
     };
     handoffs: { create: jest.Mock };
     guard: { consumeAiQuota: jest.Mock; inspectGeneratedResponse: jest.Mock };
-    engine: { respond: jest.Mock };
+    engine: { respond: jest.Mock; selectedEngine: jest.Mock };
     deliveries: {
       recoverBatch: jest.Mock;
       prepareBatch: jest.Mock;
@@ -126,7 +134,7 @@ describe('AutoReplyService', () => {
       wamid: 'wamid.inbound-recovery',
       conversationId: 'conversation-1',
       contactId: 'contact-1',
-      content: 'Necesito confirmar este punto',
+      content: options.inboundContent ?? 'Necesito confirmar este punto',
       createdAt: new Date('2026-09-20T18:00:00.000Z'),
       rawPayload: null,
     };
@@ -182,6 +190,7 @@ describe('AutoReplyService', () => {
     const tasks = {
       requestHermesReview,
       requestQuote: jest.fn().mockResolvedValue({ id: 'quote-task-1' }),
+      requestCallback: jest.fn().mockResolvedValue({ id: 'callback-task-1' }),
     };
     const leads = {
       recordCommercialProfileFromConversation: jest.fn().mockResolvedValue({}),
@@ -197,6 +206,7 @@ describe('AutoReplyService', () => {
       create: jest.fn().mockResolvedValue({ id: 'handoff-1' }),
     };
     const engine = {
+      selectedEngine: jest.fn().mockReturnValue('gemini_direct'),
       respond: jest
         .fn()
         .mockResolvedValue(toEngineResult(options.hermesResponse)),
@@ -463,6 +473,178 @@ describe('AutoReplyService', () => {
 
     expect(harness.messageCreate).not.toHaveBeenCalled();
     expect(harness.conversationUpdate).not.toHaveBeenCalled();
+  });
+
+  it('keeps a valid Nous reply and persists only evidence-backed profile fields', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Necesito un sitio web para mi negocio',
+      hermesResponse: { response: 'Claro, puedo ayudarle con su sitio web.' },
+    });
+    harness.engine.respond.mockResolvedValue({
+      replyText: 'Claro, puedo ayudarle con su sitio web.',
+      proposedActions: [{ type: 'none' }],
+      engine: 'nous_hermes',
+      providerModel: 'hermes-agent',
+      traceId: 'inbound-recovery',
+      business: { commercialProfile: { need: 'sitio web', budget: '$9999' } },
+      proposalEvidence: { need: 'sitio web', budget: 'presupuesto $9999' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
+    ).toBe('Claro, puedo ayudarle con su sitio web.');
+    expect(
+      harness.leads.recordCommercialProfileFromConversation,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({ need: 'sitio web' }),
+      }),
+    );
+    expect(
+      harness.leads.recordCommercialProfileFromConversation.mock.calls[0][0]
+        .profile.budget,
+    ).toBeUndefined();
+  });
+
+  it('executes an evidence-backed quote proposal without replacing the agent reply', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Quiero una cotización para mi sitio web',
+      hermesResponse: {
+        response: 'Podemos preparar una valoración para su sitio web.',
+      },
+    });
+    harness.engine.respond.mockResolvedValue({
+      replyText: 'Podemos preparar una valoración para su sitio web.',
+      proposedActions: [{ type: 'propose_quote_task', summary: 'Sitio web' }],
+      engine: 'nous_hermes',
+      providerModel: 'hermes-agent',
+      traceId: 'inbound-recovery',
+      business: { decision: 'Quiero una cotización' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.tasks.requestQuote).toHaveBeenCalledTimes(1);
+    expect(
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
+    ).toBe('Podemos preparar una valoración para su sitio web.');
+  });
+
+  it('repairs an unauthorized Nous price while retaining the valid answer', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Quiero un sitio web',
+      hermesResponse: {
+        response: 'El sitio web puede mostrar sus servicios. Cuesta USD $9999.',
+      },
+    });
+    harness.engine.respond.mockResolvedValue({
+      replyText: 'El sitio web puede mostrar sus servicios. Cuesta USD $9999.',
+      proposedActions: [{ type: 'none' }],
+      engine: 'nous_hermes',
+      providerModel: 'hermes-agent',
+      traceId: 'inbound-recovery',
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const content = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
+      .content as string;
+    expect(content).toContain('El sitio web puede mostrar sus servicios.');
+    expect(content).not.toContain('9999');
+  });
+
+  it('runs a complete synthetic inbound through Nous JSON, CRM validation and delivery', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Necesito un sitio web para mi negocio',
+      hermesResponse: { response: 'Consulta sintética' },
+    });
+    const post = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: {
+        model: 'hermes-agent',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: JSON.stringify({
+                replyText: 'Podemos ayudarle con su sitio web.',
+                detectedIntent: 'consulta_servicio',
+                commercialProfilePatch: { need: 'sitio web' },
+                fieldEvidence: { need: 'sitio web' },
+                proposedNextAction: { type: 'none' },
+              }),
+            },
+          },
+        ],
+      },
+    });
+    const transport = new NousHermesTransport(
+      {
+        get: jest.fn((_key: string, fallback?: unknown) => fallback),
+      } as unknown as ConfigService,
+      new AgentOutputValidator(),
+      { read: jest.fn().mockResolvedValue('synthetic-secret') },
+    );
+    harness.engine.respond.mockImplementation((input) =>
+      transport.execute(input),
+    );
+    try {
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(
+        harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
+      ).toBe('Podemos ayudarle con su sitio web.');
+      expect(harness.deliveries.deliverPreparedBatch).toHaveBeenCalledTimes(1);
+      expect(
+        harness.leads.recordCommercialProfileFromConversation,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: expect.objectContaining({ need: 'sitio web' }),
+        }),
+      );
+    } finally {
+      post.mockRestore();
+    }
+  });
+
+  it('lets Nous request an existing callback task for an affirmative call request', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Llámame mañana',
+      hermesResponse: {
+        response:
+          'He registrado su solicitud de llamada, pendiente de confirmación.',
+      },
+    });
+    harness.engine.selectedEngine.mockReturnValue('nous_hermes');
+    harness.engine.respond.mockResolvedValue({
+      replyText:
+        'He registrado su solicitud de llamada, pendiente de confirmación.',
+      proposedActions: [{ type: 'request_callback' }],
+      engine: 'nous_hermes',
+      providerModel: 'hermes-agent',
+      traceId: 'inbound-recovery',
+      business: { decision: 'Llámame' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.tasks.requestCallback).toHaveBeenCalledTimes(1);
+    expect(
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
+    ).toContain('pendiente de confirmación');
   });
 
   it('records when an automatic reply is skipped by the AI quota', async () => {
@@ -847,6 +1029,7 @@ describe('AutoReplyService', () => {
     } as unknown as PrismaService;
     const meta = { sendTextMessage: jest.fn() } as unknown as MetaService;
     const engine = {
+      selectedEngine: jest.fn().mockReturnValue('gemini_direct'),
       respond: jest.fn(),
     } as unknown as ConversationEngineService;
     const service = new AutoReplyService(
@@ -992,6 +1175,7 @@ describe('AutoReplyService', () => {
         .mockResolvedValue({ messages: [{ id: 'wamid.outbound' }] }),
     } as unknown as MetaService;
     const engine = {
+      selectedEngine: jest.fn().mockReturnValue('gemini_direct'),
       respond: jest.fn(),
     } as unknown as ConversationEngineService;
     const tasks = {

@@ -1,4 +1,6 @@
 import { Injectable } from '@nestjs/common';
+import type { CommercialProfile } from '../hermes/dto/hermes-request.dto';
+import type { ProposedAction } from './conversation-engine.types';
 
 export class InvalidAgentOutputError extends Error {
   constructor(message: string) {
@@ -27,6 +29,12 @@ type ChatCompletionPayload = {
 
 export type ValidatedAgentOutput = {
   replyText: string;
+  detectedIntent?: string;
+  suggestedTags?: string[];
+  commercialProfilePatch?: CommercialProfile;
+  fieldEvidence?: Record<string, string>;
+  proposedNextAction?: ProposedAction;
+  actionEvidence?: string;
   providerModel: string;
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
 };
@@ -78,7 +86,18 @@ export class AgentOutputValidator {
       throw new InvalidAgentOutputError('Agent final content is not text');
     }
 
-    const replyText = message.content.trim();
+    let proposal: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(message.content);
+      if (!this.object(parsed)) throw new Error('not object');
+      proposal = parsed;
+    } catch {
+      throw new InvalidAgentOutputError(
+        'Agent final content is not a JSON proposal',
+      );
+    }
+    const replyText =
+      typeof proposal.replyText === 'string' ? proposal.replyText.trim() : '';
     if (!replyText) {
       throw new InvalidAgentOutputError('Agent final content is empty');
     }
@@ -93,6 +112,111 @@ export class AgentOutputValidator {
       throw new InvalidAgentOutputError(
         'Agent final content contains internal or structured data',
       );
+    }
+
+    const detectedIntent = this.optionalShortText(proposal.detectedIntent, 80);
+    const actionEvidence = this.optionalShortText(proposal.actionEvidence, 300);
+    let suggestedTags: string[] | undefined;
+    if (proposal.suggestedTags !== undefined) {
+      if (
+        !Array.isArray(proposal.suggestedTags) ||
+        proposal.suggestedTags.length > 8 ||
+        !proposal.suggestedTags.every(
+          (tag) => typeof tag === 'string' && /^[a-z0-9_-]{1,40}$/i.test(tag),
+        )
+      ) {
+        throw new InvalidAgentOutputError('Agent tags are invalid');
+      }
+      suggestedTags = proposal.suggestedTags as string[];
+    }
+    const profileKeys = new Set([
+      'service',
+      'company',
+      'sector',
+      'location',
+      'need',
+      'currentSituation',
+      'users',
+      'productCount',
+      'paymentNeeds',
+      'shippingNeeds',
+      'inventoryNeeds',
+      'domainStatus',
+      'corporateEmailNeeds',
+      'integrations',
+      'budget',
+      'timeline',
+      'lastObjection',
+      'contactPreference',
+    ]);
+    let commercialProfilePatch: CommercialProfile | undefined;
+    if (proposal.commercialProfilePatch !== undefined) {
+      if (!this.object(proposal.commercialProfilePatch))
+        throw new InvalidAgentOutputError('Agent profile patch is invalid');
+      commercialProfilePatch = {};
+      for (const [key, value] of Object.entries(
+        proposal.commercialProfilePatch,
+      )) {
+        if (
+          !profileKeys.has(key) ||
+          typeof value !== 'string' ||
+          !value.trim() ||
+          value.length > 240
+        ) {
+          throw new InvalidAgentOutputError('Agent profile field is invalid');
+        }
+        if (
+          key === 'contactPreference' &&
+          !['WHATSAPP', 'CALL', 'VIDEO_CALL', 'EMAIL'].includes(value)
+        ) {
+          throw new InvalidAgentOutputError(
+            'Agent contact preference is invalid',
+          );
+        }
+        Object.assign(commercialProfilePatch, { [key]: value.trim() });
+      }
+    }
+    let fieldEvidence: Record<string, string> | undefined;
+    if (proposal.fieldEvidence !== undefined) {
+      if (!this.object(proposal.fieldEvidence))
+        throw new InvalidAgentOutputError('Agent evidence is invalid');
+      fieldEvidence = {};
+      for (const [key, value] of Object.entries(proposal.fieldEvidence)) {
+        if (
+          !profileKeys.has(key) ||
+          typeof value !== 'string' ||
+          !value.trim() ||
+          value.length > 300
+        ) {
+          throw new InvalidAgentOutputError('Agent evidence field is invalid');
+        }
+        fieldEvidence[key] = value.trim();
+      }
+    }
+    let proposedNextAction: ProposedAction | undefined;
+    if (proposal.proposedNextAction !== undefined) {
+      if (!this.object(proposal.proposedNextAction))
+        throw new InvalidAgentOutputError('Agent action is invalid');
+      const action = proposal.proposedNextAction;
+      if (action.type === 'none') proposedNextAction = { type: 'none' };
+      else if (action.type === 'request_callback')
+        proposedNextAction = { type: 'request_callback' };
+      else if (
+        action.type === 'request_handoff' &&
+        typeof action.reason === 'string' &&
+        action.reason.length <= 240
+      )
+        proposedNextAction = { type: 'request_handoff', reason: action.reason };
+      else if (
+        action.type === 'propose_quote_task' &&
+        typeof action.summary === 'string' &&
+        action.summary.length <= 500
+      )
+        proposedNextAction = {
+          type: 'propose_quote_task',
+          summary: action.summary,
+        };
+      else throw new InvalidAgentOutputError('Agent action type is invalid');
     }
     if (
       /\bBearer\s+[A-Za-z0-9._~+/-]{8,}|-----BEGIN (?:RSA |EC )?PRIVATE KEY-----|\b(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S+/i.test(
@@ -124,12 +248,30 @@ export class AgentOutputValidator {
 
     return {
       replyText,
+      detectedIntent,
+      suggestedTags,
+      commercialProfilePatch,
+      fieldEvidence,
+      proposedNextAction,
+      actionEvidence,
       providerModel:
         typeof completion.model === 'string' && completion.model.trim()
           ? completion.model.trim()
           : 'unknown',
       usage,
     };
+  }
+
+  private object(value: unknown): value is Record<string, unknown> {
+    return value !== null && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  private optionalShortText(value: unknown, limit: number): string | undefined {
+    if (value === undefined) return undefined;
+    if (typeof value !== 'string' || !value.trim() || value.length > limit) {
+      throw new InvalidAgentOutputError('Agent field is invalid');
+    }
+    return value.trim();
   }
 
   private optionalNonNegativeInteger(value: unknown): number | undefined {
