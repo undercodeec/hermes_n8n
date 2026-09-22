@@ -1,9 +1,24 @@
 # Secretos / entornos
 .env
+.env.*
 .env.local
 .env.*.local
 *.env
 !.env.example
+!*.env.example
+
+# Secretos, certificados y respaldos locales
+secrets/
+**/secrets/
+*.secret
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.dump
+*.sql.gz
+*.backup
 
 # Node
 node_modules/
@@ -45,3 +60,4 @@ coverage/
 *.md
 !hermes-backend/docs/crm-baseline-agent.md
 !hermes-backend/docs/nous-hermes-runbook.md
+!hermes-backend/docs/security-preflight-2026-09-21.md

@@ -6,7 +6,7 @@ services:
     container_name: hermes-app
     restart: unless-stopped
     env_file:
-      - .env
+      - ${HERMES_BACKEND_ENV_FILE:?Set HERMES_BACKEND_ENV_FILE to a root-readable file outside Git}
     environment:
       PORT: 3003
     secrets:
@@ -30,16 +30,15 @@ services:
     image: postgres:16-alpine
     container_name: hermes-postgres
     restart: unless-stopped
-    environment:
-      POSTGRES_USER: hermes_user
-      POSTGRES_PASSWORD: hermes_password
-      POSTGRES_DB: hermes_db
+    env_file:
+      - ${POSTGRES_ENV_FILE:?Set POSTGRES_ENV_FILE to a root-readable file outside Git}
     ports:
       - '127.0.0.1:5432:5432'
     volumes:
       - hermes_pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ['CMD-SHELL', 'pg_isready -U hermes_user -d hermes_db']
+      test:
+        ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -59,9 +58,11 @@ services:
       retries: 5
 
   n8n:
-    image: n8nio/n8n:latest
+    image: ${N8N_IMAGE:?Set N8N_IMAGE to the exact digest already running on the VPS}
     container_name: hermes-n8n
     restart: unless-stopped
+    env_file:
+      - ${N8N_ENV_FILE:?Set N8N_ENV_FILE to a root-readable file outside Git}
     ports:
       - '127.0.0.1:5678:5678'
     environment:
@@ -71,9 +72,6 @@ services:
       WEBHOOK_URL: https://n8n.undercodeec.com/
       GENERIC_TIMEZONE: America/Guayaquil
       TZ: America/Guayaquil
-      N8N_BASIC_AUTH_ACTIVE: 'true'
-      N8N_BASIC_AUTH_USER: admin
-      N8N_BASIC_AUTH_PASSWORD: hermes_n8n_admin_change_me
       N8N_RUNNERS_ENABLED: 'true'
       N8N_SECURE_COOKIE: 'true'
       N8N_PROXY_HOPS: '1'
@@ -81,13 +79,11 @@ services:
       NODE_FUNCTION_ALLOW_BUILTIN: crypto
       # Permite que los nodos Code accedan a vars de entorno via $env.VAR_NAME.
       N8N_BLOCK_ENV_ACCESS_IN_NODE: 'false'
-      # Secreto HMAC: se interpola desde hermes-backend/.env (no se hardcodea
-      # porque el repo es público). Mismo valor que usa el backend para firmar.
-      N8N_HMAC_SECRET: ${N8N_HMAC_SECRET}
     volumes:
       - hermes_n8n_data:/home/node/.n8n
     healthcheck:
-      test: ['CMD-SHELL', 'wget -q -O - http://localhost:5678/healthz || exit 1']
+      test:
+        ['CMD-SHELL', 'wget -q -O - http://localhost:5678/healthz || exit 1']
       interval: 15s
       timeout: 5s
       retries: 5

@@ -79,11 +79,18 @@ para otros usuarios.
 Antes de recrear el servicio:
 
 ```bash
+COMPOSE_ENV=/etc/hermes-crm/compose.env
+sudo test -r "$COMPOSE_ENV"
 sudo test -r /etc/hermes-agent-client/api-key
 docker network inspect hermes_client_api >/dev/null 2>&1 || \
   docker network create hermes_client_api
-docker compose config --no-interpolate
+docker compose --env-file "$COMPOSE_ENV" config --quiet
 ```
+
+`compose.env` sólo contiene rutas a los archivos externos y el digest de imagen;
+los secretos operativos permanecen en `backend.env`, `postgres.env` y `n8n.env`.
+El aprovisionamiento, permisos, rotación coordinada y rollback se detallan en
+`security-preflight-2026-09-21.md`.
 
 Sólo `app` se conecta a `hermes_client_api`; PostgreSQL, Redis y n8n permanecen
 en la red predeterminada. No añadir `ports:` para `8642`.
@@ -93,9 +100,10 @@ en la red predeterminada. No añadir `ports:` para `8642`.
 Con la allowlist todavía vacía:
 
 ```bash
-docker compose build app
-docker compose run --rm app npx prisma migrate deploy
-docker compose up -d app
+COMPOSE_ENV=/etc/hermes-crm/compose.env
+docker compose --env-file "$COMPOSE_ENV" build app
+docker compose --env-file "$COMPOSE_ENV" run --rm app npx prisma migrate deploy
+docker compose --env-file "$COMPOSE_ENV" up -d app
 ```
 
 La migración debe completarse antes de reiniciar la aplicación porque crea el
@@ -215,7 +223,7 @@ npm run test:e2e -- --runInBand
 npm run test:integration
 npm run build
 npm run lint
-docker compose config --no-interpolate
+docker compose --env-file /etc/hermes-crm/compose.env config --quiet
 ```
 
 La integración requiere `REDIS_INTEGRATION_URL` y
