@@ -69,6 +69,14 @@ describe('VoiceService', () => {
     );
   });
 
+  it('reports missing STT credentials before downloading media', async () => {
+    const { voice, meta } = setup();
+    await expect(voice.transcribe('media-1')).rejects.toEqual(
+      new VoiceProcessingError('STT_NOT_CONFIGURED'),
+    );
+    expect(meta.downloadInboundAudio).not.toHaveBeenCalled();
+  });
+
   it('reads the duration of streamed OGG packets without seeking', async () => {
     const { voice } = setup();
     jest.restoreAllMocks();

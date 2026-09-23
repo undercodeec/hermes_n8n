@@ -41,7 +41,7 @@ import {
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 import { PrepareAutomatedDeliveryBatch } from '../automated-deliveries/automated-delivery.types';
 import { InboundTurnService } from './inbound-turn.service';
-import { VoiceService } from '../voice/voice.service';
+import { VoiceProcessingError, VoiceService } from '../voice/voice.service';
 import { AgentOutputValidator } from '../conversation-engine/agent-output.validator';
 import { NousHermesTransport } from '../conversation-engine/nous-hermes.transport';
 
@@ -395,6 +395,86 @@ describe('AutoReplyService', () => {
     );
   });
 
+  it('personalizes an initial greeting and removes a corporate welcome without fixing the whole reply', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Buenas tardes',
+      hermesResponse: {
+        response:
+          'Buenas tardes. Bienvenido a Undercodeec, ¿en qué podemos ayudarle con su proyecto hoy?',
+        detectedIntent: 'info_general',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const prepared = harness.deliveries.prepareBatch.mock.calls[0][0] as {
+      parts: Array<{ content: string }>;
+    };
+    expect(prepared.parts[0].content).toBe(
+      'Buenas tardes, Ana. ¿En qué podemos ayudarle con su proyecto hoy?',
+    );
+  });
+
+  it('uses the name for a new greeting even when the conversation has older messages', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Buenas tardes',
+      hermesResponse: {
+        response: 'Buenas tardes. ¿Cómo podemos ayudarle hoy?',
+        detectedIntent: 'info_general',
+      },
+    });
+    const internals = harness.service as unknown as {
+      prisma: { message: { findMany: jest.Mock } };
+    };
+    internals.prisma.message.findMany.mockImplementation(async (args) =>
+      args.where?.NOT
+        ? [
+            {
+              direction: MessageDirection.OUTBOUND,
+              content: 'Podemos continuar por aquí.',
+              createdAt: new Date('2026-09-20T18:00:00.000Z'),
+              rawPayload: null,
+            },
+          ]
+        : [],
+    );
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const prepared = harness.deliveries.prepareBatch.mock.calls[0][0] as {
+      parts: Array<{ content: string }>;
+    };
+    expect(prepared.parts[0].content).toBe(
+      'Buenas tardes, Ana. ¿Cómo podemos ayudarle hoy?',
+    );
+  });
+
+  it('keeps a service answer while removing the corporate welcome', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Necesito una página web',
+      hermesResponse: {
+        response:
+          'Bienvenido a Undercodeec. Podemos crear su sitio web. ¿A qué se dedica su negocio?',
+        detectedIntent: 'consulta_servicio',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const prepared = harness.deliveries.prepareBatch.mock.calls[0][0] as {
+      parts: Array<{ content: string }>;
+    };
+    expect(prepared.parts[0].content).toBe(
+      'Podemos crear su sitio web. ¿A qué se dedica su negocio?',
+    );
+  });
+
   it('transcribes an audio turn before inference and selects voice in MIRROR mode', async () => {
     const harness = setupProcessHarness({
       hermesResponse: {
@@ -710,6 +790,53 @@ describe('AutoReplyService', () => {
         ],
       }),
     );
+  });
+
+  it('does not describe a missing STT provider as an unclear recording', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'No debe generarse' },
+    });
+    Object.assign(harness.service, {
+      inboundTurns: {
+        claim: jest.fn().mockResolvedValue({
+          id: 'turn-audio',
+          lastMessageId: 'inbound-recovery',
+          processingToken: 'claim-token',
+        }),
+        messages: jest.fn().mockResolvedValue([
+          {
+            id: 'inbound-recovery',
+            wamid: 'wamid.audio',
+            type: 'AUDIO',
+            content: '[Audio]',
+            createdAt: new Date(),
+            rawPayload: { audio: { id: 'media-inbound' } },
+          },
+        ]),
+        complete: jest.fn(),
+        release: jest.fn(),
+      } as unknown as InboundTurnService,
+      voice: {
+        transcribe: jest
+          .fn()
+          .mockRejectedValue(new VoiceProcessingError('STT_NOT_CONFIGURED')),
+      } as unknown as VoiceService,
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+      inboundTurnId: 'turn-audio',
+    });
+    const prepared = harness.deliveries.prepareBatch.mock.calls[0][0] as {
+      parts: Array<{ content: string; metadata: { reasonCode?: string } }>;
+    };
+    expect(prepared.parts[0].content).toContain(
+      'No puedo procesar notas de voz',
+    );
+    expect(prepared.parts[0].content).not.toContain('escuchar bien');
+    expect(prepared.parts[0].metadata.reasonCode).toBe('STT_NOT_CONFIGURED');
+    expect(harness.engine.respond).not.toHaveBeenCalled();
   });
 
   it('resumes a prepared batch before quota or inference', async () => {

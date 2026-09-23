@@ -43,7 +43,7 @@ import { AutomatedDeliveryService } from '../automated-deliveries/automated-deli
 import { reviewAgentProposal } from '../conversation-engine/agent-proposal-policy';
 import { AGENT_DEFAULT_INTENTS } from '../conversation-engine/agent-output.contract';
 import { InboundTurnService } from './inbound-turn.service';
-import { VoiceService } from '../voice/voice.service';
+import { VoiceProcessingError, VoiceService } from '../voice/voice.service';
 
 @Injectable()
 export class AutoReplyService {
@@ -122,7 +122,8 @@ export class AutoReplyService {
         );
         if (audio.length) {
           try {
-            if (!this.voice) throw new Error('VOICE_NOT_CONFIGURED');
+            if (!this.voice)
+              throw new VoiceProcessingError('STT_NOT_CONFIGURED');
             for (const message of audio) {
               const payload = message.rawPayload;
               const mediaId =
@@ -151,9 +152,30 @@ export class AutoReplyService {
               });
             }
           } catch (error) {
+            const reasonCode =
+              error instanceof VoiceProcessingError
+                ? error.code
+                : 'AUDIO_PROCESSING_FAILED';
             this.logger.warn(
-              `Audio no transcrito: ${error instanceof Error ? error.name : 'UNKNOWN'}`,
+              JSON.stringify({
+                event: 'audio_transcription_failed',
+                conversationId: data.conversationId,
+                inboundMessageId: turn.lastMessageId,
+                reasonCode,
+              }),
             );
+            const notice =
+              reasonCode === 'STT_NOT_CONFIGURED' ||
+              reasonCode === 'STT_PROVIDER_UNSUPPORTED' ||
+              reasonCode === 'STT_PROVIDER_FAILED' ||
+              reasonCode === 'AUDIO_TOOL_UNAVAILABLE'
+                ? 'No puedo procesar notas de voz en este momento. ¿Podría escribirme su mensaje?'
+                : reasonCode === 'AUDIO_TOO_LONG'
+                  ? 'La nota de voz es demasiado larga para procesarla. ¿Podría enviarla en partes más cortas o escribirme su mensaje?'
+                  : reasonCode === 'STT_LOW_CONFIDENCE' ||
+                      reasonCode === 'STT_EMPTY_OR_TOO_LONG'
+                    ? 'No pude entender bien esa nota de voz. ¿Podría reenviarla o escribirme esa parte?'
+                    : 'No pude procesar esa nota de voz. ¿Podría reenviarla o escribirme esa parte?';
             await this.deliveries.prepareBatch({
               deliveryKind: 'SYSTEM_NOTICE',
               conversationId: data.conversationId,
@@ -164,11 +186,11 @@ export class AutoReplyService {
               parts: [
                 {
                   partIndex: 0,
-                  content:
-                    'No pude escuchar bien esa nota de voz. ¿Podría reenviarla o escribirme esa parte?',
+                  content: notice,
                   metadata: {
                     action: 'AUDIO_TRANSCRIPTION_FAILED',
                     conversationTurnId: turn.id,
+                    reasonCode,
                   },
                 },
               ],
@@ -494,6 +516,16 @@ export class AutoReplyService {
       commercialSnapshot,
       policy.guidance.currentTopic === 'price',
     );
+    response.response = this.polishInitialGreeting({
+      reply: response.response,
+      customerMessage:
+        turnMessages?.length === 1
+          ? turnMessages[0].content || ''
+          : turnMessages
+            ? ''
+            : inbound.content || '',
+      contactName: conversation.contact.name || '',
+    });
     reviewedProposal?.rejections.push(...commercialReview.reasons);
 
     const outputDecision = this.conversationGuard.inspectGeneratedResponse(
@@ -1145,6 +1177,49 @@ export class AutoReplyService {
   ): Promise<void> {
     if (!inboundWamid) return;
     await this.meta.showTypingIndicator(inboundWamid);
+  }
+
+  private polishInitialGreeting(input: {
+    reply: string;
+    customerMessage: string;
+    contactName: string;
+  }): string {
+    let reply = input.reply
+      .replace(
+        /\bbienvenid[oa]s?\s+a\s+under\s*code\s*ec\b\s*[,;.!]?\s*/giu,
+        '',
+      )
+      .replace(/\s{2,}/gu, ' ')
+      .replace(
+        /([.!]\s+)¿?(en qué|a qué|cómo|cuál|cuándo)/giu,
+        (_match, prefix: string, question: string) =>
+          `${prefix}¿${question[0].toLocaleUpperCase('es')}${question.slice(1)}`,
+      )
+      .trim();
+    if (!reply) reply = '¿En qué podemos ayudarle?';
+    if (
+      !/^(?:hola|buenas(?:\s+(?:tardes|noches))?|buenos\s+d[ií]as|buen\s+d[ií]a)[\s.!¡¿?]*$/iu.test(
+        input.customerMessage.trim(),
+      )
+    )
+      return reply;
+    const firstName = input.contactName.trim().match(/[\p{L}\p{M}'-]+/u)?.[0];
+    if (
+      firstName &&
+      !/^(?:cliente|contacto|undercodeec)$/iu.test(firstName) &&
+      !reply
+        .match(/[\p{L}\p{M}'-]+/gu)
+        ?.some(
+          (word) =>
+            word.toLocaleLowerCase('es') === firstName.toLocaleLowerCase('es'),
+        )
+    ) {
+      reply = reply.replace(
+        /^(Buenas (?:tardes|noches)|Buenos d[ií]as|Buen d[ií]a|Hola)[.,!¡]?\s+/iu,
+        (_match, greeting: string) => `${greeting}, ${firstName}. `,
+      );
+    }
+    return reply;
   }
 
   private async persistConversationState(

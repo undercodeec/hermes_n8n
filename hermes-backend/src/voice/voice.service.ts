@@ -14,6 +14,7 @@ export type VoiceTranscript = {
 export class VoiceProcessingError extends Error {
   constructor(public readonly code: string) {
     super(code);
+    this.name = 'VoiceProcessingError';
   }
 }
 
@@ -25,6 +26,17 @@ export class VoiceService {
   ) {}
 
   async transcribe(mediaId: string): Promise<VoiceTranscript> {
+    const provider = this.config.get<string>(
+      'HERMES_STT_PROVIDER',
+      'elevenlabs',
+    );
+    if (provider !== 'elevenlabs' && provider !== 'openai')
+      throw new VoiceProcessingError('STT_PROVIDER_UNSUPPORTED');
+    const key = this.config.get<string>(
+      provider === 'elevenlabs' ? 'ELEVENLABS_API_KEY' : 'OPENAI_API_KEY',
+      '',
+    );
+    if (!key) throw new VoiceProcessingError('STT_NOT_CONFIGURED');
     const maxBytes = this.positiveInteger(
       'HERMES_AUDIO_MAX_BYTES',
       16 * 1024 * 1024,
@@ -36,10 +48,6 @@ export class VoiceService {
     const duration = await this.audioDuration(bytes);
     if (duration > this.positiveInteger('HERMES_AUDIO_MAX_SECONDS', 120))
       throw new VoiceProcessingError('AUDIO_TOO_LONG');
-    const provider = this.config.get<string>(
-      'HERMES_STT_PROVIDER',
-      'elevenlabs',
-    );
     const form = new FormData();
     const data = bytes.buffer.slice(
       bytes.byteOffset,
@@ -54,8 +62,6 @@ export class VoiceService {
       confidence?: unknown;
     };
     if (provider === 'elevenlabs') {
-      const key = this.config.get<string>('ELEVENLABS_API_KEY', '');
-      if (!key) throw new VoiceProcessingError('STT_NOT_CONFIGURED');
       form.append(
         'model_id',
         this.config.get<string>('HERMES_STT_MODEL_ID', 'scribe_v2'),
@@ -77,8 +83,6 @@ export class VoiceService {
         throw new VoiceProcessingError('STT_PROVIDER_FAILED');
       }
     } else if (provider === 'openai') {
-      const key = this.config.get<string>('OPENAI_API_KEY', '');
-      if (!key) throw new VoiceProcessingError('STT_NOT_CONFIGURED');
       form.append(
         'model',
         this.config.get<string>(

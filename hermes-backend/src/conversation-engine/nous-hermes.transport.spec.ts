@@ -102,6 +102,11 @@ describe('NousHermesTransport', () => {
     );
     expect(request.messages[0].content).toContain('contactPreference');
     expect(request.messages[0].content).toContain('Sin acción solicitada');
+    expect(request.messages[0].content).toContain('Bienvenido a Undercodeec');
+    const state = JSON.parse(request.messages.at(-1)!.content) as {
+      approvedState: { contactName?: string };
+    };
+    expect(state.approvedState.contactName).toBe('Ana');
   });
 
   it('passes distinct customer businesses and ordered reply parts through the private contract', async () => {
