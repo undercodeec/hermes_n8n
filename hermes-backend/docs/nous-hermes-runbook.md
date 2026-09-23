@@ -23,6 +23,34 @@ cerrado.
 
 ## Contrato privado fijado
 
+El contrato JSON exacto, incluidas las cuatro formas de `proposedNextAction`,
+las 18 claves autorizadas de `commercialProfilePatch` y las condiciones de
+`fieldEvidence` y `actionEvidence`, está en
+`nous-hermes-conversational-integration.md`. En un saludo o consulta general
+basta `{"replyText":"Hola, ¿en qué puedo ayudarle?"}`. Una acción propuesta
+requiere un objeto con `type` y evidencia literal del mensaje actual; un
+`request_callback` sin `actionEvidence` es inválido. El CRM conserva la
+decisión final y ninguna salida del agente ejecuta una acción por sí sola.
+
+### Reprueba sintética pendiente en la VPS
+
+Tras el despliegue autorizado por el operador, mantener
+`HERMES_CONVERSATION_ENGINE=gemini_direct` y
+`NOUS_HERMES_OPEN_INBOUND_TEST=false`. Codex VPS debe usar una conversación
+ficticia y un identificador interno sintético, sin número de teléfono ni llamada
+a Meta, para enviar el contexto de un saludo por la ruta privada de Chat
+Completions. Verificar HTTP 200, alias `hermes-agent`, `finish_reason` válido y
+que el `message.content` sea JSON. Pasar ese contenido al validador del CRM y
+registrar sólo claves, tipos, código de diagnóstico y resultado de validación;
+no guardar ni publicar prompt completo, secretos o texto de clientes. Repetir
+con una petición sintética de cotización y confirmar que la acción sea objeto
+`{"type":"propose_quote_task","summary":"..."}` con evidencia literal.
+Si aparece una clave de perfil ajena al contrato, registrar **sólo el nombre de
+la clave** para cerrar el dato faltante del incidente. Confirmar que una
+respuesta inválida no altera lead, tarea ni entrega, y dejar el motor directo y
+modo abierto desactivado hasta que la prueba real y los controles operativos
+terminen. No asumir que los tests locales sustituyen esta comprobación.
+
 El único destino permitido por el cliente es:
 
 ```text

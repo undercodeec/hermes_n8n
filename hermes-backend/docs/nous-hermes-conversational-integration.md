@@ -1,5 +1,73 @@
 # Integración conversacional de Nous Hermes Agent
 
+## Contrato de salida verificado en CRM (2026-09-22)
+
+El punto de partida local fue `645709735ecbe491241d604f7413f485376525b0`.
+El informe de la VPS confirma tres formas rechazadas, pero no conserva aquí el
+JSON completo ni el **nombre exacto** del campo ajeno a `commercialProfilePatch`.
+No se atribuye ese campo a una clave concreta: hay que comprobarlo en una nueva
+prueba sintética de la VPS sin publicar datos de clientes. El prompt anterior
+decía sólo «objeto opcional» y mostraba al agente un perfil con claves de CRM
+como `recommendedPlan` y `pendingQuestions`; el validador sólo admitía 18 claves.
+También enumeraba `none` y `request_callback` como palabras sin mostrar el
+objeto `{ "type": ... }`, por lo que una cadena era una interpretación razonable
+de la instrucción, aunque incompatible con el validador. La ausencia de
+`actionEvidence` para una acción ejecutable era una brecha del validador de
+entrada: la revisión determinista posterior la rechazaba. El parser sólo hace
+`JSON.parse(message.content)`; recorta cadenas y proyecta los campos validados,
+sin convertir una cadena en acción ni añadir evidencia.
+
+| Clave del JSON | Tipo y obligación | Restricción y consumidor |
+| --- | --- | --- |
+| `replyText` | cadena obligatoria | No vacía, máximo `AI_MAX_OUTPUT_CHARS` (900 por defecto); `AgentOutputValidator` y `AutoReplyService` aplican guardas comerciales antes de entrega. |
+| `detectedIntent` | cadena opcional | No vacía, máximo 80; `AutoReplyService` la contrasta con `HERMES_ALLOWED_INTENTS` o el catálogo predeterminado y descarta las no autorizadas. |
+| `suggestedTags` | lista opcional de cadenas | Máximo 8, cada una `[a-z0-9_-]` de 1–40 caracteres; `reviewAgentProposal` exige allowlist `HERMES_ALLOWED_TAGS` y mención en el mensaje actual. |
+| `commercialProfilePatch` | objeto opcional | Sólo las 18 claves indicadas abajo; valores de cadena no vacía de máximo 240. `contactPreference` sólo `WHATSAPP`, `CALL`, `VIDEO_CALL` o `EMAIL`. `reviewAgentProposal`, `AutoReplyService` y `LeadsService` consumen únicamente los valores respaldados. |
+| `fieldEvidence` | objeto opcional | Una cadena literal no vacía, máximo 300, con la misma clave por cada campo propuesto; ninguna clave extra. La revisión exige que aparezca en el mensaje actual y respalde el valor. |
+| `proposedNextAction` | objeto opcional | Formas exactas indicadas abajo; `NousHermesTransport` lo pasa a `reviewAgentProposal`. Sólo `AutoReplyService` solicita tareas o handoff tras revisión. |
+| `actionEvidence` | cadena condicional | Obligatoria y no vacía, máximo 300, para una acción distinta de `none`; omitida cuando no hay acción. Debe ser fragmento literal del mensaje actual y acompañar una solicitud afirmativa. |
+
+Claves permitidas de `commercialProfilePatch`: `service`, `company`, `sector`,
+`location`, `need`, `currentSituation`, `users`, `productCount`, `paymentNeeds`,
+`shippingNeeds`, `inventoryNeeds`, `domainStatus`, `corporateEmailNeeds`,
+`integrations`, `budget`, `timeline`, `lastObjection`, `contactPreference`.
+La lista ejecutable está en `agent-output.contract.ts`; las claves de perfil
+administradas por el CRM no son propuestas válidas.
+
+Formas exactas de `proposedNextAction`:
+
+```json
+{"type":"none"}
+{"type":"request_handoff","reason":"motivo no vacío (máximo 240 caracteres)"}
+{"type":"request_callback"}
+{"type":"propose_quote_task","summary":"resumen no vacío (máximo 500 caracteres)"}
+```
+
+No se admiten claves adicionales en el objeto de acción. Ausencia de acción y
+`{"type":"none"}` equivalen a no ejecutar nada; en ambos casos se omite
+`actionEvidence`. Una acción ejecutable sin evidencia se rechaza como respuesta
+inválida antes de cualquier mutación. Con evidencia de forma válida, la revisión
+determinista todavía puede rechazar la acción si el texto actual no respalda
+una petición afirmativa. La cotización y la llamada crean tareas pendientes;
+ninguna confirma un precio o una cita.
+
+Ejemplo sin acción ni cambios de perfil:
+
+```json
+{"replyText":"Hola, ¿en qué puedo ayudarle?","detectedIntent":"info_general"}
+```
+
+Ejemplo con solicitud sintética «Quiero una cotización de un sitio web»:
+
+```json
+{"replyText":"Registraré su solicitud de cotización para revisión.","proposedNextAction":{"type":"propose_quote_task","summary":"Cotización de sitio web"},"actionEvidence":"Quiero una cotización de un sitio web"}
+```
+
+Chat Completions recibe este contrato como texto en el mensaje de sistema. El
+request no usa `response_format`, JSON Schema, herramientas ni una segunda
+llamada. Sigue pendiente verificar una respuesta real del agente configurado
+en la VPS; las pruebas locales sintéticas no demuestran resolución en producción.
+
 ## Flujo y límites
 
 `AutoReplyService` arma contexto del contacto y conversación actuales: historial reciente, resumen, ficha comercial, etapa, preguntas pendientes, tareas pendientes y completadas recientemente, capacidades y catálogo publicado. `NousHermesTransport` envía esos datos como datos no confiables en `messages` de Chat Completions al alias privado `hermes-agent`. No se pasan credenciales, teléfonos, herramientas ni sesiones del agente. El mensaje de sistema fija las reglas y el contenido del cliente permanece en rol de usuario.

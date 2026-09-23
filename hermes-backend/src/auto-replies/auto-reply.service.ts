@@ -32,6 +32,7 @@ import {
 } from '../hermes/hermes-diagnostics';
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 import { reviewAgentProposal } from '../conversation-engine/agent-proposal-policy';
+import { AGENT_DEFAULT_INTENTS } from '../conversation-engine/agent-output.contract';
 import { responseContainsOnlyAuthorizedPrices } from '../hermes/commercial-catalog';
 
 @Injectable()
@@ -287,22 +288,7 @@ export class AutoReplyService {
       response.commercialProfile = reviewedProposal.profilePatch;
       response.suggestedTags = reviewedProposal.tags;
       const allowedIntents = this.csvConfig('HERMES_ALLOWED_INTENTS', [
-        'info_general',
-        'consulta_servicio',
-        'consulta_precio',
-        'consulta_cobro_tienda',
-        'consulta_pago_proyecto',
-        'cotizacion',
-        'agendar_cita',
-        'solicitud_humano',
-        'queja',
-        'reclamo',
-        'pago_fallido',
-        'negociacion_especial',
-        'info_producto',
-        'interes_nava',
-        'soporte',
-        'otro',
+        ...AGENT_DEFAULT_INTENTS,
       ]);
       if (
         response.detectedIntent &&

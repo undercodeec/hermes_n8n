@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import type { CommercialProfile } from '../hermes/dto/hermes-request.dto';
 import type { ProposedAction } from './conversation-engine.types';
+import { AGENT_PROFILE_KEYS } from './agent-output.contract';
 
 export class InvalidAgentOutputError extends Error {
   constructor(message: string) {
@@ -129,26 +130,7 @@ export class AgentOutputValidator {
       }
       suggestedTags = proposal.suggestedTags as string[];
     }
-    const profileKeys = new Set([
-      'service',
-      'company',
-      'sector',
-      'location',
-      'need',
-      'currentSituation',
-      'users',
-      'productCount',
-      'paymentNeeds',
-      'shippingNeeds',
-      'inventoryNeeds',
-      'domainStatus',
-      'corporateEmailNeeds',
-      'integrations',
-      'budget',
-      'timeline',
-      'lastObjection',
-      'contactPreference',
-    ]);
+    const profileKeys = new Set<string>(AGENT_PROFILE_KEYS);
     let commercialProfilePatch: CommercialProfile | undefined;
     if (proposal.commercialProfilePatch !== undefined) {
       if (!this.object(proposal.commercialProfilePatch))
@@ -193,23 +175,46 @@ export class AgentOutputValidator {
         fieldEvidence[key] = value.trim();
       }
     }
+    for (const key of Object.keys(commercialProfilePatch ?? {})) {
+      if (!fieldEvidence?.[key]) {
+        throw new InvalidAgentOutputError('Agent profile evidence is missing');
+      }
+    }
+    for (const key of Object.keys(fieldEvidence ?? {})) {
+      if (!Object.hasOwn(commercialProfilePatch ?? {}, key)) {
+        throw new InvalidAgentOutputError(
+          'Agent evidence has no profile field',
+        );
+      }
+    }
     let proposedNextAction: ProposedAction | undefined;
     if (proposal.proposedNextAction !== undefined) {
       if (!this.object(proposal.proposedNextAction))
         throw new InvalidAgentOutputError('Agent action is invalid');
       const action = proposal.proposedNextAction;
+      const expectedKeys =
+        action.type === 'request_handoff'
+          ? ['type', 'reason']
+          : action.type === 'propose_quote_task'
+            ? ['type', 'summary']
+            : ['type'];
+      if (Object.keys(action).some((key) => !expectedKeys.includes(key))) {
+        throw new InvalidAgentOutputError('Agent action fields are invalid');
+      }
       if (action.type === 'none') proposedNextAction = { type: 'none' };
       else if (action.type === 'request_callback')
         proposedNextAction = { type: 'request_callback' };
       else if (
         action.type === 'request_handoff' &&
         typeof action.reason === 'string' &&
+        Boolean(action.reason.trim()) &&
         action.reason.length <= 240
       )
         proposedNextAction = { type: 'request_handoff', reason: action.reason };
       else if (
         action.type === 'propose_quote_task' &&
         typeof action.summary === 'string' &&
+        Boolean(action.summary.trim()) &&
         action.summary.length <= 500
       )
         proposedNextAction = {
@@ -217,6 +222,19 @@ export class AgentOutputValidator {
           summary: action.summary,
         };
       else throw new InvalidAgentOutputError('Agent action type is invalid');
+    }
+    if (
+      proposedNextAction &&
+      proposedNextAction.type !== 'none' &&
+      !actionEvidence
+    ) {
+      throw new InvalidAgentOutputError('Agent action evidence is missing');
+    }
+    if (
+      (!proposedNextAction || proposedNextAction.type === 'none') &&
+      actionEvidence
+    ) {
+      throw new InvalidAgentOutputError('Agent action evidence has no action');
     }
     if (
       /\bBearer\s+[A-Za-z0-9._~+/-]{8,}|-----BEGIN (?:RSA |EC )?PRIVATE KEY-----|\b(?:api[_ -]?key|token|secret|password)\s*[:=]\s*\S+/i.test(

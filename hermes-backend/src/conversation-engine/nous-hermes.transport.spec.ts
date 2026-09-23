@@ -92,6 +92,16 @@ describe('NousHermesTransport', () => {
       /X-Hermes-Session|X-Hermes-Conversation|X-Hermes-Trace/i,
     );
     expect(result.providerModel).toBe('hermes-agent');
+    const request = post.mock.calls[0][1] as {
+      messages: Array<{ role: string; content: string }>;
+      response_format?: unknown;
+    };
+    expect(request.response_format).toBeUndefined();
+    expect(request.messages[0].content).toContain(
+      '{"type":"request_callback"}',
+    );
+    expect(request.messages[0].content).toContain('contactPreference');
+    expect(request.messages[0].content).toContain('Sin acción solicitada');
   });
 
   it.each([
@@ -179,6 +189,32 @@ describe('NousHermesTransport', () => {
     post.mockResolvedValue({ data });
     const result = await configuredTransport().execute(baseInput());
     expect(result.diagnostic?.code).toBe('NOUS_HERMES_INVALID_RESPONSE');
+  });
+
+  it.each([
+    { replyText: 'Hola', commercialProfilePatch: { objective: 'vender más' } },
+    { replyText: 'Hola', proposedNextAction: 'request_callback' },
+    {
+      replyText: 'Le llamaremos',
+      proposedNextAction: { type: 'request_callback' },
+    },
+  ])('does not forward an invalid commercial proposal %#', async (proposal) => {
+    post.mockResolvedValue({
+      data: {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content: JSON.stringify(proposal) },
+          },
+        ],
+      },
+    });
+    const result = await configuredTransport().execute(baseInput());
+    expect(result.diagnostic?.code).toBe('NOUS_HERMES_INVALID_RESPONSE');
+    expect(result.proposedActions).toEqual([{ type: 'none' }]);
+    expect(result.business?.commercialProfile).toEqual(
+      baseInput().approvedContext.commercialProfile,
+    );
   });
 
   it('maps timeout and an absent secret file safely', async () => {
