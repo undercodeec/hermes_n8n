@@ -34,6 +34,18 @@ function setup(values: Record<string, string> = {}) {
   return { voice, meta };
 }
 
+async function rejectedVoiceError(
+  operation: Promise<unknown>,
+): Promise<VoiceProcessingError> {
+  try {
+    await operation;
+  } catch (error) {
+    if (error instanceof VoiceProcessingError) return error;
+    throw error;
+  }
+  throw new Error('Expected VoiceProcessingError');
+}
+
 describe('VoiceService', () => {
   afterEach(() => jest.restoreAllMocks());
 
@@ -75,6 +87,144 @@ describe('VoiceService', () => {
       new VoiceProcessingError('STT_NOT_CONFIGURED'),
     );
     expect(meta.downloadInboundAudio).not.toHaveBeenCalled();
+  });
+
+  it.each([400, 401, 403, 422, 429, 500])(
+    'keeps sanitized ElevenLabs diagnostics for HTTP %i failures',
+    async (status) => {
+      const { voice } = setup({ ELEVENLABS_API_KEY: 'test-key' });
+      jest.spyOn(axios, 'post').mockRejectedValue({
+        isAxiosError: true,
+        code: 'ERR_BAD_REQUEST',
+        message: `Request failed with status code ${status}`,
+        request: { method: 'POST' },
+        response: {
+          status,
+          data: {
+            detail: {
+              code: `provider-${status}`,
+              message: `Diagnóstico ${status}`,
+              type: 'invalid_request',
+            },
+            xiApiKey: 'must-not-be-logged',
+          },
+          headers: { 'x-request-id': `request-${status}` },
+        },
+      });
+
+      const error = await voice
+        .transcribe('media-1')
+        .catch((caught: unknown) => caught);
+
+      expect(error).toEqual(
+        expect.objectContaining({
+          code: 'STT_PROVIDER_FAILED',
+          diagnostics: {
+            provider: 'elevenlabs',
+            modelId: 'scribe_v2',
+            mimeType: 'audio/ogg',
+            audioBytes: 5,
+            providerHttpStatus: status,
+            providerErrorCode: `provider-${status}`,
+            providerMessage: `Diagnóstico ${status}`,
+            transportCode: 'ERR_BAD_REQUEST',
+            transportMessage: `Request failed with status code ${status}`,
+            requestId: `request-${status}`,
+            failureKind: 'HTTP',
+          },
+        }),
+      );
+      expect(JSON.stringify(error)).not.toContain('must-not-be-logged');
+      expect(JSON.stringify(error)).not.toContain('test-key');
+    },
+  );
+
+  it('keeps a safe transport diagnosis when ElevenLabs does not respond', async () => {
+    const { voice } = setup({ ELEVENLABS_API_KEY: 'test-key' });
+    jest.spyOn(axios, 'post').mockRejectedValue({
+      isAxiosError: true,
+      code: 'ETIMEDOUT',
+      message:
+        'timeout of 30000ms exceeded https://api.elevenlabs.io/v1/speech-to-text?token=transport-secret',
+      request: { method: 'POST' },
+    });
+
+    const error = await voice
+      .transcribe('media-1')
+      .catch((caught: unknown) => caught);
+
+    expect(error).toEqual(
+      expect.objectContaining({
+        code: 'STT_PROVIDER_FAILED',
+        diagnostics: {
+          provider: 'elevenlabs',
+          modelId: 'scribe_v2',
+          mimeType: 'audio/ogg',
+          audioBytes: 5,
+          providerHttpStatus: null,
+          providerErrorCode: null,
+          providerMessage: null,
+          transportCode: 'ETIMEDOUT',
+          transportMessage: 'timeout of 30000ms exceeded [url redacted]',
+          requestId: null,
+          failureKind: 'TRANSPORT',
+        },
+      }),
+    );
+  });
+
+  it('prioritizes structured provider details over a generic unsafe error message', async () => {
+    const { voice } = setup({ ELEVENLABS_API_KEY: 'test-key' });
+    jest.spyOn(axios, 'post').mockRejectedValue({
+      isAxiosError: true,
+      code: 'ERR_BAD_REQUEST',
+      message: 'Request failed with status code 422',
+      request: { method: 'POST' },
+      response: {
+        status: 422,
+        data: {
+          message:
+            'Solicitud inválida https://provider.example/error?signature=unsafe-signature',
+          detail: [
+            {
+              code: 'invalid_audio',
+              message: 'Formato de audio no admitido.',
+              type: 'validation_error',
+            },
+          ],
+        },
+        headers: { 'x-request-id': 'request-422' },
+      },
+    });
+
+    const error = await rejectedVoiceError(voice.transcribe('media-1'));
+
+    expect(error.diagnostics?.providerErrorCode).toBe('invalid_audio');
+    expect(error.diagnostics?.providerMessage).toBe(
+      'Formato de audio no admitido.',
+    );
+    expect(JSON.stringify(error)).not.toContain('unsafe-signature');
+  });
+
+  it('redacts secret-shaped values from internal error messages', async () => {
+    const { voice } = setup({ ELEVENLABS_API_KEY: 'test-key' });
+    jest
+      .spyOn(axios, 'post')
+      .mockRejectedValue(
+        new Error('Internal failure {"api_key":"internal-secret"}'),
+      );
+
+    const error = await rejectedVoiceError(voice.transcribe('media-1'));
+
+    expect(error.diagnostics).toEqual(
+      expect.objectContaining({
+        failureKind: 'INTERNAL',
+        provider: 'elevenlabs',
+        modelId: 'scribe_v2',
+      }),
+    );
+    expect(error.diagnostics?.transportMessage).toContain('[redacted]');
+    expect(JSON.stringify(error)).not.toContain('internal-secret');
   });
 
   it('reads the duration of streamed OGG packets without seeking', async () => {

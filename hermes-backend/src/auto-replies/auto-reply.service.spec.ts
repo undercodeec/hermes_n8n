@@ -839,6 +839,164 @@ describe('AutoReplyService', () => {
     expect(harness.engine.respond).not.toHaveBeenCalled();
   });
 
+  it('logs safe ElevenLabs failure diagnostics while preserving the audio fallback', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'No debe generarse' },
+    });
+    const warn = jest.spyOn(
+      (harness.service as unknown as { logger: Logger }).logger,
+      'warn',
+    );
+    const failure = new VoiceProcessingError('STT_PROVIDER_FAILED', {
+      provider: 'elevenlabs',
+      modelId: 'scribe_v2',
+      mimeType: 'audio/ogg',
+      audioBytes: 31415,
+      providerHttpStatus: 422,
+      providerErrorCode: 'invalid_audio',
+      providerMessage: 'El proveedor rechazó el formato.',
+      transportCode: 'ERR_BAD_REQUEST',
+      transportMessage: 'Request failed with status code 422',
+      requestId: 'eleven-request-1',
+      failureKind: 'HTTP',
+    });
+    Object.assign(harness.service, {
+      inboundTurns: {
+        claim: jest.fn().mockResolvedValue({
+          id: 'turn-audio',
+          lastMessageId: 'inbound-recovery',
+          processingToken: 'claim-token',
+        }),
+        messages: jest.fn().mockResolvedValue([
+          {
+            id: 'inbound-recovery',
+            wamid: 'wamid.audio',
+            type: 'AUDIO',
+            content: '[Audio]',
+            createdAt: new Date(),
+            rawPayload: { audio: { id: 'media-inbound' } },
+          },
+        ]),
+        complete: jest.fn(),
+        release: jest.fn(),
+      } as unknown as InboundTurnService,
+      voice: {
+        transcribe: jest.fn().mockRejectedValue(failure),
+      } as unknown as VoiceService,
+    });
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+      inboundTurnId: 'turn-audio',
+    });
+
+    const event = warn.mock.calls
+      .map(([message]) => JSON.parse(message as string) as { event?: string })
+      .find((entry) => entry.event === 'audio_transcription_failed');
+    expect(event).toEqual({
+      event: 'audio_transcription_failed',
+      conversationId: 'conversation-1',
+      inboundMessageId: 'inbound-recovery',
+      reasonCode: 'STT_PROVIDER_FAILED',
+      provider: 'elevenlabs',
+      modelId: 'scribe_v2',
+      mimeType: 'audio/ogg',
+      audioBytes: 31415,
+      providerHttpStatus: 422,
+      providerErrorCode: 'invalid_audio',
+      providerMessage: 'El proveedor rechazó el formato.',
+      transportCode: 'ERR_BAD_REQUEST',
+      transportMessage: 'Request failed with status code 422',
+      requestId: 'eleven-request-1',
+      failureKind: 'HTTP',
+    });
+    expect(harness.engine.respond).not.toHaveBeenCalled();
+  });
+
+  it('sanitizes untrusted voice diagnostics at the logging boundary', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'No debe generarse' },
+    });
+    const warn = jest.spyOn(
+      (harness.service as unknown as { logger: Logger }).logger,
+      'warn',
+    );
+    const failure = new VoiceProcessingError('STT_PROVIDER_FAILED', {
+      provider: 'elevenlabs',
+      modelId: 'scribe_v2?token=model-secret',
+      mimeType: 'audio/ogg; token=mime-secret',
+      audioBytes: 31415,
+      providerHttpStatus: 422,
+      providerErrorCode: 'invalid_audio',
+      providerMessage:
+        'Proveedor rechazó https://provider.example/error?signature=provider-secret',
+      transportCode: 'ERR_BAD_REQUEST',
+      transportMessage: '{"api_key":"transport-secret"}',
+      requestId: 'request-1?token=request-secret',
+      failureKind: 'HTTP',
+    });
+    Object.assign(harness.service, {
+      inboundTurns: {
+        claim: jest.fn().mockResolvedValue({
+          id: 'turn-audio',
+          lastMessageId: 'inbound-recovery',
+          processingToken: 'claim-token',
+        }),
+        messages: jest.fn().mockResolvedValue([
+          {
+            id: 'inbound-recovery',
+            wamid: 'wamid.audio',
+            type: 'AUDIO',
+            content: '[Audio]',
+            createdAt: new Date(),
+            rawPayload: { audio: { id: 'media-inbound' } },
+          },
+        ]),
+        complete: jest.fn(),
+        release: jest.fn(),
+      } as unknown as InboundTurnService,
+      voice: {
+        transcribe: jest.fn().mockRejectedValue(failure),
+      } as unknown as VoiceService,
+    });
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+      inboundTurnId: 'turn-audio',
+    });
+
+    const event = warn.mock.calls
+      .map(
+        ([message]) => JSON.parse(message as string) as Record<string, unknown>,
+      )
+      .find((entry) => entry.event === 'audio_transcription_failed');
+    expect(event).toEqual(
+      expect.objectContaining({
+        provider: 'elevenlabs',
+        modelId: null,
+        mimeType: 'audio/ogg',
+        audioBytes: 31415,
+        providerHttpStatus: 422,
+        providerErrorCode: 'invalid_audio',
+        transportCode: 'ERR_BAD_REQUEST',
+        requestId: null,
+        failureKind: 'HTTP',
+      }),
+    );
+    const serialized = JSON.stringify(event);
+    expect(serialized).not.toContain('model-secret');
+    expect(serialized).not.toContain('mime-secret');
+    expect(serialized).not.toContain('provider-secret');
+    expect(serialized).not.toContain('transport-secret');
+    expect(serialized).not.toContain('request-secret');
+    expect(serialized).not.toContain('provider.example');
+    expect(serialized).toContain('[redacted]');
+  });
+
   it('resumes a prepared batch before quota or inference', async () => {
     const harness = setupProcessHarness({
       hermesResponse: { response: 'respuesta', detectedIntent: 'info_general' },

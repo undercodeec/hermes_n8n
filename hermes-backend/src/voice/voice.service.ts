@@ -11,8 +11,107 @@ export type VoiceTranscript = {
   sourceType: 'AUDIO';
 };
 
+export type VoiceFailureDiagnostics = {
+  provider: string | null;
+  modelId: string | null;
+  mimeType: string | null;
+  audioBytes: number | null;
+  providerHttpStatus: number | null;
+  providerErrorCode: string | null;
+  providerMessage: string | null;
+  transportCode: string | null;
+  transportMessage: string | null;
+  requestId: string | null;
+  failureKind: 'HTTP' | 'TRANSPORT' | 'INTERNAL';
+};
+
+type VoiceFailureLogDiagnostics = {
+  provider: 'elevenlabs' | 'openai' | null;
+  modelId: string | null;
+  mimeType: string | null;
+  audioBytes: number | null;
+  providerHttpStatus: number | null;
+  providerErrorCode: string | null;
+  providerMessage: string | null;
+  transportCode: string | null;
+  transportMessage: string | null;
+  requestId: string | null;
+  failureKind: VoiceFailureDiagnostics['failureKind'] | null;
+};
+
+export function voiceFailureLogDiagnostics(
+  diagnostics?: VoiceFailureDiagnostics,
+): VoiceFailureLogDiagnostics {
+  return {
+    provider:
+      diagnostics?.provider === 'elevenlabs' ||
+      diagnostics?.provider === 'openai'
+        ? diagnostics.provider
+        : null,
+    modelId: safeIdentifier(diagnostics?.modelId, 100),
+    mimeType: safeMimeType(diagnostics?.mimeType),
+    audioBytes:
+      Number.isSafeInteger(diagnostics?.audioBytes) &&
+      (diagnostics?.audioBytes ?? -1) >= 0 &&
+      (diagnostics?.audioBytes ?? Infinity) <= 16 * 1024 * 1024
+        ? (diagnostics?.audioBytes ?? null)
+        : null,
+    providerHttpStatus:
+      Number.isSafeInteger(diagnostics?.providerHttpStatus) &&
+      (diagnostics?.providerHttpStatus ?? 0) >= 100 &&
+      (diagnostics?.providerHttpStatus ?? 600) <= 599
+        ? (diagnostics?.providerHttpStatus ?? null)
+        : null,
+    providerErrorCode: sanitizeVoiceDiagnosticText(
+      diagnostics?.providerErrorCode,
+    ),
+    providerMessage: sanitizeVoiceDiagnosticText(diagnostics?.providerMessage),
+    transportCode: safeIdentifier(diagnostics?.transportCode, 80),
+    transportMessage: sanitizeVoiceDiagnosticText(
+      diagnostics?.transportMessage,
+    ),
+    requestId: safeIdentifier(diagnostics?.requestId, 160),
+    failureKind:
+      diagnostics?.failureKind === 'HTTP' ||
+      diagnostics?.failureKind === 'TRANSPORT' ||
+      diagnostics?.failureKind === 'INTERNAL'
+        ? diagnostics.failureKind
+        : null,
+  };
+}
+
+export function sanitizeVoiceDiagnosticText(value: unknown): string | null {
+  if (typeof value !== 'string' && typeof value !== 'number') return null;
+  const text = String(value)
+    .replace(/https?:\/\/[^\s"'<>]+/giu, '[url redacted]')
+    .replace(
+      /((?:["']?)(?:xi[-_]?api[-_]?key|authorization|api[-_]?key|access[-_]?token|token|x-amz-signature|signature|sig)(?:["']?)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}\]]+)/giu,
+      '$1[redacted]',
+    )
+    .replace(/bearer\s+\S+/giu, 'Bearer [redacted]')
+    .trim();
+  return text ? text.slice(0, 240) : null;
+}
+
+function safeIdentifier(value: unknown, maxLength: number): string | null {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  return /^[A-Za-z0-9._-]+$/u.test(text) && text.length <= maxLength
+    ? text
+    : null;
+}
+
+function safeMimeType(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const mimeType = value.split(';', 1)[0]?.trim().toLowerCase();
+  return mimeType && /^audio\/[a-z0-9.+-]+$/u.test(mimeType) ? mimeType : null;
+}
+
 export class VoiceProcessingError extends Error {
-  constructor(public readonly code: string) {
+  constructor(
+    public readonly code: string,
+    public readonly diagnostics?: VoiceFailureDiagnostics,
+  ) {
     super(code);
     this.name = 'VoiceProcessingError';
   }
@@ -62,10 +161,11 @@ export class VoiceService {
       confidence?: unknown;
     };
     if (provider === 'elevenlabs') {
-      form.append(
-        'model_id',
-        this.config.get<string>('HERMES_STT_MODEL_ID', 'scribe_v2'),
+      const modelId = this.config.get<string>(
+        'HERMES_STT_MODEL_ID',
+        'scribe_v2',
       );
+      form.append('model_id', modelId);
       try {
         const result = await axios.post<typeof response>(
           'https://api.elevenlabs.io/v1/speech-to-text',
@@ -79,8 +179,13 @@ export class VoiceService {
           },
         );
         response = result.data;
-      } catch {
-        throw new VoiceProcessingError('STT_PROVIDER_FAILED');
+      } catch (error) {
+        throw this.providerFailure(error, {
+          provider,
+          modelId,
+          mimeType,
+          audioBytes: bytes.length,
+        });
       }
     } else if (provider === 'openai') {
       form.append(
@@ -269,6 +374,109 @@ export class VoiceService {
     if (!Number.isFinite(duration) || duration <= 0)
       throw new VoiceProcessingError('AUDIO_DURATION_UNKNOWN');
     return duration;
+  }
+
+  private providerFailure(
+    error: unknown,
+    input: Pick<
+      VoiceFailureDiagnostics,
+      'provider' | 'modelId' | 'mimeType' | 'audioBytes'
+    >,
+  ): VoiceProcessingError {
+    const diagnostics: VoiceFailureDiagnostics = {
+      ...input,
+      providerHttpStatus: null,
+      providerErrorCode: null,
+      providerMessage: null,
+      transportCode: null,
+      transportMessage: null,
+      requestId: null,
+      failureKind: 'INTERNAL',
+    };
+    if (axios.isAxiosError(error)) {
+      diagnostics.transportCode = this.safeDiagnosticText(error.code);
+      diagnostics.transportMessage = this.safeDiagnosticText(error.message);
+      if (error.response) {
+        diagnostics.failureKind = 'HTTP';
+        diagnostics.providerHttpStatus = error.response.status;
+        const providerDetail = this.providerErrorDetail(error.response.data);
+        diagnostics.providerErrorCode = providerDetail.code;
+        diagnostics.providerMessage = providerDetail.message;
+        diagnostics.requestId = this.requestId(error.response.headers);
+      } else if (error.request) {
+        diagnostics.failureKind = 'TRANSPORT';
+      }
+    } else if (error instanceof Error) {
+      diagnostics.transportMessage = this.safeDiagnosticText(error.message);
+    }
+    return new VoiceProcessingError('STT_PROVIDER_FAILED', diagnostics);
+  }
+
+  private providerErrorDetail(data: unknown): {
+    code: string | null;
+    message: string | null;
+  } {
+    if (!this.isRecord(data)) return { code: null, message: null };
+    const detail = data.detail;
+    const candidates = [
+      this.isRecord(detail) ? detail : undefined,
+      ...(Array.isArray(detail)
+        ? detail.filter((entry): entry is Record<string, unknown> =>
+            this.isRecord(entry),
+          )
+        : []),
+      this.isRecord(data.error) ? data.error : undefined,
+      data,
+    ].filter((candidate): candidate is Record<string, unknown> => !!candidate);
+    return {
+      code: this.firstDiagnosticField(candidates, ['code', 'type', 'status']),
+      message: this.firstDiagnosticField(candidates, ['message', 'msg']),
+    };
+  }
+
+  private requestId(headers: unknown): string | null {
+    const names = [
+      'request-id',
+      'x-request-id',
+      'x-correlation-id',
+      'x-trace-id',
+    ];
+    if (!headers || typeof headers !== 'object') return null;
+    const get = (headers as { get?: unknown }).get;
+    if (typeof get === 'function') {
+      for (const name of names) {
+        const value: unknown = get.call(headers, name);
+        const requestId = this.safeDiagnosticText(value);
+        if (requestId) return requestId;
+      }
+    }
+    const record = headers as Record<string, unknown>;
+    for (const name of names) {
+      const requestId = this.safeDiagnosticText(record[name]);
+      if (requestId) return requestId;
+    }
+    return null;
+  }
+
+  private firstDiagnosticField(
+    candidates: Record<string, unknown>[],
+    names: string[],
+  ): string | null {
+    for (const candidate of candidates) {
+      for (const name of names) {
+        const value = this.safeDiagnosticText(candidate[name]);
+        if (value) return value;
+      }
+    }
+    return null;
+  }
+
+  private safeDiagnosticText(value: unknown): string | null {
+    return sanitizeVoiceDiagnosticText(value);
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
   }
 
   private runBinary(

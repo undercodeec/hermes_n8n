@@ -43,7 +43,11 @@ import { AutomatedDeliveryService } from '../automated-deliveries/automated-deli
 import { reviewAgentProposal } from '../conversation-engine/agent-proposal-policy';
 import { AGENT_DEFAULT_INTENTS } from '../conversation-engine/agent-output.contract';
 import { InboundTurnService } from './inbound-turn.service';
-import { VoiceProcessingError, VoiceService } from '../voice/voice.service';
+import {
+  VoiceProcessingError,
+  VoiceService,
+  voiceFailureLogDiagnostics,
+} from '../voice/voice.service';
 
 @Injectable()
 export class AutoReplyService {
@@ -156,12 +160,28 @@ export class AutoReplyService {
               error instanceof VoiceProcessingError
                 ? error.code
                 : 'AUDIO_PROCESSING_FAILED';
+            const diagnostics = voiceFailureLogDiagnostics(
+              error instanceof VoiceProcessingError
+                ? error.diagnostics
+                : undefined,
+            );
             this.logger.warn(
               JSON.stringify({
                 event: 'audio_transcription_failed',
                 conversationId: data.conversationId,
                 inboundMessageId: turn.lastMessageId,
                 reasonCode,
+                provider: diagnostics.provider,
+                modelId: diagnostics.modelId,
+                mimeType: diagnostics.mimeType,
+                audioBytes: diagnostics.audioBytes,
+                providerHttpStatus: diagnostics.providerHttpStatus,
+                providerErrorCode: diagnostics.providerErrorCode,
+                providerMessage: diagnostics.providerMessage,
+                transportCode: diagnostics.transportCode,
+                transportMessage: diagnostics.transportMessage,
+                requestId: diagnostics.requestId,
+                failureKind: diagnostics.failureKind,
               }),
             );
             const notice =
