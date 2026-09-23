@@ -163,6 +163,42 @@ describe('AutomatedDelivery PostgreSQL claims (integration)', () => {
     ).toBe(AutomatedDeliveryStatus.SUPPRESSED);
   });
 
+  it('suppresses a prepared voice note when a newer inbound arrives before dispatch', async () => {
+    if (!prisma || !contactId)
+      throw new Error('Integration fixture unavailable');
+    const delivery = await prisma.automatedDelivery.update({
+      where: { id: deliveryId },
+      data: { metadata: { voiceMediaId: 'prepared-voice-media' } },
+    });
+    const sendVoiceNote = jest.fn();
+    const service = new AutomatedDeliveryService(
+      prisma as PrismaService,
+      { sendVoiceNote } as unknown as MetaService,
+    );
+    await prisma.message.create({
+      data: {
+        conversationId: delivery.conversationId,
+        contactId,
+        direction: MessageDirection.INBOUND,
+        sender: MessageSender.CONTACT,
+        type: MessageType.TEXT,
+        content: 'Corrijo mi pedido',
+        wamid: `wamid.later.${randomUUID()}`,
+        rawPayload: { timestamp: String(Math.floor(Date.now() / 1000) + 2) },
+      },
+    });
+    const result = await service.deliverPreparedBatch(delivery.sourceMessageId);
+    expect(result.reasonCode).toBe('NEWER_INBOUND');
+    expect(sendVoiceNote).not.toHaveBeenCalled();
+    expect(
+      (
+        await prisma.automatedDelivery.findUniqueOrThrow({
+          where: { id: deliveryId },
+        })
+      ).status,
+    ).toBe(AutomatedDeliveryStatus.SUPPRESSED);
+  });
+
   it('rechecks NEWER_INBOUND before each reply part', async () => {
     if (!prisma || !contactId)
       throw new Error('Integration fixture unavailable');

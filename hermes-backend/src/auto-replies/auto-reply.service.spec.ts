@@ -468,6 +468,88 @@ describe('AutoReplyService', () => {
     );
   });
 
+  it('passes an audio price question to the existing commercial authority', async () => {
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      market: CommercialMarket.EC,
+      marketSource: 'CURRENT',
+      relevantServiceCodes: ['WEBSITE'],
+      offers: [testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE')],
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      hermesResponse: {
+        response: 'El Plan de Lanzamiento cuesta USD 360.',
+        detectedIntent: 'consulta_precio',
+      },
+    });
+    const audio = {
+      id: 'inbound-recovery',
+      wamid: 'wamid.audio-price',
+      type: 'AUDIO',
+      content: '[Audio]',
+      createdAt: new Date('2026-09-20T18:00:00.000Z'),
+      rawPayload: { audio: { id: 'media-price' } },
+    };
+    const turns = {
+      claim: jest.fn().mockResolvedValue({
+        id: 'turn-price',
+        lastMessageId: audio.id,
+        processingToken: 'claim-token',
+      }),
+      messages: jest
+        .fn()
+        .mockResolvedValueOnce([audio])
+        .mockResolvedValueOnce([
+          {
+            ...audio,
+            content: '¿Cuánto cuesta una página web para mi lavandería?',
+          },
+        ]),
+      complete: jest.fn(),
+      release: jest.fn(),
+    };
+    const voice = {
+      transcribe: jest.fn().mockResolvedValue({
+        text: '¿Cuánto cuesta una página web para mi lavandería?',
+        sourceType: 'AUDIO',
+      }),
+      synthesize: jest.fn().mockResolvedValue(Buffer.from('OggSopus')),
+    };
+    Object.assign(harness.service, {
+      inboundTurns: turns as unknown as InboundTurnService,
+      voice: voice as unknown as VoiceService,
+    });
+    const internals = harness.service as unknown as {
+      prisma: { message: { update: jest.Mock } };
+    };
+    internals.prisma.message.update = jest.fn().mockResolvedValue({});
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: audio.id,
+      inboundTurnId: 'turn-price',
+    });
+
+    expect(authority.snapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customerMessage: expect.stringContaining(
+          '¿Cuánto cuesta una página web para mi lavandería?',
+        ),
+        priceRequested: true,
+      }),
+    );
+    expect(harness.deliveries.prepareBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parts: expect.arrayContaining([
+          expect.objectContaining({
+            content: expect.stringContaining('USD 360'),
+          }),
+        ]),
+      }),
+    );
+  });
+
   it('delivers approved text when voice synthesis fails', async () => {
     const harness = setupProcessHarness({
       hermesResponse: {
@@ -513,6 +595,67 @@ describe('AutoReplyService', () => {
     expect(prepared.parts[0].content).toBe('Podemos crear su sitio web.');
     expect(prepared.parts[0].metadata?.voiceMediaId).toBeUndefined();
     expect(harness.deliveries.deliverPreparedBatch).toHaveBeenCalled();
+  });
+
+  it('returns to text in MIRROR mode when the last message is a text correction', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: {
+        response: 'Entendido: son 15 productos.',
+        detectedIntent: 'consulta_servicio',
+      },
+    });
+    const at = new Date('2026-09-20T18:00:00.000Z');
+    const messages = [
+      {
+        id: 'audio-first',
+        wamid: 'wamid.audio',
+        type: 'AUDIO',
+        content: 'Quiero diez productos',
+        createdAt: at,
+        rawPayload: { audio: { id: 'media-inbound' } },
+      },
+      {
+        id: 'inbound-recovery',
+        wamid: 'wamid.text',
+        type: 'TEXT',
+        content: 'No, quise decir 15 productos',
+        createdAt: at,
+        rawPayload: null,
+      },
+    ];
+    const voice = { synthesize: jest.fn() };
+    Object.assign(harness.service, {
+      inboundTurns: {
+        claim: jest.fn().mockResolvedValue({
+          id: 'turn-correction',
+          lastMessageId: 'inbound-recovery',
+          processingToken: 'claim-token',
+        }),
+        messages: jest.fn().mockResolvedValue(messages),
+        complete: jest.fn(),
+        release: jest.fn(),
+      } as unknown as InboundTurnService,
+      voice: voice as unknown as VoiceService,
+    });
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+      inboundTurnId: 'turn-correction',
+    });
+
+    expect(voice.synthesize).not.toHaveBeenCalled();
+    const request = harness.engine.respond.mock.calls[0][0] as {
+      customerMessage: string;
+    };
+    expect(request.customerMessage).toContain('Quiero diez productos');
+    expect(request.customerMessage).toContain('No, quise decir 15 productos');
+    expect(
+      request.customerMessage.indexOf('Quiero diez productos'),
+    ).toBeLessThan(
+      request.customerMessage.indexOf('No, quise decir 15 productos'),
+    );
   });
 
   it('asks to resend an untranscribable audio without calling Nous', async () => {
