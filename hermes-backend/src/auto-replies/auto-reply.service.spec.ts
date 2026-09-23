@@ -53,6 +53,7 @@ describe('AutoReplyService', () => {
     name,
     serviceCode,
     market: CommercialMarket.EC,
+    marketScope: 'MARKET',
     priceType: CommercialPriceType.FIXED,
     amount,
     currency: 'USD',

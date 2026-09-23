@@ -18,6 +18,7 @@ describe('commercial claims', () => {
     name: 'Plan de Lanzamiento',
     serviceCode: 'WEBSITE',
     market: CommercialMarket.EC,
+    marketScope: 'MARKET',
     priceType: CommercialPriceType.FIXED,
     amount: '360.00',
     currency: 'USD',

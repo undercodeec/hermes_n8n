@@ -45,6 +45,7 @@ describe('HermesService commercial contract', () => {
     name,
     serviceCode,
     market: CommercialMarket.EC,
+    marketScope: 'MARKET',
     priceType: CommercialPriceType.FIXED,
     amount,
     currency: 'USD',

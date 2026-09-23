@@ -33,10 +33,14 @@ export class CreatePriceListDto {
   @IsNumber()
   price?: number | null;
 
-  @ApiPropertyOptional({ enum: CommercialMarket })
+  @ApiPropertyOptional({
+    enum: CommercialMarket,
+    description: 'Mercado concreto; omitirlo para una tarifa global',
+    nullable: true,
+  })
   @IsOptional()
   @IsEnum(CommercialMarket)
-  market?: CommercialMarket;
+  market?: CommercialMarket | null;
 
   @ApiPropertyOptional({ enum: CommercialPriceType })
   @IsOptional()

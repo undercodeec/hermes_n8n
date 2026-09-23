@@ -13,7 +13,9 @@ export type AuthorizedOffer = {
   id: string;
   name: string;
   serviceCode: string;
-  market: CommercialMarket;
+  /** Undefined when one global policy applies in every market. */
+  market?: CommercialMarket;
+  marketScope: 'GLOBAL' | 'MARKET';
   priceType: CommercialPriceType;
   amount?: string;
   currency: 'USD' | 'EUR';
@@ -33,11 +35,6 @@ export type CommercialSnapshot = {
   relevantServiceCodes: string[];
   offers: AuthorizedOffer[];
   needsMarketClarification: boolean;
-};
-
-const MARKET_CURRENCY: Record<CommercialMarket, 'USD' | 'EUR'> = {
-  EC: 'USD',
-  ES: 'EUR',
 };
 
 function normalize(value: string): string {
@@ -162,12 +159,9 @@ export class CommercialAuthorityService {
       marketSource: resolution.source,
       relevantServiceCodes,
       offers: [],
-      needsMarketClarification:
-        input.priceRequested &&
-        !resolution.market &&
-        relevantServiceCodes.length > 0,
+      needsMarketClarification: false,
     };
-    if (!resolution.market || !relevantServiceCodes.length) return result;
+    if (!relevantServiceCodes.length) return result;
     const now = input.now ?? new Date();
     try {
       const products = await this.prisma.product.findMany({
@@ -182,7 +176,6 @@ export class CommercialAuthorityService {
           priceLists: {
             where: {
               isActive: true,
-              market: resolution.market,
               validFrom: { lte: now },
               OR: [{ validUntil: null }, { validUntil: { gte: now } }],
             },
@@ -208,8 +201,17 @@ export class CommercialAuthorityService {
         take: 20,
       });
       result.offers = products.flatMap((product) =>
-        this.currentOffer(product, resolution.market!),
+        this.currentOffer(product, resolution.market),
       );
+      result.needsMarketClarification =
+        input.priceRequested &&
+        !resolution.market &&
+        !result.offers.length &&
+        products.some((product) =>
+          product.priceLists.some(
+            (price) => price.market !== null && this.isEligible(price),
+          ),
+        );
       return result;
     } catch (error) {
       this.logger.warn(
@@ -221,26 +223,20 @@ export class CommercialAuthorityService {
 
   private currentOffer(
     product: ProductWithPrices,
-    market: CommercialMarket,
+    market?: CommercialMarket,
   ): AuthorizedOffer[] {
     if (!product.serviceCode) return [];
     const eligible = product.priceLists.filter((price) =>
-      Boolean(
-        price.market === market &&
-        price.priceType &&
-        price.taxMode &&
-        price.scope?.trim() &&
-        price.policyVersion?.trim() &&
-        price.currency === MARKET_CURRENCY[market] &&
-        (price.taxMode === CommercialTaxMode.NOT_APPLICABLE ||
-          price.taxLabel?.trim()) &&
-        (price.priceType === CommercialPriceType.QUOTE_REQUIRED
-          ? price.price === null
-          : price.price !== null && price.price.gt(0)),
-      ),
+      this.isEligible(price),
     );
-    const base = eligible.filter((price) => !price.isPromotion);
-    const promotion = eligible.filter((price) => price.isPromotion);
+    const marketSpecific = market
+      ? eligible.filter((price) => price.market === market)
+      : [];
+    const applicable = marketSpecific.length
+      ? marketSpecific
+      : eligible.filter((price) => price.market === null);
+    const base = applicable.filter((price) => !price.isPromotion);
+    const promotion = applicable.filter((price) => price.isPromotion);
     let selected: (typeof eligible)[number] | undefined;
     if (
       promotion.length === 1 &&
@@ -257,10 +253,11 @@ export class CommercialAuthorityService {
         id: selected.id,
         name: product.name,
         serviceCode: product.serviceCode,
-        market,
+        ...(selected.market ? { market: selected.market } : {}),
+        marketScope: selected.market ? 'MARKET' : 'GLOBAL',
         priceType: selected.priceType!,
         ...(selected.price ? { amount: selected.price.toFixed(2) } : {}),
-        currency: MARKET_CURRENCY[market],
+        currency: selected.currency as 'USD' | 'EUR',
         taxMode: selected.taxMode!,
         ...(selected.taxLabel ? { taxLabel: selected.taxLabel } : {}),
         ...(selected.taxRatePercent
@@ -278,6 +275,21 @@ export class CommercialAuthorityService {
       },
     ];
   }
+
+  private isEligible(price: ProductWithPrices['priceLists'][number]): boolean {
+    return Boolean(
+      price.priceType &&
+      price.taxMode &&
+      price.scope?.trim() &&
+      price.policyVersion?.trim() &&
+      (price.currency === 'USD' || price.currency === 'EUR') &&
+      (price.taxMode === CommercialTaxMode.NOT_APPLICABLE ||
+        price.taxLabel?.trim()) &&
+      (price.priceType === CommercialPriceType.QUOTE_REQUIRED
+        ? price.price === null
+        : price.price !== null && price.price.gt(0)),
+    );
+  }
 }
 
 export function commercialSnapshotKnowledge(
@@ -288,10 +300,11 @@ export function commercialSnapshotKnowledge(
       'El precio depende del mercado y aún no se conoce el país aplicable. Si el cliente pregunta el precio, pida una sola aclaración breve: ¿El proyecto sería para Ecuador o España?',
     ];
   }
-  if (!snapshot.market) return [];
   if (!snapshot.offers.length) {
     return [
-      `No hay tarifas comerciales aprobadas y vigentes para los servicios consultados en ${snapshot.market}. No comunique importes.`,
+      snapshot.market
+        ? `No hay tarifas comerciales aprobadas y vigentes para los servicios consultados en ${snapshot.market}. No comunique importes.`
+        : 'No hay tarifas comerciales globales aprobadas y vigentes para los servicios consultados. No comunique importes.',
     ];
   }
   return snapshot.offers.map((offer) =>

@@ -1,63 +1,44 @@
-# Autoridad comercial por mercado: auditoría y entrega local
+# Autoridad comercial global de Hermes
 
-## Arquitectura y fuentes encontradas
+## Fuente operativa
 
-El webhook de WhatsApp guarda el mensaje entrante y `AutoReplyService` prepara el contexto antes de llamar a `ConversationEngineService`. Este selecciona `NousHermesTransport` o `DirectGeminiEngine`. Ambos reciben `approvedKnowledge`; Gemini recibe además `commercialSnapshot`. La respuesta pasa por política conversacional, validación comercial, guardia de salida y entrega por partes de WhatsApp.
+`Product` y `PriceList` de PostgreSQL son la única fuente de precios de Hermes. La migración `20260923020000_seed_global_commercial_prices` carga nueve planes globales, en USD e IVA incluido. Una tarifa con `market = NULL` aplica igual para Ecuador, España y cualquier otro mercado; Hermes no convierte la moneda ni solicita país para comunicarla.
 
-| Componente | Fuente anterior | Fuente operativa con este cambio |
-| --- | --- | --- |
-| Gemini directo | `commercial-catalog.ts`, `Product.priceLists`, `KnowledgeDocument`, `SalesPlaybook` | Instantánea CRM en el flujo WhatsApp. Una llamada interna sin instantánea conserva contexto descriptivo, pero ningún precio queda autorizado. |
-| Nous | `commercialCatalogContext` enviado como `approvedKnowledge` | Solo ofertas pertinentes seleccionadas desde `Product` y `PriceList` de PostgreSQL. |
-| Política de conversación | `hasPublishedPriceFor` del catálogo versionado | Detecta intención de precio; `AutoReplyService` concede permiso solo si la instantánea CRM tiene oferta monetaria autorizada. |
-| Validación y posprocesado | `responseContainsOnlyAuthorizedPrices`, `repairNousCommercialClaims` y `missingPublishedPriceAnswer` | `reviewCommercialClaims` contrasta importe, moneda, tipo de precio, IVA y promoción con la instantánea. `answerExplicitPriceIfMissing` solo repara una pregunta directa con una única oferta monetaria pertinente. |
+El worker consulta `PriceList` cada vez que prepara una respuesta. Por ello, un administrador puede actualizar el importe, alcance, vigencia, impuesto o estado mediante `PUT /api/price-lists/:id`; el siguiente mensaje de Hermes usa el valor actualizado. No hay caché de precios ni sincronización con una página externa.
 
-La frase observada `Tienda de Lanzamiento: USD $550. Precios publicados con IVA incluido.` provenía de `missingPublishedPriceAnswer` en `auto-reply.service.ts`, después de `repairNousCommercialClaims`. Esa inserción se retiró del flujo. El catálogo versionado conserva cifras antiguas únicamente como artefacto de reversión; ninguna ruta activa de respuesta comercial las consulta. No se autoriza usarlo automáticamente cuando PostgreSQL falla o no contiene una tarifa aprobada.
+| Categoría | Plan | Precio global |
+| --- | --- | ---: |
+| Landing Page | Landing Básica | USD 250.00 |
+| Landing Page | Landing Pro | USD 600.00 |
+| Landing Page | Landing Premium | USD 1,500.00 |
+| Sitio Web | Plan de Lanzamiento | USD 360.00 |
+| Sitio Web | Plan de Crecimiento | USD 510.00 |
+| Sitio Web | Plan de Autoridad | USD 1,010.00 |
+| Tienda Online | Tienda de Lanzamiento | USD 550.00 |
+| Tienda Online | Tienda de Crecimiento | USD 850.00 |
+| Tienda Online | Tienda Élite | USD 3,490.00 |
 
-`KnowledgeDocument` y `SalesPlaybook` pueden contener texto comercial anterior y todavía existen en la base. El flujo WhatsApp con instantánea no los incluye en la respuesta de precio. Antes de una futura API comercial hay que auditar su contenido, retirar o marcar como histórico cualquier cifra contradictoria y separar contenido descriptivo de tarifas. No se inspeccionaron registros de producción ni se accedió a la VPS.
+Cada fila usa `FIXED`, `USD`, `INCLUDED`, `IVA`, `global-v1`, sin promoción ni fecha de vencimiento. El alcance de cada plan queda en `PriceList.scope` y también se entrega a Hermes como contexto autorizado cuando es pertinente.
 
-## Fuente operativa y reglas
+## Flujo de Hermes
 
-Se extienden los modelos Prisma existentes. `Product.serviceCode` identifica el servicio; `PriceList` guarda mercado `EC` o `ES`, moneda, importe decimal, tipo `FIXED`/`FROM`/`QUOTE_REQUIRED`, impuestos, ámbito, restricciones, versión de política, estado, vigencia y relación de una promoción con su tarifa base. La migración deja las filas antiguas sin mercado ni versión: no quedan autorizadas por accidente. `QUOTE_REQUIRED` no tiene importe.
+`AutoReplyService` obtiene una instantánea comercial al recibir un mensaje y la entrega a Nous o Gemini. `reviewCommercialClaims` conserva afirmaciones compatibles con esa instantánea y elimina importes, moneda, IVA o promociones no autorizados. `answerExplicitPriceIfMissing` solo completa un importe cuando el cliente preguntó directamente por el precio y hay una sola oferta aplicable; una recomendación no recibe precios insertados automáticamente.
 
-La resolución de mercado prioriza la indicación actual del cliente, luego `commercialProfile.market` confirmado y finalmente una mención inequívoca en mensajes recientes del cliente. La ubicación descriptiva del perfil y el prefijo telefónico no determinan mercado. Si hay una consulta de precio para un servicio identificado y el mercado sigue desconocido, la salida pide una sola aclaración: Ecuador o España. Una conversación que no necesita precio sigue sin esa pregunta.
+Las tarifas específicas por mercado siguen siendo compatibles para una necesidad futura. Si existieran, tienen prioridad sobre la tarifa global únicamente para ese mercado. Si no hay tarifa global y el precio depende de mercado, Hermes pide una sola aclaración breve.
 
-La consulta selecciona productos activos del servicio relevante y tarifas activas del mercado, moneda y fecha actuales. Una fila incompleta o una ambigüedad entre varias tarifas base no se publica. Una promoción solo reemplaza a su base cuando ambas son vigentes y la relación `supersedesPriceListId` coincide. Si no hay oferta autorizada, no se comunica un importe. La validación retira afirmaciones monetarias falsas sin borrar el resto de la respuesta; no enumera precios por el mero hecho de existir.
+El catálogo estático `commercial-catalog.ts` queda como artefacto de reversión. No autoriza precios ni se usa como alternativa automática cuando PostgreSQL no tiene una tarifa válida.
 
-Las alternativas web se validan por los nombres de las ofertas presentes en la instantánea; no se exigen cifras literales. Una recuperación de salida puede mencionar las dos opciones por nombre, sin insertar importes. La selección posterior de «la de $X» usa el precio que apareció en el último mensaje enviado al cliente solo para identificar la opción; no lo utiliza como autoridad comercial. Las menciones de IVA y promociones se comprueban contra el plan nombrado. Los porcentajes de IVA requieren una tasa aprobada que coincida.
+## Migración
 
-## Datos que debe definir el propietario
+Ejecutar en el entorno de destino, después de respaldar PostgreSQL:
 
-No se asignaron ni migraron importes comerciales. Una fila por **cada variante o plan que realmente se ofrezca**. Los nombres y el alcance también requieren confirmación: esta lista solo sirve para recoger decisiones, no publica planes.
+```powershell
+cd hermes-backend
+npx prisma migrate deploy
+```
 
-| Mercado | Servicio o variante a confirmar | Importe | Moneda | FIXED / FROM / QUOTE_REQUIRED | IVA / impuesto y tasa | Vigencia desde / hasta | Alcance y restricciones | Versión de política |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Ecuador | Landing Básica | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| Ecuador | Landing Pro | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| Ecuador | Landing Premium | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| Ecuador | Web Lanzamiento | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| Ecuador | Web Crecimiento | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| Ecuador | Web Autoridad | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| Ecuador | Tienda Lanzamiento | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| Ecuador | Tienda Crecimiento | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| Ecuador | Tienda Élite | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| España | Landing Básica | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| España | Landing Pro | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| España | Landing Premium | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| España | Web Lanzamiento | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| España | Web Crecimiento | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| España | Web Autoridad | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| España | Tienda Lanzamiento | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| España | Tienda Crecimiento | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
-| España | Tienda Élite | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente | Pendiente |
+La migración previa añade los campos de política comercial. La segunda crea o actualiza los nueve productos por SKU e inserta sus tarifas globales una sola vez. No se desplegó la aplicación ni se accedió a una VPS desde este trabajo.
 
-Confirmar también si hay otros servicios, renovaciones, promociones por mercado, política de redondeo y qué sucede al vencer una tarifa. Para cada promoción se necesita su tarifa base, fecha de inicio y fin, alcance y restricciones. No inferir estos datos de páginas públicas antiguas.
+## Verificación
 
-## Web y despliegue posterior
-
-Este repositorio contiene el backend; no hay código de Web Ecuador o Web España que permita diseñar una sincronización concreta sin auditar sus rutas, caché, autenticación y despliegue. La estrategia posterior es exponer una API pública de lectura desde el CRM que devuelva solo ofertas activas por mercado y servicio, con identificador de política y encabezados de caché de corta duración. Las dos webs consumirían esa API o una exportación generada desde ella. El CRM y Hermes usarían la misma consulta de autoridad. No se implementó esa API ni se cambió ninguna web.
-
-Para migrar en un entorno posterior: respaldar PostgreSQL, aplicar la migración Prisma, revisar los registros existentes sin asignarles mercado automáticamente, cargar exclusivamente las filas aprobadas por el propietario, validar la consulta de cada mercado/servicio y probar el canary. Hasta entonces las filas antiguas siguen almacenadas pero no son tarifas autorizadas para Hermes. El cambio de aplicación debe coordinarse con la migración; un rollback de código puede reactivar el catálogo versionado anterior, por lo que debe evaluarse contra la política comercial vigente antes de ejecutarlo. Esta entrega no despliega ni accede a la VPS.
-
-## Verificación local
-
-Se ejecutaron `npx prisma validate`, `npm run build`, lint de los archivos de producción modificados, la suite Jest y las pruebas HTTP e2e. Las pruebas incluyen varios negocios y partes de respuesta, mercado conocido/desconocido, cambio de mercado, Ecuador/España, `FIXED`, `FROM`, `QUOTE_REQUIRED`, promoción y vencimiento, IVA, precio no autorizado, reparación de pregunta directa y conversación sin necesidad de mencionar precios. Las pruebas de integración con una base PostgreSQL real, Redis, Meta y el servicio Nous no se ejecutaron: requieren un entorno de staging con datos aprobados.
+Las pruebas cubren precio global sin país, el mismo importe USD para una consulta de España, prioridad de tarifa de mercado cuando exista, vigencia, promociones, `FIXED`, `FROM`, `QUOTE_REQUIRED`, IVA, importes no autorizados y respuestas que no necesitan precios. Una prueba también cambia el importe de la fuente simulada entre dos consultas y confirma que Hermes lee el valor vigente en ambas.

@@ -478,6 +478,7 @@ model PriceList {
   name                  String
   price                 Decimal?             @db.Decimal(12, 2)
   currency              String               @default("USD")
+  /// Null means this is the global price policy, shared by every market.
   market                CommercialMarket?
   priceType             CommercialPriceType?
   taxMode               CommercialTaxMode?
