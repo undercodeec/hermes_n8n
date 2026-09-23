@@ -112,7 +112,10 @@ function normalize(value: string): string {
     .replace(/[^a-z0-9]+/g, ' ');
 }
 
-function requestedSolutionKinds(query: string): CommercialSolutionKind[] {
+export function requestedSolutionKinds(
+  query: string,
+  genericPrices = true,
+): CommercialSolutionKind[] {
   const normalized = normalize(query);
   const customOnly =
     /\b(software a medida|sistema a medida|aplicacion movil|app movil)\b/.test(
@@ -151,6 +154,7 @@ function requestedSolutionKinds(query: string): CommercialSolutionKind[] {
   if (
     kinds.size === 0 &&
     !customOnly &&
+    genericPrices &&
     /\b(planes?|precios?|tarifas?|paquetes?)\b/.test(normalized)
   ) {
     return ['LANDING_PAGE', 'WEBSITE', 'ONLINE_STORE'];

@@ -23,7 +23,14 @@ import {
   HermesResponseDto,
 } from '../hermes/dto/hermes-request.dto';
 import { CommercialPolicyService } from '../hermes/commercial-policy.service';
-import { commercialCatalogContext } from '../hermes/commercial-catalog';
+import {
+  CommercialAuthorityService,
+  commercialSnapshotKnowledge,
+} from '../hermes/commercial-authority.service';
+import {
+  answerExplicitPriceIfMissing,
+  reviewCommercialClaims,
+} from '../hermes/commercial-claims';
 import { TasksService } from '../tasks/tasks.service';
 import { splitWhatsAppMessage } from './whatsapp-message-splitter';
 import {
@@ -33,10 +40,6 @@ import {
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 import { reviewAgentProposal } from '../conversation-engine/agent-proposal-policy';
 import { AGENT_DEFAULT_INTENTS } from '../conversation-engine/agent-output.contract';
-import {
-  missingPublishedPriceAnswer,
-  responseContainsOnlyAuthorizedPrices,
-} from '../hermes/commercial-catalog';
 
 @Injectable()
 export class AutoReplyService {
@@ -51,6 +54,7 @@ export class AutoReplyService {
     private readonly leads: LeadsService,
     private readonly tasks: TasksService,
     private readonly commercialPolicy: CommercialPolicyService,
+    private readonly commercialAuthority: CommercialAuthorityService,
     private readonly conversationGuard: ConversationGuardService,
     @InjectQueue(AUTO_REPLY_QUEUE)
     private readonly queue: Queue<AutoReplyJobData>,
@@ -138,6 +142,20 @@ export class AutoReplyService {
         commercialProfile: context.commercialProfile,
       },
     );
+    const commercialSnapshot = await this.commercialAuthority.snapshot({
+      customerMessage: inbound.content || '',
+      profile: context.commercialProfile,
+      productOfInterest: context.productOfInterest,
+      recentCustomerMessages: context.recentMessages
+        .filter((message) => message.role === 'user')
+        .map((message) => message.content),
+      priceRequested: policy.guidance.priceAnswerRequired,
+    });
+    policy.guidance.allowPriceAnswer =
+      policy.guidance.priceAnswerRequired &&
+      commercialSnapshot.offers.some(
+        (offer) => offer.priceType !== 'QUOTE_REQUIRED',
+      );
     const selectedEngine = policy.requestsCall
       ? this.conversationEngine.selectedEngine(data.conversationId)
       : undefined;
@@ -218,18 +236,7 @@ export class AutoReplyService {
 
     const startedAt = Date.now();
     await this.showTypingIndicator(inbound.wamid);
-    const approvedKnowledge = commercialCatalogContext(
-      [
-        inbound.content,
-        context.productOfInterest,
-        context.commercialProfile?.service,
-        context.commercialProfile?.need,
-        context.commercialProfile?.businessNeeds,
-        context.commercialProfile?.recommendedPlan,
-      ]
-        .filter(Boolean)
-        .join(' '),
-    );
+    const approvedKnowledge = commercialSnapshotKnowledge(commercialSnapshot);
     const engineResult = await this.conversationEngine.respond({
       conversationId: data.conversationId,
       inboundMessageId: inbound.id,
@@ -243,6 +250,7 @@ export class AutoReplyService {
         commercialProfile: context.commercialProfile,
         recentProfileChanges: context.recentProfileChanges,
         approvedKnowledge,
+        commercialSnapshot,
         handoffActive: false,
         leadStage: context.leadStage,
         productOfInterest: context.productOfInterest,
@@ -301,30 +309,6 @@ export class AutoReplyService {
         reviewedProposal.rejections.push('INTENT_NOT_ALLOWED');
         response.detectedIntent = undefined;
       }
-      const priceScope = [
-        inbound.content,
-        context.productOfInterest,
-        context.commercialProfile?.service,
-        context.commercialProfile?.businessNeeds,
-      ]
-        .filter(Boolean)
-        .join(' ');
-      if (
-        !responseContainsOnlyAuthorizedPrices(priceScope, response.response)
-      ) {
-        response.response = response.response
-          .split(/(?<=[.!?])\s+/u)
-          .filter((sentence) =>
-            responseContainsOnlyAuthorizedPrices(priceScope, sentence),
-          )
-          .join(' ')
-          .trim();
-        if (!response.response) {
-          response.response =
-            'Puedo indicarle los precios publicados para cada solución; el valor de un alcance distinto requiere valoración.';
-        }
-        reviewedProposal.rejections.push('PRICE_NOT_AUTHORIZED');
-      }
       // No hay calendario ni operación de cobro: estas afirmaciones nunca son confirmaciones reales.
       const unconfirmedClaim =
         /\b(?:(?:su|la|el)\s+)?(?:cita|reunión|llamada|cotización|propuesta|pago|cobro|reserva)\s+(?:ya\s+)?(?:está|quedó|ha sido)\s+(?:confirmad[oa]|agendad[oa]|reservad[oa]|enviad[oa]|aprobad[oa]|procesad[oa]|realizad[oa])\b/giu;
@@ -352,22 +336,20 @@ export class AutoReplyService {
       const safetyReview = this.commercialPolicy.repairNousCommercialClaims(
         response.response,
         approvedKnowledge,
+        commercialSnapshot.offers.some((offer) => offer.promotion),
       );
       response.response = safetyReview.response;
       reviewedProposal.rejections.push(...safetyReview.reasons);
-      if (policy.guidance.priceAnswerRequired) {
-        const missing = missingPublishedPriceAnswer(
-          priceScope,
-          response.response,
-        );
-        if (missing) response.response = `${missing} ${response.response}`;
-      }
     }
     const acceptedProfile = response.diagnostic
       ? context.commercialProfile
       : { ...context.commercialProfile, ...response.commercialProfile };
     response.commercialProfile = {
       ...acceptedProfile,
+      ...(commercialSnapshot.marketSource === 'CURRENT' &&
+      commercialSnapshot.market
+        ? { market: commercialSnapshot.market }
+        : {}),
       pendingQuestions: this.commercialPolicy.remainingPendingQuestions(
         policy.pendingQuestions,
         response.response,
@@ -379,6 +361,16 @@ export class AutoReplyService {
         this.commercialPolicy.enforceResponsePolicy(response, policy),
       );
     }
+    const commercialReview = reviewCommercialClaims(
+      response.response,
+      commercialSnapshot,
+    );
+    response.response = answerExplicitPriceIfMissing(
+      commercialReview.response,
+      commercialSnapshot,
+      policy.guidance.currentTopic === 'price',
+    );
+    reviewedProposal?.rejections.push(...commercialReview.reasons);
 
     const outputDecision = this.conversationGuard.inspectGeneratedResponse(
       response.response,

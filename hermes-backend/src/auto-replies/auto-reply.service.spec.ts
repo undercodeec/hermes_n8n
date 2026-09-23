@@ -9,7 +9,13 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
-import { ConversationStatus, MessageDirection } from '@prisma/client';
+import {
+  CommercialMarket,
+  CommercialPriceType,
+  CommercialTaxMode,
+  ConversationStatus,
+  MessageDirection,
+} from '@prisma/client';
 import { Queue } from 'bullmq';
 import { AutoReplyService } from './auto-reply.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -23,6 +29,10 @@ import {
 } from '../conversation-guard/conversation-guard.service';
 import { TasksService } from '../tasks/tasks.service';
 import { CommercialPolicyService } from '../hermes/commercial-policy.service';
+import {
+  AuthorizedOffer,
+  CommercialAuthorityService,
+} from '../hermes/commercial-authority.service';
 import { AutoReplyJobData } from './auto-reply.constants';
 import {
   CommercialProfile,
@@ -34,6 +44,32 @@ import { AgentOutputValidator } from '../conversation-engine/agent-output.valida
 import { NousHermesTransport } from '../conversation-engine/nous-hermes.transport';
 
 describe('AutoReplyService', () => {
+  const testOffer = (
+    name: string,
+    amount: string,
+    serviceCode: string,
+  ): AuthorizedOffer => ({
+    id: name,
+    name,
+    serviceCode,
+    market: CommercialMarket.EC,
+    priceType: CommercialPriceType.FIXED,
+    amount,
+    currency: 'USD',
+    taxMode: CommercialTaxMode.INCLUDED,
+    taxLabel: 'IVA',
+    scope: 'Fixture de prueba',
+    policyVersion: 'test-only',
+    promotion: false,
+  });
+  const authority = {
+    snapshot: jest.fn().mockResolvedValue({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: [],
+      offers: [],
+      needsMarketClarification: false,
+    }),
+  } as unknown as CommercialAuthorityService;
   const toEngineResult = (response: HermesResponseDto) => ({
     replyText: response.response,
     proposedActions: [{ type: 'none' as const }],
@@ -255,6 +291,7 @@ describe('AutoReplyService', () => {
       leads as unknown as LeadsService,
       tasks as unknown as TasksService,
       new CommercialPolicyService(),
+      authority,
       guard as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
       deliveries as unknown as AutomatedDeliveryService,
@@ -331,6 +368,17 @@ describe('AutoReplyService', () => {
   });
 
   it('sends Nous conversational parts in order without duplicating their joined text', async () => {
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      market: CommercialMarket.EC,
+      marketSource: 'CURRENT',
+      relevantServiceCodes: ['LANDING_PAGE', 'WEBSITE', 'ONLINE_STORE'],
+      offers: [
+        testOffer('Landing Básica', '250.00', 'LANDING_PAGE'),
+        testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+        testOffer('Tienda de Lanzamiento', '550.00', 'ONLINE_STORE'),
+      ],
+      needsMarketClarification: false,
+    });
     const harness = setupProcessHarness({
       inboundContent:
         'Tengo lavadoras para promocionar servicios y zapatos para vender por internet. ¿Cuánto cuesta y cuánto tarda?',
@@ -545,7 +593,7 @@ describe('AutoReplyService', () => {
     ).toBeUndefined();
   });
 
-  it('executes an evidence-backed quote proposal and includes the published price', async () => {
+  it('executes an evidence-backed quote proposal without inserting an unasked price', async () => {
     const harness = setupProcessHarness({
       inboundContent: 'Quiero una cotización para mi sitio web',
       hermesResponse: {
@@ -568,7 +616,7 @@ describe('AutoReplyService', () => {
     expect(harness.tasks.requestQuote).toHaveBeenCalledTimes(1);
     expect(
       harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
-    ).toContain('Plan de Lanzamiento (sitio web): USD $360.');
+    ).not.toMatch(/USD|\$/);
     expect(
       harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
     ).toContain('Podemos preparar una valoración para su sitio web.');
@@ -963,6 +1011,7 @@ describe('AutoReplyService', () => {
       {} as LeadsService,
       {} as TasksService,
       new CommercialPolicyService(),
+      authority,
       {} as ConversationGuardService,
       {} as Queue,
     );
@@ -986,6 +1035,7 @@ describe('AutoReplyService', () => {
       {} as LeadsService,
       {} as TasksService,
       new CommercialPolicyService(),
+      authority,
       {} as ConversationGuardService,
       queue,
     );
@@ -1019,6 +1069,7 @@ describe('AutoReplyService', () => {
       {} as LeadsService,
       {} as TasksService,
       new CommercialPolicyService(),
+      authority,
       {} as ConversationGuardService,
       { add } as unknown as Queue<AutoReplyJobData>,
     );
@@ -1079,6 +1130,7 @@ describe('AutoReplyService', () => {
       { qualifyFromConversation: jest.fn() } as unknown as LeadsService,
       { requestCallback: jest.fn() } as unknown as TasksService,
       new CommercialPolicyService(),
+      authority,
       { consumeAiQuota: jest.fn() } as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
       passthroughDeliveries(meta),
@@ -1139,6 +1191,7 @@ describe('AutoReplyService', () => {
       {} as LeadsService,
       {} as TasksService,
       new CommercialPolicyService(),
+      authority,
       {} as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
       passthroughDeliveries(meta),
@@ -1235,6 +1288,7 @@ describe('AutoReplyService', () => {
       leads,
       tasks,
       new CommercialPolicyService(),
+      authority,
       guard,
       { add: jest.fn() } as unknown as Queue,
       deliveries,
@@ -1316,6 +1370,7 @@ describe('AutoReplyService', () => {
       {} as LeadsService,
       {} as TasksService,
       new CommercialPolicyService(),
+      authority,
       { consumeAiQuota: jest.fn() } as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
       passthroughDeliveries(
@@ -1428,6 +1483,7 @@ describe('AutoReplyService', () => {
       leads,
       tasks,
       new CommercialPolicyService(),
+      authority,
       {
         consumeAiQuota: jest.fn().mockResolvedValue(true),
         inspectGeneratedResponse: jest
@@ -1549,6 +1605,7 @@ describe('AutoReplyService', () => {
       } as unknown as LeadsService,
       {} as TasksService,
       new CommercialPolicyService(),
+      authority,
       {
         consumeAiQuota: jest.fn().mockResolvedValue(true),
         inspectGeneratedResponse: jest

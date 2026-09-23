@@ -9,14 +9,16 @@ import {
   HermesResponseDto,
 } from './dto/hermes-request.dto';
 import {
-  commercialCatalogContext,
   monetaryAmountsIn,
   organizationLocationContext,
-  publishedPriceAnswer,
-  responseContainsOnlyAuthorizedPrices,
 } from './commercial-catalog';
 import { sanitizeDiagnosticSummary } from './hermes-diagnostics';
 import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
+import { commercialSnapshotKnowledge } from './commercial-authority.service';
+import {
+  answerExplicitPriceIfMissing,
+  reviewCommercialClaims,
+} from './commercial-claims';
 
 type ParsedHermesResponse = Pick<
   HermesResponseDto,
@@ -434,6 +436,10 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
   private async loadBusinessContext(
     request: HermesRequestDto,
   ): Promise<string> {
+    // An absent snapshot is not permission to revive the versioned price catalog.
+    // The caller must provide the CRM-approved snapshot for commercial answers.
+    if (request.commercialSnapshot)
+      return commercialSnapshotKnowledge(request.commercialSnapshot).join('\n');
     const query = [
       request.messageContent,
       request.productOfInterest,
@@ -446,7 +452,6 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       .join(' ');
     const sections: string[] = [
       `Intenciones admitidas: ${this.allowedIntents().join(', ')}`,
-      ...commercialCatalogContext(query),
     ];
     const allowedTags = this.csvConfig('HERMES_ALLOWED_TAGS');
     if (allowedTags.length) {
@@ -458,7 +463,6 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     );
 
     try {
-      const now = new Date();
       const [documents, products, playbooks] = await Promise.all([
         this.prisma.knowledgeDocument.findMany({
           where: { isActive: true },
@@ -474,21 +478,6 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
             name: true,
             category: true,
             description: true,
-            priceLists: {
-              where: {
-                isActive: true,
-                validFrom: { lte: now },
-                OR: [{ validUntil: null }, { validUntil: { gte: now } }],
-              },
-              orderBy: { validFrom: 'desc' },
-              select: {
-                name: true,
-                price: true,
-                currency: true,
-                restrictions: true,
-                notes: true,
-              },
-            },
           },
         }),
         this.prisma.salesPlaybook.findMany({
@@ -511,17 +500,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         for (const product of rankedProducts) {
           sections.push(
             (() => {
-              const prices = product.priceLists.length
-                ? product.priceLists
-                    .map(
-                      (price) =>
-                        `${price.name}: ${price.price.toString()} ${price.currency}` +
-                        `${price.restrictions ? `; restricciones: ${price.restrictions}` : ''}` +
-                        `${price.notes ? `; notas: ${price.notes}` : ''}`,
-                    )
-                    .join(' | ')
-                : 'sin precio publicado';
-              return `Catálogo vigente:\n- ${product.name}${product.category ? ` [${product.category}]` : ''}: ${product.description || 'sin descripción'}. ${prices}`;
+              return `Servicio:\n- ${product.name}${product.category ? ` [${product.category}]` : ''}: ${product.description || 'sin descripción'}. La descripción no autoriza importes ni prestaciones comerciales.`;
             })(),
           );
         }
@@ -904,6 +883,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         | 'languageVariant'
         | 'pendingQuestions'
         | 'contactPreference'
+        | 'market'
       >
     > = [
       'service',
@@ -995,13 +975,16 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     }
     const hasMonetaryValue = monetaryAmountsIn(response.response).length > 0;
     if (hasMonetaryValue) {
-      const scope = this.commercialScope(request);
-      const pricesAreAuthorized = responseContainsOnlyAuthorizedPrices(
-        scope,
-        response.response,
-      );
+      const pricesAreAuthorized =
+        request.commercialSnapshot !== undefined &&
+        reviewCommercialClaims(response.response, request.commercialSnapshot)
+          .reasons.length === 0;
       const priceContextAllowed = Boolean(
         request.conversationGuidance?.allowPriceAnswer ||
+        (request.conversationGuidance?.priceAnswerRequired &&
+          request.commercialSnapshot?.offers.length) ||
+        (request.conversationGuidance?.currentTopic === 'price' &&
+          request.commercialSnapshot?.offers.length) ||
         request.conversationGuidance?.allowPlanRecommendation ||
         request.conversationGuidance?.offerWebAlternatives,
       );
@@ -1048,12 +1031,18 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         };
       }
     }
+    const landingOffer = request.commercialSnapshot?.offers.find(
+      (offer) => offer.serviceCode === 'LANDING_PAGE',
+    );
+    const websiteOffer = request.commercialSnapshot?.offers.find(
+      (offer) => offer.serviceCode === 'WEBSITE',
+    );
     if (
       request.conversationGuidance?.offerWebAlternatives === true &&
-      (!/\blanding\b/.test(normalized) ||
-        !/\b(?:plan de lanzamiento|sitio web)\b/.test(normalized) ||
-        !/\b250\b/.test(normalized) ||
-        !/\b360\b/.test(normalized))
+      landingOffer &&
+      websiteOffer &&
+      (!normalized.includes(this.normalizeSearch(landingOffer.name)) ||
+        !normalized.includes(this.normalizeSearch(websiteOffer.name)))
     ) {
       return {
         code: 'MISSING_REQUIRED_WEB_OPTIONS',
@@ -1204,9 +1193,16 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       return undefined;
     }
 
+    const landingOffer = request.commercialSnapshot?.offers.find(
+      (offer) => offer.serviceCode === 'LANDING_PAGE',
+    );
+    const websiteOffer = request.commercialSnapshot?.offers.find(
+      (offer) => offer.serviceCode === 'WEBSITE',
+    );
+    if (!landingOffer || !websiteOffer) return undefined;
+
     return {
-      response:
-        'Para mostrar sus servicios, puede elegir una Landing Básica de USD $250, que concentra la información en una sola página, o el Plan de Lanzamiento de USD $360, que la organiza en un sitio web de hasta cinco páginas. ¿Cuál de las dos opciones le interesa conocer?',
+      response: `Para mostrar sus servicios, puede considerar ${landingOffer.name} o ${websiteOffer.name}. ¿Cuál de las dos opciones le interesa conocer?`,
       detectedIntent: 'consulta_servicio',
       nextAction: 'continuar_descubrimiento',
       ...(request.commercialProfile
@@ -1247,11 +1243,15 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       content = this.organizationLocationAnswer(request);
       requiresHumanReview = this.requestsExactLocation(request);
     } else if (topic === 'price') {
-      const published = request.conversationGuidance?.allowPriceAnswer
-        ? publishedPriceAnswer(this.commercialScope(request))
+      const published = request.commercialSnapshot
+        ? answerExplicitPriceIfMissing('', request.commercialSnapshot, true)
         : undefined;
       if (published) {
         content = published;
+        requiresHumanReview =
+          request.commercialSnapshot?.offers.some(
+            (offer) => offer.priceType === 'QUOTE_REQUIRED',
+          ) ?? false;
       } else {
         content =
           'El valor específico requiere una valoración según el alcance solicitado.';
@@ -1322,9 +1322,10 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     if (topic === 'business_location') {
       content = this.organizationLocationAnswer(request);
     } else if (topic === 'price') {
-      content =
-        publishedPriceAnswer(this.commercialScope(request)) ||
-        'El valor depende del alcance específico de su solicitud.';
+      content = request.commercialSnapshot
+        ? answerExplicitPriceIfMissing('', request.commercialSnapshot, true) ||
+          'El valor depende del alcance específico de su solicitud.'
+        : 'El valor depende del alcance específico de su solicitud.';
     } else if (request.conversationGuidance?.allowDiscoveryQuestion) {
       content = '¿Qué resultado principal espera obtener con su proyecto?';
       nextAction = 'continuar_descubrimiento';

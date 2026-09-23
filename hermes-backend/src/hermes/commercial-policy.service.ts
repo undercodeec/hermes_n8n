@@ -6,7 +6,6 @@ import {
   PaymentContext,
 } from './dto/hermes-request.dto';
 import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
-import { hasPublishedPriceFor } from './commercial-catalog';
 
 export type PendingQuestion =
   | 'price'
@@ -31,10 +30,11 @@ type PolicyContext = {
 
 @Injectable()
 export class CommercialPolicyService {
-  /** Conserva información válida y retira condiciones que el catálogo no respalda. */
+  /** Conserva información válida y retira condiciones que la instantánea CRM no respalda. */
   repairNousCommercialClaims(
     response: string,
     approvedKnowledge: string[],
+    hasActivePromotion = false,
   ): { response: string; reasons: string[] } {
     const catalog = this.normalize(approvedKnowledge.join(' '));
     const catalogWords = new Set(catalog.match(/[a-z0-9]{3,}/g) ?? []);
@@ -60,11 +60,13 @@ export class CommercialPolicyService {
     const sentences = response.split(/(?<=[.!?])\s+/u).filter(Boolean);
     const kept = sentences.filter((sentence) => {
       const normalized = this.normalize(sentence);
-      if (
-        /\b(?:descuento|rebaja|promocion|gratis|gratuito|sin costo|de por vida|ilimitad\w*)\b/.test(
+      const unsupportedOffer =
+        /\b(?:gratis|gratuito|sin costo|de por vida|ilimitad\w*)\b/.test(
           normalized,
-        )
-      ) {
+        ) ||
+        (/\b(?:descuento|rebaja|promocion)\b/.test(normalized) &&
+          (!hasActivePromotion || /\b\d+(?:[.,]\d+)?\s*%/.test(normalized)));
+      if (unsupportedOffer) {
         reasons.push('UNAUTHORIZED_DISCOUNT');
         return false;
       }
@@ -208,8 +210,8 @@ export class CommercialPolicyService {
         ));
     const priceAnswerRequired =
       currentTopic === 'price' || pending.has('price');
-    const allowPriceAnswer =
-      priceAnswerRequired && hasPublishedPriceFor(commercialScope);
+    // The worker replaces this with the current CRM authority snapshot.
+    const allowPriceAnswer = false;
     const requiredClarification = this.requiresCatalogClarification(
       normalized,
       context.conversationHistory || [],
@@ -562,11 +564,25 @@ export class CommercialPolicyService {
 
     const explicit = this.singlePlanInText(current);
     if (explicit) return explicit;
-    if (!asksForDetails) return undefined;
-
     const lastAssistant = [...history]
       .reverse()
       .find((message) => message.role === 'assistant');
+    if (lastAssistant) {
+      const selectedAmount = current.match(
+        /(?:[$€]\s*|\b(?:usd|eur)\s*)(\d[\d.,]*)/,
+      );
+      if (selectedAmount) {
+        const prior = this.normalize(lastAssistant.content);
+        const selectedPrice = selectedAmount[0].replace(/[.,]+$/, '');
+        const priceAt = prior.indexOf(selectedPrice);
+        if (priceAt >= 0) {
+          const nearby = prior.slice(Math.max(0, priceAt - 60), priceAt);
+          const plan = this.singlePlanInText(nearby);
+          if (plan) return plan;
+        }
+      }
+    }
+    if (!asksForDetails) return undefined;
     return lastAssistant
       ? this.singlePlanInText(this.normalize(lastAssistant.content))
       : undefined;
@@ -576,23 +592,15 @@ export class CommercialPolicyService {
     value: string,
   ): 'LANDING_PAGE' | 'WEBSITE' | 'ONLINE_STORE' | undefined {
     const plans: Array<'LANDING_PAGE' | 'WEBSITE' | 'ONLINE_STORE'> = [];
-    if (
-      /\b(?:landing|pagina de aterrizaje)\b|(?:\busd\s*\$?\s*|\$|\bde\s+)250\b/.test(
-        value,
-      )
-    )
+    if (/\b(?:landing|pagina de aterrizaje)\b/.test(value))
       plans.push('LANDING_PAGE');
     if (
-      /\b(?:plan de lanzamiento|plan de crecimiento|plan de autoridad|sitio web|pagina web)\b|(?:\busd\s*\$?\s*|\$|\bde\s+)(?:360|510|1010)\b/.test(
+      /\b(?:plan de lanzamiento|plan de crecimiento|plan de autoridad|sitio web|pagina web)\b/.test(
         value,
       )
     )
       plans.push('WEBSITE');
-    if (
-      /\b(?:tienda online|ecommerce|tienda de)\b|(?:\busd\s*\$?\s*|\$|\bde\s+)(?:550|850|3490)\b/.test(
-        value,
-      )
-    )
+    if (/\b(?:tienda online|ecommerce|tienda de)\b/.test(value))
       plans.push('ONLINE_STORE');
     return plans.length === 1 ? plans[0] : undefined;
   }

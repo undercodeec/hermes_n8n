@@ -3,6 +3,7 @@ import type {
   ConversationGuidance,
 } from '../hermes/dto/hermes-request.dto';
 import type { HermesDiagnostic } from '../hermes/hermes-diagnostics';
+import type { CommercialSnapshot } from '../hermes/commercial-authority.service';
 
 export type ConversationEngineId = 'gemini_direct' | 'nous_hermes';
 
@@ -28,6 +29,7 @@ export interface ConversationTurnInput {
     commercialProfile?: CommercialProfile;
     recentProfileChanges?: Array<Record<string, string>>;
     approvedKnowledge: string[];
+    commercialSnapshot?: CommercialSnapshot;
     handoffActive: boolean;
     contactName: string;
     leadStage?: string;

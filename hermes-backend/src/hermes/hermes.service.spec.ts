@@ -2,6 +2,15 @@ import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 import { CommercialPolicyService } from './commercial-policy.service';
 import { HermesService } from './hermes.service';
+import {
+  CommercialMarket,
+  CommercialPriceType,
+  CommercialTaxMode,
+} from '@prisma/client';
+import type {
+  AuthorizedOffer,
+  CommercialSnapshot,
+} from './commercial-authority.service';
 
 type HermesRequestBody = {
   messages: Array<{ role: string; content: string }>;
@@ -27,6 +36,31 @@ type HermesProviderResponse = {
 };
 
 describe('HermesService commercial contract', () => {
+  const offer = (
+    name: string,
+    amount: string,
+    serviceCode: string,
+  ): AuthorizedOffer => ({
+    id: name,
+    name,
+    serviceCode,
+    market: CommercialMarket.EC,
+    priceType: CommercialPriceType.FIXED,
+    amount,
+    currency: 'USD',
+    taxMode: CommercialTaxMode.INCLUDED,
+    taxLabel: 'IVA',
+    scope: 'Fixture de prueba',
+    policyVersion: 'test-only',
+    promotion: false,
+  });
+  const snapshot = (offers: AuthorizedOffer[]): CommercialSnapshot => ({
+    market: CommercialMarket.EC,
+    marketSource: 'CURRENT',
+    relevantServiceCodes: offers.map((item) => item.serviceCode),
+    offers,
+    needsMarketClarification: false,
+  });
   function setup(content: string | string[], model = 'gemini-test') {
     const config = {
       get: jest.fn((key: string, fallback?: unknown) => {
@@ -256,7 +290,7 @@ describe('HermesService commercial contract', () => {
     expect(result.nextAction).toBe('continuar_descubrimiento');
   });
 
-  it('adds the store plans to context and keeps ecommerce discovery facts', async () => {
+  it('uses only relevant CRM store plans and keeps ecommerce discovery facts', async () => {
     const { service, post } = setup(
       JSON.stringify({
         response:
@@ -278,13 +312,17 @@ describe('HermesService commercial contract', () => {
       messageContent:
         'Quiero una tienda online para unos 30 productos y necesito 3 correos corporativos',
       conversationHistory: [],
+      commercialSnapshot: snapshot([
+        offer('Tienda de Lanzamiento', '550.00', 'ONLINE_STORE'),
+        offer('Tienda de Crecimiento', '850.00', 'ONLINE_STORE'),
+      ]),
     });
 
     const body = post.mock.calls[0][1];
     const systemMessage = body.messages[0].content;
-    expect(systemMessage).toContain('Tienda de Lanzamiento — USD $550');
-    expect(systemMessage).toContain('Tienda de Crecimiento — USD $850');
-    expect(systemMessage).toContain('USD $40 al año');
+    expect(systemMessage).toContain('Tienda de Lanzamiento');
+    expect(systemMessage).toContain('Tienda de Crecimiento');
+    expect(systemMessage).not.toContain('USD $40');
     expect(result.commercialProfile).toEqual(
       expect.objectContaining({
         service: 'Tienda Online',
@@ -516,6 +554,9 @@ describe('HermesService commercial contract', () => {
     const result = await service.generateResponse({
       messageContent: '¿Cuánto cuesta un sitio web?',
       conversationHistory: [],
+      commercialSnapshot: snapshot([
+        offer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+      ]),
       conversationGuidance: {
         currentTopic: 'price',
         directAnswerRequired: true,
@@ -555,6 +596,9 @@ describe('HermesService commercial contract', () => {
     const result = await service.generateResponse({
       messageContent,
       conversationHistory: [],
+      commercialSnapshot: snapshot([
+        offer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+      ]),
       conversationGuidance: policy.guidance,
     });
 
@@ -582,6 +626,9 @@ describe('HermesService commercial contract', () => {
     const result = await service.generateResponse({
       messageContent,
       conversationHistory: [],
+      commercialSnapshot: snapshot([
+        offer('Renovación hosting básico', '40.00', 'HOSTING_RENEWAL'),
+      ]),
       conversationGuidance: policy.guidance,
     });
 
@@ -1092,7 +1139,7 @@ describe('HermesService commercial contract', () => {
     });
     const options = JSON.stringify({
       response:
-        'Puede empezar con una Landing Básica de USD $250 si desea concentrar sus servicios en una sola página, o con el Plan de Lanzamiento de USD $360 si prefiere organizarlos en un sitio web de hasta 5 páginas. ¿Cuál de las dos opciones le interesa conocer?',
+        'Puede empezar con una Landing Básica de USD $275 si desea concentrar sus servicios, o con el Plan de Lanzamiento de USD $425 si prefiere un sitio web. ¿Cuál de las dos opciones le interesa conocer?',
       detectedIntent: 'consulta_servicio',
       suggestedTags: [],
       nextAction: 'continuar_descubrimiento',
@@ -1103,6 +1150,10 @@ describe('HermesService commercial contract', () => {
     const result = await service.generateResponse({
       messageContent: 'Quiero promocionar mis servicios.',
       conversationHistory: [],
+      commercialSnapshot: snapshot([
+        offer('Landing Básica', '275.00', 'LANDING_PAGE'),
+        offer('Plan de Lanzamiento', '425.00', 'WEBSITE'),
+      ]),
       conversationGuidance: {
         currentTopic: 'general',
         directAnswerRequired: false,
@@ -1120,12 +1171,12 @@ describe('HermesService commercial contract', () => {
     });
 
     expect(post).toHaveBeenCalledTimes(2);
-    expect(result.response).toContain('Landing Básica de USD $250');
-    expect(result.response).toContain('Plan de Lanzamiento de USD $360');
+    expect(result.response).toContain('Landing Básica de USD $275');
+    expect(result.response).toContain('Plan de Lanzamiento de USD $425');
     expect(result.response).not.toContain('dominio');
   });
 
-  it('recovers locally when both attempts omit required web alternatives', async () => {
+  it('recovers locally with CRM offer names when both attempts omit web alternatives', async () => {
     const incomplete = JSON.stringify({
       response:
         'El Plan de Lanzamiento le permite mostrar sus servicios en un sitio web.',
@@ -1139,6 +1190,10 @@ describe('HermesService commercial contract', () => {
     const result = await service.generateResponse({
       messageContent: 'Mostrar servicios',
       conversationHistory: [],
+      commercialSnapshot: snapshot([
+        offer('Landing Básica', '275.00', 'LANDING_PAGE'),
+        offer('Plan de Lanzamiento', '425.00', 'WEBSITE'),
+      ]),
       conversationGuidance: {
         currentTopic: 'general',
         directAnswerRequired: false,
@@ -1158,8 +1213,9 @@ describe('HermesService commercial contract', () => {
     expect(post).toHaveBeenCalledTimes(2);
     expect(result.detectedIntent).toBe('consulta_servicio');
     expect(result.nextAction).toBe('continuar_descubrimiento');
-    expect(result.response).toContain('Landing Básica de USD $250');
-    expect(result.response).toContain('Plan de Lanzamiento de USD $360');
+    expect(result.response).toContain('Landing Básica');
+    expect(result.response).toContain('Plan de Lanzamiento');
+    expect(result.response).not.toMatch(/USD|\$/);
     expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
   });
 

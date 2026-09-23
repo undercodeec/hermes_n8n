@@ -16,6 +16,11 @@ export class CreateProductDto {
   @IsString()
   category?: string;
 
+  @ApiPropertyOptional({ description: 'Código estable del servicio comercial' })
+  @IsOptional()
+  @IsString()
+  serviceCode?: string;
+
   @ApiPropertyOptional({ description: 'SKU' })
   @IsOptional()
   @IsString()

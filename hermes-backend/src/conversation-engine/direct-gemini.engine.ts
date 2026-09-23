@@ -23,6 +23,7 @@ export class DirectGeminiEngine implements ConversationEngine {
       productOfInterest: input.approvedContext.productOfInterest,
       conversationSummary: input.approvedContext.conversationSummary,
       commercialProfile: input.approvedContext.commercialProfile,
+      commercialSnapshot: input.approvedContext.commercialSnapshot,
       contact: input.approvedContext.contact,
       conversationId: input.conversationId,
       correlationId: input.inboundMessageId,

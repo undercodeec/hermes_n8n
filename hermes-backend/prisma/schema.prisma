@@ -457,6 +457,7 @@ model Product {
   name        String
   description String?
   category    String?
+  serviceCode String?
   sku         String?  @unique
   imageUrl    String?
   isActive    Boolean  @default(true)
@@ -467,27 +468,55 @@ model Product {
   // Relaciones
   priceLists PriceList[]
 
+  @@index([serviceCode, isActive])
   @@map("products")
 }
 
 model PriceList {
-  id           String    @id @default(uuid())
-  productId    String
-  name         String
-  price        Float
-  currency     String    @default("USD")
-  validFrom    DateTime  @default(now())
-  validUntil   DateTime?
-  restrictions String? // Restricciones o condiciones
-  notes        String?
-  isActive     Boolean   @default(true)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
+  id                    String               @id @default(uuid())
+  productId             String
+  name                  String
+  price                 Decimal?             @db.Decimal(12, 2)
+  currency              String               @default("USD")
+  market                CommercialMarket?
+  priceType             CommercialPriceType?
+  taxMode               CommercialTaxMode?
+  taxLabel              String?
+  taxRatePercent        Decimal?             @db.Decimal(5, 2)
+  scope                 String?
+  policyVersion         String?
+  isPromotion           Boolean              @default(false)
+  supersedesPriceListId String?
+  validFrom             DateTime             @default(now())
+  validUntil            DateTime?
+  restrictions          String? // Restricciones o condiciones
+  notes                 String?
+  isActive              Boolean              @default(true)
+  createdAt             DateTime             @default(now())
+  updatedAt             DateTime             @updatedAt
 
   // Relaciones
   product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
 
+  @@index([market, isActive, validFrom, validUntil])
   @@map("price_lists")
+}
+
+enum CommercialMarket {
+  EC
+  ES
+}
+
+enum CommercialPriceType {
+  FIXED
+  FROM
+  QUOTE_REQUIRED
+}
+
+enum CommercialTaxMode {
+  INCLUDED
+  EXCLUDED
+  NOT_APPLICABLE
 }
 
 // ─────────────────────────────────────────────

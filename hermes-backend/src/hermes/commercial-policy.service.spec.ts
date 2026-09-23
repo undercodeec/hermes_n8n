@@ -52,6 +52,18 @@ describe('CommercialPolicyService', () => {
     );
   });
 
+  it('preserves a generic promotion claim when a current CRM offer is promotional', () => {
+    const result = service.repairNousCommercialClaims(
+      'Hay una promoción vigente para este sitio web.',
+      ['Promoción autorizada para sitio web.'],
+      true,
+    );
+    expect(result.response).toBe(
+      'Hay una promoción vigente para este sitio web.',
+    );
+    expect(result.reasons).toEqual([]);
+  });
+
   it('removes a delivery promise expressed in words', () => {
     const result = service.repairNousCommercialClaims(
       'La tienda permite comprar por internet. Se la entregamos en una semana.',
@@ -253,7 +265,7 @@ describe('CommercialPolicyService', () => {
     expect(decision.pendingQuestions).toEqual(['price', 'timeline']);
   });
 
-  it('allows an authorized website price without allowing a definitive plan recommendation', () => {
+  it('defers website price authority to the CRM snapshot', () => {
     const decision = service.analyze(
       '¿Cuánto cuesta un sitio web?',
       receivedAt,
@@ -261,7 +273,7 @@ describe('CommercialPolicyService', () => {
 
     expect(decision.guidance.directAnswerRequired).toBe(true);
     expect(decision.guidance.priceAnswerRequired).toBe(true);
-    expect(decision.guidance.allowPriceAnswer).toBe(true);
+    expect(decision.guidance.allowPriceAnswer).toBe(false);
     expect(decision.guidance.allowPlanRecommendation).toBe(false);
   });
 

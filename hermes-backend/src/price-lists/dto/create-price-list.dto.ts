@@ -1,5 +1,17 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNumber, IsOptional, IsDateString } from 'class-validator';
+import {
+  IsString,
+  IsNumber,
+  IsOptional,
+  IsDateString,
+  IsEnum,
+  IsBoolean,
+} from 'class-validator';
+import {
+  CommercialMarket,
+  CommercialPriceType,
+  CommercialTaxMode,
+} from '@prisma/client';
 
 export class CreatePriceListDto {
   @ApiProperty({ description: 'ID del producto' })
@@ -13,9 +25,58 @@ export class CreatePriceListDto {
   @IsString()
   name: string;
 
-  @ApiProperty({ description: 'Precio', example: 99.99 })
+  @ApiPropertyOptional({
+    description: 'Importe; omitir para QUOTE_REQUIRED',
+    example: 99.99,
+  })
+  @IsOptional()
   @IsNumber()
-  price: number;
+  price?: number | null;
+
+  @ApiPropertyOptional({ enum: CommercialMarket })
+  @IsOptional()
+  @IsEnum(CommercialMarket)
+  market?: CommercialMarket;
+
+  @ApiPropertyOptional({ enum: CommercialPriceType })
+  @IsOptional()
+  @IsEnum(CommercialPriceType)
+  priceType?: CommercialPriceType;
+
+  @ApiPropertyOptional({ enum: CommercialTaxMode })
+  @IsOptional()
+  @IsEnum(CommercialTaxMode)
+  taxMode?: CommercialTaxMode;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  taxLabel?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsNumber()
+  taxRatePercent?: number;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  scope?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  policyVersion?: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsBoolean()
+  isPromotion?: boolean;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsString()
+  supersedesPriceListId?: string;
 
   @ApiPropertyOptional({ description: 'Moneda', default: 'USD' })
   @IsOptional()

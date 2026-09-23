@@ -1,6 +1,8 @@
 import type { HermesDiagnostic } from '../hermes-diagnostics';
+import type { CommercialSnapshot } from '../commercial-authority.service';
 
 export type CommercialProfile = {
+  market?: 'EC' | 'ES';
   service?: string;
   company?: string;
   sector?: string;
@@ -79,6 +81,7 @@ export class HermesRequestDto {
   conversationSummary?: string;
   /** Ficha persistida de mensajes anteriores; no depende del historial completo. */
   commercialProfile?: CommercialProfile;
+  commercialSnapshot?: CommercialSnapshot;
   contact?: {
     id: string;
     /** Indica que WhatsApp ya proporciona un número utilizable; no se expone en el prompt. */
