@@ -122,14 +122,42 @@ export function requestedSolutionKinds(
       normalized,
     );
   const kinds = new Set<CommercialSolutionKind>();
-  if (
-    /\b(tienda online|ecommerce|comercio electronico|carrito|checkout|pasarela|vender online|vender por internet|venta online|comprar online|pagar online)\b/.test(
+  const onlineSales =
+    /\b(?:tienda online|ecommerce|comercio electronico|carrito|checkout|pasarela|venta online|comprar online|pagar online)\b/.test(
       normalized,
-    )
-  ) {
+    ) ||
+    /\b(?:vender|comprar|compren|cobrar|pagar|pagos?|pedidos?)\b.{0,55}\b(?:online|por internet|en linea|desde la (?:pagina|web)|por la web)\b/.test(
+      normalized,
+    ) ||
+    (/\b(?:quiero|necesito|busco|deseo|para)\b.{0,50}\bvender\b/.test(
+      normalized,
+    ) &&
+      !/\b(?:en mi local|en tienda fisica|presencialmente)\b|\bvender\s+(?:(?:mi|mis|el|los)\s+)?(?:negocio|empresa|servicios?)\b/.test(
+        normalized,
+      ));
+  if (onlineSales) {
     kinds.add('ONLINE_STORE');
   }
+
+  const promotion =
+    /\b(?:promocionar|publicitar|promover|dar a conocer)\b.{0,50}\b(?:negocio|empresa|tienda|servicios?|productos?)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:conseguir|captar|atraer)\b.{0,30}\b(?:clientes?|contactos?|leads?)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:mostrar|presentar|exhibir)\b.{0,30}\bservicios?\b/.test(normalized) ||
+    /\b(?:tener|ganar|crear)\b.{0,20}\bpresencia\b.{0,20}\b(?:internet|web|online)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:contacten|escriban)\b.{0,30}\b(?:whatsapp|web|pagina)\b/.test(
+      normalized,
+    ) ||
+    /\b(?:recibir|generar)\b.{0,25}\b(?:consultas?|contactos?)\b/.test(
+      normalized,
+    );
   if (
+    promotion ||
     /\b(landing|pagina de aterrizaje|captar leads?|campana publicitaria)\b/.test(
       normalized,
     )
@@ -137,18 +165,11 @@ export function requestedSolutionKinds(
     kinds.add('LANDING_PAGE');
   }
   if (
+    promotion ||
     /\b(sitio web|pagina web|web corporativa|presencia web|portal web)\b/.test(
       normalized,
     )
   ) {
-    kinds.add('WEBSITE');
-  }
-  if (
-    kinds.has('ONLINE_STORE') &&
-    /\b(promocionar|publicitar|promover)\b/.test(normalized) &&
-    /\b(servicios?|reparacion(?:es)?)\b/.test(normalized)
-  ) {
-    kinds.add('LANDING_PAGE');
     kinds.add('WEBSITE');
   }
   if (

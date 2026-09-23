@@ -506,6 +506,14 @@ describe('CommercialPolicyService', () => {
     expect(decision.guidance.allowDiscoveryQuestion).toBe(true);
   });
 
+  it('clarifies whether a displayed catalog should also accept online sales', () => {
+    const decision = service.analyze('Quiero mostrar un catálogo', receivedAt);
+
+    expect(decision.guidance.requiredClarification).toBe(
+      'CATALOG_VS_ONLINE_SALES',
+    );
+  });
+
   it('replaces a premature store-plan recommendation with the required distinction', () => {
     const decision = service.analyze(
       'Quiero mostrar los productos de mi tienda.',

@@ -3,8 +3,77 @@ import {
   commercialCatalogContext,
   organizationLocationContext,
   publishedPriceAnswer,
+  requestedSolutionKinds,
   responseContainsOnlyAuthorizedPrices,
 } from './commercial-catalog';
+
+describe('requestedSolutionKinds', () => {
+  it.each([
+    'Quiero promocionar mi negocio',
+    'Quiero promocionar mi tienda',
+    'Quiero promocionar mis servicios',
+    'Quiero conseguir clientes',
+    'Necesito captar clientes',
+    'Quiero mostrar mis servicios',
+    'Necesito tener presencia en internet',
+    'Quiero que me contacten por WhatsApp',
+    'Necesito recibir consultas',
+    'Quiero dar a conocer mi negocio',
+  ])('recovers landing and website for promotion intent: %s', (message) => {
+    expect(requestedSolutionKinds(message, false)).toEqual([
+      'LANDING_PAGE',
+      'WEBSITE',
+    ]);
+  });
+
+  it.each([
+    'Quiero vender zapatos por internet',
+    'Quiero vender ropa online',
+    'Quiero vender mis productos',
+    'Quiero que compren desde la página',
+    'Quiero cobrar por la web',
+    'Necesito un carrito de compras',
+    'Quiero aceptar pagos y pedidos desde la web',
+  ])('recovers online store for sales intent: %s', (message) => {
+    expect(requestedSolutionKinds(message, false)).toContain('ONLINE_STORE');
+  });
+
+  it('keeps website and landing for a page that shows services', () => {
+    expect(
+      requestedSolutionKinds(
+        'Necesito una página web para mostrar mis servicios',
+        false,
+      ),
+    ).toEqual(['LANDING_PAGE', 'WEBSITE']);
+  });
+
+  it('keeps promotion and sales for different businesses in one turn', () => {
+    expect(
+      requestedSolutionKinds(
+        'Tengo un negocio de reparación de lavadoras y otro de zapatos. Para el primero quiero promocionar mis servicios y con el segundo quiero vender por internet.',
+        false,
+      ),
+    ).toEqual(['ONLINE_STORE', 'LANDING_PAGE', 'WEBSITE']);
+  });
+
+  it.each([
+    'Vendo zapatos actualmente en mi local',
+    'Quiero una página para mi tienda de zapatos',
+    'Quiero promocionar mi tienda',
+    'Quiero mostrar un catálogo',
+    'Quiero mostrar mis zapatos en la página',
+    'Quiero promocionar mi negocio online. Vendo zapatos en mi local',
+    'Quiero vender mi negocio',
+    'Quiero vender mis servicios',
+  ])(
+    'does not infer online checkout from display or physical sales: %s',
+    (message) => {
+      expect(requestedSolutionKinds(message, false)).not.toContain(
+        'ONLINE_STORE',
+      );
+    },
+  );
+});
 
 describe('commercialCatalogContext', () => {
   it('builds published website prices from typed catalog data', () => {

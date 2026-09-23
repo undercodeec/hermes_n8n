@@ -7,6 +7,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import {
   CommercialAuthorityService,
+  commercialSnapshotKnowledge,
   resolveCommercialMarket,
 } from './commercial-authority.service';
 
@@ -59,6 +60,92 @@ describe('CommercialAuthorityService', () => {
     const prisma = { product: { findMany } } as unknown as PrismaService;
     return { authority: new CommercialAuthorityService(prisma), findMany };
   }
+
+  it.each([
+    {
+      message: 'Quiero promocionar mi negocio. ¿Qué opciones y precios tienen?',
+      codes: ['LANDING_PAGE', 'WEBSITE'],
+      amounts: ['250.00', '600.00', '1500.00', '360.00', '510.00', '1010.00'],
+    },
+    {
+      message: 'Necesito una página web para mi empresa. ¿Qué precios tienen?',
+      codes: ['WEBSITE'],
+      amounts: ['360.00', '510.00', '1010.00'],
+    },
+    {
+      message: 'Quiero vender zapatos por internet. ¿Qué precios tienen?',
+      codes: ['ONLINE_STORE'],
+      amounts: ['550.00', '850.00', '3490.00'],
+    },
+    {
+      message:
+        'Tengo reparación de lavadoras y zapatos. Para reparaciones quiero promocionar mis servicios y para zapatos quiero vender.',
+      codes: ['ONLINE_STORE', 'LANDING_PAGE', 'WEBSITE'],
+      amounts: [
+        '550.00',
+        '850.00',
+        '3490.00',
+        '250.00',
+        '600.00',
+        '1500.00',
+        '360.00',
+        '510.00',
+        '1010.00',
+      ],
+    },
+  ])(
+    'loads only CRM offers for $message',
+    async ({ message, codes, amounts }) => {
+      const rows = [
+        ...[
+          ['LANDING_PAGE', 250, 600, 1500],
+          ['WEBSITE', 360, 510, 1010],
+          ['ONLINE_STORE', 550, 850, 3490],
+        ].flatMap(([code, ...values]) =>
+          values.map((amount) => ({
+            id: `${code}-${amount}`,
+            name: `${code} ${amount}`,
+            serviceCode: code,
+            priceLists: [
+              {
+                ...base,
+                id: `${code}-${amount}-price`,
+                price: new Prisma.Decimal(amount),
+                market: null,
+              },
+            ],
+          })),
+        ),
+      ];
+      const findMany = jest
+        .fn()
+        .mockImplementation(
+          (query: { where: { serviceCode: { in: string[] } } }) =>
+            rows.filter((row) =>
+              query.where.serviceCode.in.includes(String(row.serviceCode)),
+            ),
+        );
+      const authority = new CommercialAuthorityService({
+        product: { findMany },
+      } as unknown as PrismaService);
+      const snapshot = await authority.snapshot({
+        customerMessage: message,
+        priceRequested: true,
+        now,
+      });
+      expect(snapshot.relevantServiceCodes).toEqual(codes);
+      expect(snapshot.offers.map((offer) => offer.amount)).toHaveLength(
+        amounts.length,
+      );
+      expect(snapshot.offers.map((offer) => offer.amount)).toEqual(
+        expect.arrayContaining(amounts),
+      );
+      expect(snapshot.needsMarketClarification).toBe(false);
+      expect(commercialSnapshotKnowledge(snapshot)).not.toContain(
+        'No hay tarifas comerciales globales aprobadas y vigentes para los servicios consultados. No comunique importes.',
+      );
+    },
+  );
 
   it('does not turn a profile location or phone number into a confirmed market', () => {
     expect(

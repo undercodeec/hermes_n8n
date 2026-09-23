@@ -28,6 +28,10 @@ Las tarifas específicas por mercado siguen siendo compatibles para una necesida
 
 El catálogo estático `commercial-catalog.ts` queda como artefacto de reversión. No autoriza precios ni se usa como alternativa automática cuando PostgreSQL no tiene una tarifa válida.
 
+`requestedSolutionKinds` identifica promoción y captación, presencia web y venta online. Si falta contexto para elegir formato de promoción, recupera Landing y Sitio Web. Para venta online recupera Tienda. La clasificación solo elige los `serviceCode` que se consultan en PostgreSQL; no determina importes.
+
+Cuando un mensaje describe dos negocios, la instantánea incluye las familias pertinentes para ambos y `businessNeeds` conserva la descripción literal para que Hermes distinga sus objetivos. La instantánea comercial sigue siendo global por turno, sin una relación estructurada entre negocio y oferta. En turnos posteriores, el mensaje o el perfil debe aportar contexto suficiente para identificar el negocio retomado. Mostrar un catálogo sin evidencia de venta online conserva la aclaración entre exhibición y cobro.
+
 ## Migración
 
 Ejecutar en el entorno de destino, después de respaldar PostgreSQL:

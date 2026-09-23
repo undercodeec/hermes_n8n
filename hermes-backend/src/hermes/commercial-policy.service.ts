@@ -466,6 +466,9 @@ export class CommercialPolicyService {
       ) ||
       /\bproductos?\b.{0,45}\b(?:ver|mostrar|exhibir|publicar|catalogo)\b/.test(
         discoveryEvidence,
+      ) ||
+      /\b(?:ver|mostrar|exhibir|publicar)\b.{0,35}\bcatalogo\b/.test(
+        discoveryEvidence,
       );
     if (!wantsProductsVisible) return false;
 
