@@ -24,8 +24,10 @@ export type GeneratedResponseDecision =
 
 @Injectable()
 export class ConversationGuardService implements OnModuleDestroy {
+  private static readonly REDIS_READY_TIMEOUT_MS = 5000;
   private readonly logger = new Logger(ConversationGuardService.name);
   private client?: Redis;
+  private connection?: { client: Redis; ready: Promise<void> };
 
   constructor(private readonly config: ConfigService) {}
 
@@ -289,7 +291,7 @@ export class ConversationGuardService implements OnModuleDestroy {
   }
 
   private async redis(): Promise<Redis> {
-    if (!this.client) {
+    if (!this.client || this.client.status === 'end') {
       const url = this.config.get<string>('REDIS_URL');
       if (!url)
         throw new Error('REDIS_URL es obligatorio para ConversationGuard');
@@ -302,8 +304,68 @@ export class ConversationGuardService implements OnModuleDestroy {
         this.logger.warn(`Redis anti-spam no disponible: ${error.message}`);
       });
     }
-    if (this.client.status === 'wait') await this.client.connect();
-    return this.client;
+    const client = this.client;
+    if (client.status === 'ready') return client;
+    if (this.connection?.client !== client) {
+      const pending = this.waitForRedisReady(client);
+      const ready = pending.finally(() => {
+        if (this.connection?.client === client) this.connection = undefined;
+      });
+      this.connection = { client, ready };
+    }
+    try {
+      await this.connection.ready;
+      if (!this.isRedisReady(client))
+        throw new Error('Redis anti-spam dejó READY antes de la cuota');
+      return client;
+    } catch (error) {
+      client.disconnect();
+      if (this.client === client) this.client = undefined;
+      throw error;
+    }
+  }
+
+  private isRedisReady(client: Redis): boolean {
+    return client.status === 'ready';
+  }
+
+  private async waitForRedisReady(client: Redis): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let cleanup = () => undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(
+        () => reject(new Error('Timeout esperando READY de Redis anti-spam')),
+        this.positiveInteger(
+          'AI_GUARD_REDIS_READY_TIMEOUT_MS',
+          ConversationGuardService.REDIS_READY_TIMEOUT_MS,
+        ),
+      );
+    });
+    try {
+      const readiness =
+        client.status === 'wait'
+          ? client.connect().then(() => undefined)
+          : new Promise<void>((resolve, reject) => {
+              const onReady = () => {
+                cleanup();
+                resolve();
+              };
+              const onEnd = () => {
+                cleanup();
+                reject(new Error('Redis anti-spam terminó antes de READY'));
+              };
+              cleanup = () => {
+                client.off('ready', onReady);
+                client.off('end', onEnd);
+              };
+              client.once('ready', onReady);
+              client.once('end', onEnd);
+            });
+      await Promise.race([readiness, timeout]);
+    } finally {
+      if (timer) clearTimeout(timer);
+      cleanup();
+    }
   }
 
   private failClosed(): boolean {
@@ -316,6 +378,10 @@ export class ConversationGuardService implements OnModuleDestroy {
   }
 
   async onModuleDestroy(): Promise<void> {
-    if (this.client && this.client.status !== 'end') await this.client.quit();
+    const client = this.client;
+    this.client = undefined;
+    if (!client || client.status === 'end') return;
+    if (client.status === 'ready') await client.quit();
+    else client.disconnect();
   }
 }
