@@ -338,7 +338,7 @@ describe('WebhookService campaign replies', () => {
     expect(prismaMock.conversation.create).not.toHaveBeenCalled();
   });
 
-  it('asks for written text when receiving audio and does not enqueue Hermes', async () => {
+  it('persists audio metadata and enqueues it for transcription after debounce', async () => {
     const inboundMessage = {
       id: 'inbound-audio',
       createdAt: new Date('2026-09-20T16:00:00Z'),
@@ -367,6 +367,7 @@ describe('WebhookService campaign replies', () => {
       },
       message: {
         findUnique: jest.fn().mockResolvedValue(null),
+        findMany: jest.fn().mockResolvedValue([]),
         create: messageCreate,
       },
     };
@@ -379,7 +380,9 @@ describe('WebhookService campaign replies', () => {
         .mockResolvedValue({ messages: [{ id: 'wamid.notice' }] }),
     } as unknown as MetaService;
     const autoReplies = { enqueue: jest.fn() } as unknown as AutoReplyService;
-    const guard = { inspect: jest.fn() } as unknown as ConversationGuardService;
+    const guard = {
+      inspect: jest.fn().mockResolvedValue({ action: 'ALLOW' }),
+    } as unknown as ConversationGuardService;
     const deliveries = {
       prepareBatch: jest.fn().mockResolvedValue(undefined),
       deliverPreparedBatch: jest
@@ -422,26 +425,27 @@ describe('WebhookService campaign replies', () => {
       { wa_id: '593991234567', profile: { name: 'Ana' } },
     );
 
-    expect(deliveries.prepareBatch).toHaveBeenCalledWith({
-      deliveryKind: 'SYSTEM_NOTICE',
-      conversationId: 'conversation-1',
-      contactId: 'contact-1',
-      sourceMessageId: 'inbound-audio',
-      sender: 'SYSTEM',
-      allowHandedOff: false,
-      parts: [
-        expect.objectContaining({
-          partIndex: 0,
-          metadata: { action: 'AUDIO_TRANSCRIPTION_UNAVAILABLE' },
-        }),
-      ],
+    expect(messageCreate).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        wamid: 'wamid.audio',
+        metadata: {
+          sourceType: 'AUDIO',
+          mediaId: 'media-1',
+          mimeType: 'audio/ogg',
+        },
+      }),
     });
-    expect(deliveries.deliverPreparedBatch).toHaveBeenCalledWith(
-      'inbound-audio',
-    );
+    expect(deliveries.prepareBatch).not.toHaveBeenCalled();
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
-    expect(autoReplies.enqueue).not.toHaveBeenCalled();
-    expect(guard.inspect).not.toHaveBeenCalled();
+    expect(autoReplies.enqueue).toHaveBeenCalledWith(
+      {
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-audio',
+      },
+      7,
+    );
+    expect(guard.inspect).toHaveBeenCalled();
   });
 
   it('allows only a post-handoff support notice through the handed-off guard', async () => {

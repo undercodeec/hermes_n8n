@@ -187,6 +187,15 @@ export class WebhookService {
           type: messageType,
           content: messageContent,
           rawPayload: message as unknown as Prisma.InputJsonValue,
+          ...(messageType === MessageType.AUDIO
+            ? {
+                metadata: {
+                  sourceType: 'AUDIO',
+                  mediaId: message.audio?.id,
+                  mimeType: message.audio?.mime_type,
+                },
+              }
+            : {}),
           wamid: message.id,
         },
       });
@@ -251,21 +260,6 @@ export class WebhookService {
       if (conversation.status === ConversationStatus.HANDED_OFF) {
         this.logger.log(
           `Conversación ${conversation.id} en handoff, no se genera respuesta automática`,
-        );
-        return;
-      }
-
-      if (messageType === MessageType.AUDIO) {
-        await this.sendSystemMessage(
-          conversation.id,
-          contact.id,
-          inboundMessage.id,
-          'Por el momento no puedo transcribir notas de voz. Por favor, escriba el mensaje para poder ayudarle correctamente.',
-          'AUDIO_TRANSCRIPTION_UNAVAILABLE',
-          false,
-        );
-        this.logger.log(
-          `Audio recibido en conversación ${conversation.id}; se solicitó una versión escrita`,
         );
         return;
       }

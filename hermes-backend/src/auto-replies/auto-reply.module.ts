@@ -11,6 +11,9 @@ import { ConversationGuardModule } from '../conversation-guard/conversation-guar
 import { TasksModule } from '../tasks/tasks.module';
 import { AutomatedDeliveryModule } from '../automated-deliveries/automated-delivery.module';
 import { HermesModule } from '../hermes/hermes.module';
+import { InboundTurnService } from './inbound-turn.service';
+import { InboundTurnRecoveryService } from './inbound-turn-recovery.service';
+import { VoiceService } from '../voice/voice.service';
 
 @Module({
   imports: [
@@ -32,7 +35,13 @@ import { HermesModule } from '../hermes/hermes.module';
       },
     }),
   ],
-  providers: [AutoReplyService, AutoReplyProcessor],
+  providers: [
+    AutoReplyService,
+    AutoReplyProcessor,
+    InboundTurnService,
+    InboundTurnRecoveryService,
+    VoiceService,
+  ],
   exports: [AutoReplyService],
 })
 export class AutoReplyModule {}

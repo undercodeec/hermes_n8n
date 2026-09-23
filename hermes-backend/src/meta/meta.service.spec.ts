@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
 import { MetaSendError, MetaService } from './meta.service';
 
 function createService(): MetaService {
@@ -16,6 +17,45 @@ function httpPost(service: MetaService): jest.Mock {
 }
 
 describe('MetaService typing indicator', () => {
+  it('uploads OGG/Opus and sends a native WhatsApp voice note', async () => {
+    const service = createService();
+    const post = httpPost(service)
+      .mockResolvedValueOnce({ data: { id: 'media-voice-1' } })
+      .mockResolvedValueOnce({ data: { messages: [{ id: 'wamid.voice' }] } });
+    const mediaId = await service.uploadVoiceNote(Buffer.from('OggSopus'));
+    const response = await service.sendVoiceNote('593991234567', mediaId);
+    const calls = post.mock.calls as unknown[][];
+    expect(calls[0][0]).toBe('/media');
+    expect(calls[0][1]).toBeInstanceOf(FormData);
+    expect(calls[1]).toEqual([
+      '/messages',
+      {
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: '593991234567',
+        type: 'audio',
+        audio: { id: 'media-voice-1', voice: true },
+      },
+    ]);
+    expect(response.messages[0].id).toBe('wamid.voice');
+  });
+
+  it('rejects a media download host outside Meta before sending the token', async () => {
+    const service = createService();
+    const graph = service as unknown as { graphClient: { get: jest.Mock } };
+    graph.graphClient.get = jest.fn().mockResolvedValue({
+      data: {
+        url: 'https://attacker.example/audio',
+        mime_type: 'audio/ogg',
+        file_size: 5,
+      },
+    });
+    const get = jest.spyOn(axios, 'get');
+    await expect(service.downloadInboundAudio('media-1', 100)).rejects.toThrow(
+      'Host de descarga',
+    );
+    expect(get).not.toHaveBeenCalled();
+  });
   it.each([
     [429, 'DEFINITIVE_REJECTION', true, 'META_HTTP_429'],
     [400, 'DEFINITIVE_REJECTION', false, 'META_HTTP_400'],

@@ -1,12 +1,14 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { createHash } from 'node:crypto';
-import { Injectable, Logger } from '@nestjs/common';
+import { createHash, randomUUID } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ConversationStatus,
   HandoffReason,
   MessageDirection,
   MessageSender,
+  MessageType,
   Prisma,
   TaskStatus,
 } from '@prisma/client';
@@ -40,6 +42,8 @@ import {
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 import { reviewAgentProposal } from '../conversation-engine/agent-proposal-policy';
 import { AGENT_DEFAULT_INTENTS } from '../conversation-engine/agent-output.contract';
+import { InboundTurnService } from './inbound-turn.service';
+import { VoiceService } from '../voice/voice.service';
 
 @Injectable()
 export class AutoReplyService {
@@ -59,9 +63,23 @@ export class AutoReplyService {
     @InjectQueue(AUTO_REPLY_QUEUE)
     private readonly queue: Queue<AutoReplyJobData>,
     private readonly deliveries: AutomatedDeliveryService,
+    @Optional() private readonly inboundTurns?: InboundTurnService,
+    @Optional() private readonly voice?: VoiceService,
   ) {}
 
   async enqueue(data: AutoReplyJobData, messageLength: number): Promise<void> {
+    if (this.inboundTurns) {
+      const turn = await this.inboundTurns.schedule(data);
+      await this.queue.add(
+        'send-auto-reply',
+        { ...data, inboundTurnId: turn.id },
+        {
+          jobId: `auto-reply-${data.inboundMessageId}`,
+          delay: Math.max(0, turn.dueAt.getTime() - Date.now()),
+        },
+      );
+      return;
+    }
     const previousHermesMessage = await this.prisma.message.findFirst({
       where: {
         conversationId: data.conversationId,
@@ -81,6 +99,104 @@ export class AutoReplyService {
   }
 
   async process(data: AutoReplyJobData): Promise<void> {
+    if (data.inboundTurnId && this.inboundTurns) {
+      const turn = await this.inboundTurns.claim(data.inboundTurnId);
+      if (!turn) {
+        const pending = await this.inboundTurns.findPending(data.inboundTurnId);
+        if (pending && this.inboundTurns.nextClaimAt(pending) > Date.now()) {
+          await this.queue.add('send-auto-reply', data, {
+            jobId: `turn-recheck-${pending.id}-${randomUUID()}`,
+            delay: Math.max(
+              1,
+              this.inboundTurns.nextClaimAt(pending) - Date.now() + 1,
+            ),
+          });
+        }
+        return;
+      }
+      try {
+        const pending = await this.inboundTurns.messages(turn.id);
+        const audio = pending.filter(
+          (message) =>
+            message.type === MessageType.AUDIO && message.content === '[Audio]',
+        );
+        if (audio.length) {
+          try {
+            if (!this.voice) throw new Error('VOICE_NOT_CONFIGURED');
+            for (const message of audio) {
+              const payload = message.rawPayload;
+              const mediaId =
+                payload &&
+                typeof payload === 'object' &&
+                !Array.isArray(payload) &&
+                payload.audio &&
+                typeof payload.audio === 'object' &&
+                !Array.isArray(payload.audio) &&
+                typeof payload.audio.id === 'string'
+                  ? payload.audio.id
+                  : undefined;
+              if (!mediaId) throw new Error('AUDIO_MEDIA_ID_MISSING');
+              const transcript = await this.voice.transcribe(mediaId);
+              await this.prisma.message.update({
+                where: { id: message.id },
+                data: {
+                  content: transcript.text,
+                  metadata: {
+                    sourceType: 'AUDIO',
+                    transcriptionStatus: 'READY',
+                    language: transcript.language,
+                    confidence: transcript.confidence,
+                  },
+                },
+              });
+            }
+          } catch (error) {
+            this.logger.warn(
+              `Audio no transcrito: ${error instanceof Error ? error.name : 'UNKNOWN'}`,
+            );
+            await this.deliveries.prepareBatch({
+              deliveryKind: 'SYSTEM_NOTICE',
+              conversationId: data.conversationId,
+              contactId: data.contactId,
+              sourceMessageId: turn.lastMessageId,
+              sender: 'SYSTEM',
+              allowHandedOff: false,
+              parts: [
+                {
+                  partIndex: 0,
+                  content:
+                    'No pude escuchar bien esa nota de voz. ¿Podría reenviarla o escribirme esa parte?',
+                  metadata: {
+                    action: 'AUDIO_TRANSCRIPTION_FAILED',
+                    conversationTurnId: turn.id,
+                  },
+                },
+              ],
+            });
+            await this.deliveries.deliverPreparedBatch(turn.lastMessageId);
+            await this.inboundTurns.complete(turn.id, turn.processingToken!);
+            return;
+          }
+        }
+        const messages = await this.inboundTurns.messages(turn.id);
+        await this.processTurn(
+          { ...data, inboundMessageId: turn.lastMessageId },
+          messages,
+        );
+        await this.inboundTurns.complete(turn.id, turn.processingToken!);
+      } catch (error) {
+        await this.inboundTurns.release(turn.id, turn.processingToken!);
+        throw error;
+      }
+      return;
+    }
+    await this.processTurn(data);
+  }
+
+  private async processTurn(
+    data: AutoReplyJobData,
+    turnMessages?: Awaited<ReturnType<InboundTurnService['messages']>>,
+  ): Promise<void> {
     const inbound = await this.prisma.message.findUnique({
       where: { id: data.inboundMessageId },
       select: {
@@ -97,6 +213,14 @@ export class AutoReplyService {
       this.logSkip(data, 'INBOUND_NOT_FOUND_OR_MISMATCH');
       return;
     }
+    const customerMessage = turnMessages?.length
+      ? turnMessages
+          .map(
+            (message, index) =>
+              `[Mensaje ${index + 1}, ${message.type}] ${message.content ?? ''}`,
+          )
+          .join('\n')
+      : inbound.content || '';
 
     const recovered = await this.deliveries.recoverBatch(inbound.id);
     if (recovered?.handled) {
@@ -129,12 +253,12 @@ export class AutoReplyService {
     const context = await this.buildConversationContext(
       data.contactId,
       data.conversationId,
-      inbound.id,
+      turnMessages?.map((message) => message.id) ?? [inbound.id],
     );
     const receivedAt =
       this.providerTimestamp(inbound.rawPayload) ?? inbound.createdAt;
     const policy = this.commercialPolicy.analyze(
-      inbound.content || '',
+      customerMessage,
       receivedAt,
       context.commercialProfile?.pendingQuestions,
       {
@@ -143,7 +267,7 @@ export class AutoReplyService {
       },
     );
     const commercialSnapshot = await this.commercialAuthority.snapshot({
-      customerMessage: inbound.content || '',
+      customerMessage,
       profile: context.commercialProfile,
       productOfInterest: context.productOfInterest,
       recentCustomerMessages: context.recentMessages
@@ -240,7 +364,7 @@ export class AutoReplyService {
     const engineResult = await this.conversationEngine.respond({
       conversationId: data.conversationId,
       inboundMessageId: inbound.id,
-      customerMessage: inbound.content || '',
+      customerMessage,
       approvedContext: {
         contactName: conversation.contact.name || 'Cliente',
         recentMessages: context.recentMessages.map(({ role, content }) => ({
@@ -289,7 +413,7 @@ export class AutoReplyService {
       isNous && !response.diagnostic
         ? reviewAgentProposal(
             engineResult,
-            inbound.content || '',
+            customerMessage,
             context.recentMessages
               .filter((message) => message.role === 'user')
               .map((message) => message.content),
@@ -524,10 +648,7 @@ export class AutoReplyService {
       !response.diagnostic &&
       (isNous
         ? reviewedProposal?.action.type === 'request_handoff'
-        : this.checkHandoffSignals(
-            inbound.content || '',
-            response.detectedIntent,
-          ));
+        : this.checkHandoffSignals(customerMessage, response.detectedIntent));
     let actionResult: string = 'MESSAGE_ONLY';
     if (
       isNous &&
@@ -557,7 +678,7 @@ export class AutoReplyService {
         scopeSummary: [
           context.commercialProfile?.service,
           context.commercialProfile?.need,
-          inbound.content,
+          customerMessage,
         ]
           .filter(Boolean)
           .join('; ')
@@ -570,7 +691,7 @@ export class AutoReplyService {
       await this.handoffs.create({
         conversationId: data.conversationId,
         reason: this.handoffReason(response.detectedIntent),
-        reasonDetail: `Handoff automático. Mensaje trigger: ${(inbound.content || '').substring(0, 200)}`,
+        reasonDetail: `Handoff automático. Mensaje trigger: ${customerMessage.substring(0, 200)}`,
       });
       actionResult = 'HUMAN_HANDOFF_CREATED';
       if (isNous) {
@@ -618,6 +739,29 @@ export class AutoReplyService {
       this.logSkip(data, 'REPLY_PART_BLOCKED');
       return;
     }
+    const modality = this.config.get<string>('HERMES_REPLY_MODALITY', 'mirror');
+    const wantsVoice = Boolean(
+      data.inboundTurnId &&
+      this.voice &&
+      (modality === 'voice' ||
+        (modality === 'mirror' &&
+          turnMessages?.at(-1)?.type === MessageType.AUDIO)),
+    );
+    let voiceMediaIds: string[] = [];
+    if (wantsVoice && messageParts.length <= 3) {
+      try {
+        const generated: Buffer[] = [];
+        for (const content of messageParts)
+          generated.push(await this.voice!.synthesize(content));
+        for (const bytes of generated)
+          voiceMediaIds.push(await this.meta.uploadVoiceNote(bytes));
+      } catch (error) {
+        voiceMediaIds = [];
+        this.logger.warn(
+          `TTS no disponible; respuesta textual: ${error instanceof Error ? error.name : 'UNKNOWN'}`,
+        );
+      }
+    }
     await this.deliveries.prepareBatch({
       deliveryKind: 'HERMES_REPLY',
       conversationId: data.conversationId,
@@ -628,10 +772,28 @@ export class AutoReplyService {
       parts: messageParts.map((content, partIndex) => ({
         partIndex,
         content,
+        ...(data.inboundTurnId
+          ? {
+              metadata: {
+                conversationTurnId: data.inboundTurnId,
+                ...(voiceMediaIds[partIndex]
+                  ? { voiceMediaId: voiceMediaIds[partIndex] }
+                  : {}),
+              },
+            }
+          : {}),
         ...(partIndex === 0
           ? {
               metadata: {
                 conversationEngine: engineResult.engine,
+                ...(data.inboundTurnId
+                  ? {
+                      conversationTurnId: data.inboundTurnId,
+                      ...(voiceMediaIds[partIndex]
+                        ? { voiceMediaId: voiceMediaIds[partIndex] }
+                        : {}),
+                    }
+                  : {}),
                 providerModel: engineResult.providerModel,
                 traceId: engineResult.traceId,
                 tokensUsed: response.tokensUsed,
@@ -660,6 +822,14 @@ export class AutoReplyService {
           : {}),
       })),
     });
+    if (data.inboundTurnId) {
+      const configured = Number(
+        this.config.get('HERMES_CONVERSATION_MESSAGE_DELAY_MS'),
+      );
+      const delayMs =
+        Number.isSafeInteger(configured) && configured >= 0 ? configured : 3000;
+      if (delayMs > 0) await delay(delayMs);
+    }
     const delivery = await this.deliveries.deliverPreparedBatch(inbound.id);
     const sentParts = delivery.confirmed;
     if (sentParts === 0) {
@@ -778,12 +948,12 @@ export class AutoReplyService {
   private async buildConversationContext(
     contactId: string,
     conversationId: string,
-    excludedMessageId: string,
+    excludedMessageIds: string[],
   ) {
     const [recentMessages, state, lead, pendingTasks, completedTasks] =
       await Promise.all([
         this.prisma.message.findMany({
-          where: { conversationId, NOT: { id: excludedMessageId } },
+          where: { conversationId, NOT: { id: { in: excludedMessageIds } } },
           orderBy: { createdAt: 'desc' },
           take: 20,
           select: {

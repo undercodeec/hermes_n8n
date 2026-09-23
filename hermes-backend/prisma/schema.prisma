@@ -314,6 +314,7 @@ model Conversation {
   tasks                   Task[]
   advertisingAttributions AdvertisingAttribution[]
   automatedDeliveries     AutomatedDelivery[]
+  inboundTurns            InboundTurn[]
 
   @@index([contactId, updatedAt])
   @@index([status, updatedAt])
@@ -365,6 +366,33 @@ enum MessageSender {
   SYSTEM
 }
 
+enum InboundTurnStatus {
+  OPEN
+  PROCESSING
+  PROCESSED
+}
+
+model InboundTurn {
+  id              String            @id @default(uuid())
+  conversationId  String
+  contactId       String
+  firstAt         DateTime
+  lastAt          DateTime
+  dueAt           DateTime
+  lastMessageId   String
+  status          InboundTurnStatus @default(OPEN)
+  processingAt    DateTime?
+  processingToken String?
+  createdAt       DateTime          @default(now())
+  updatedAt       DateTime          @updatedAt
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  messages     Message[]
+
+  @@index([conversationId, status, dueAt])
+  @@map("inbound_turns")
+}
+
 enum AutomatedDeliveryKind {
   HERMES_REPLY
   SYSTEM_NOTICE
@@ -380,21 +408,23 @@ enum AutomatedDeliveryStatus {
 }
 
 model Message {
-  id             String           @id @default(uuid())
-  conversationId String
-  contactId      String
-  direction      MessageDirection
-  sender         MessageSender    @default(SYSTEM)
-  sentByUserId   String?
-  type           MessageType      @default(TEXT)
-  content        String? // Contenido del mensaje
-  rawPayload     Json? // Payload crudo de Meta
-  wamid          String?          @unique // WhatsApp Message ID
-  tokensUsed     Int? // Tokens consumidos por Hermes
-  latencyMs      Int? // Latencia en ms de la respuesta
-  costEstimate   Float? // Costo estimado en USD
-  metadata       Json?
-  createdAt      DateTime         @default(now())
+  id                  String           @id @default(uuid())
+  conversationId      String
+  contactId           String
+  direction           MessageDirection
+  sender              MessageSender    @default(SYSTEM)
+  sentByUserId        String?
+  type                MessageType      @default(TEXT)
+  content             String? // Contenido del mensaje
+  rawPayload          Json? // Payload crudo de Meta
+  wamid               String?          @unique // WhatsApp Message ID
+  tokensUsed          Int? // Tokens consumidos por Hermes
+  latencyMs           Int? // Latencia en ms de la respuesta
+  costEstimate        Float? // Costo estimado en USD
+  metadata            Json?
+  inboundTurnId       String?
+  inboundTurnPosition Int?
+  createdAt           DateTime         @default(now())
 
   // Relaciones
   conversation              Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -403,9 +433,12 @@ model Message {
   advertisingAttribution    AdvertisingAttribution?
   sourceAutomatedDeliveries AutomatedDelivery[]     @relation("AutomatedDeliverySource")
   outboundAutomatedDelivery AutomatedDelivery?      @relation("AutomatedDeliveryOutbound")
+  inboundTurn               InboundTurn?            @relation(fields: [inboundTurnId], references: [id], onDelete: SetNull)
 
+  @@unique([inboundTurnId, inboundTurnPosition])
   @@index([conversationId, createdAt])
   @@index([contactId])
+  @@index([inboundTurnId, createdAt])
   @@index([sentByUserId])
   @@map("messages")
 }

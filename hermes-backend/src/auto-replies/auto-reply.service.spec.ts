@@ -40,6 +40,8 @@ import {
 } from '../hermes/dto/hermes-request.dto';
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 import { PrepareAutomatedDeliveryBatch } from '../automated-deliveries/automated-delivery.types';
+import { InboundTurnService } from './inbound-turn.service';
+import { VoiceService } from '../voice/voice.service';
 import { AgentOutputValidator } from '../conversation-engine/agent-output.validator';
 import { NousHermesTransport } from '../conversation-engine/nous-hermes.transport';
 
@@ -145,7 +147,11 @@ describe('AutoReplyService', () => {
 
   function setupProcessHarness(options: ProcessHarnessOptions): {
     service: AutoReplyService;
-    meta: { sendTextMessage: jest.Mock; showTypingIndicator: jest.Mock };
+    meta: {
+      sendTextMessage: jest.Mock;
+      showTypingIndicator: jest.Mock;
+      uploadVoiceNote: jest.Mock;
+    };
     tasks: {
       requestHermesReview: jest.Mock;
       requestQuote: jest.Mock;
@@ -217,6 +223,7 @@ describe('AutoReplyService', () => {
       sendTextMessage: jest
         .fn()
         .mockResolvedValue({ messages: [{ id: 'wamid.outbound' }] }),
+      uploadVoiceNote: jest.fn().mockResolvedValue('media-voice-1'),
     };
     const requestHermesReview =
       options.reviewTask instanceof Error
@@ -281,8 +288,11 @@ describe('AutoReplyService', () => {
     };
     const service = new AutoReplyService(
       {
-        get: jest.fn((key: string) =>
-          key === 'AI_MESSAGE_PART_DELAY_MS' ? 0 : undefined,
+        get: jest.fn((key: string, fallback?: string) =>
+          key === 'AI_MESSAGE_PART_DELAY_MS' ||
+          key === 'HERMES_CONVERSATION_MESSAGE_DELAY_MS'
+            ? 0
+            : fallback,
         ),
       } as unknown as ConfigService,
       prisma,
@@ -310,6 +320,254 @@ describe('AutoReplyService', () => {
       conversationUpdate,
     };
   }
+
+  it('uses one inference for all messages in a claimed conversation turn', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: {
+        response: 'Podemos combinar la web y el rastreo de prendas.',
+        detectedIntent: 'consulta_servicio',
+      },
+    });
+    const at = new Date('2026-09-20T18:00:00.000Z');
+    const turns = {
+      claim: jest.fn().mockResolvedValue({
+        id: 'turn-1',
+        lastMessageId: 'inbound-recovery',
+        processingToken: 'claim-token',
+      }),
+      messages: jest.fn().mockResolvedValue([
+        {
+          id: 'm1',
+          wamid: 'wamid.m1',
+          type: 'TEXT',
+          content: 'Quiero una página',
+          createdAt: at,
+          rawPayload: null,
+        },
+        {
+          id: 'm2',
+          wamid: 'wamid.m2',
+          type: 'TEXT',
+          content: 'Es para una lavandería',
+          createdAt: at,
+          rawPayload: null,
+        },
+        {
+          id: 'inbound-recovery',
+          wamid: 'wamid.m3',
+          type: 'TEXT',
+          content: 'Quiero rastrear prendas',
+          createdAt: at,
+          rawPayload: null,
+        },
+      ]),
+      complete: jest.fn(),
+      release: jest.fn(),
+      findOpen: jest.fn(),
+    };
+    Object.assign(harness.service, {
+      inboundTurns: turns as unknown as InboundTurnService,
+    });
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'm1',
+      inboundTurnId: 'turn-1',
+    });
+
+    expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+    const request = harness.engine.respond.mock.calls[0][0] as {
+      customerMessage: string;
+    };
+    expect(request.customerMessage).toContain('Quiero una página');
+    expect(request.customerMessage).toContain('Es para una lavandería');
+    expect(request.customerMessage).toContain('Quiero rastrear prendas');
+    expect(turns.complete).toHaveBeenCalledWith('turn-1', 'claim-token');
+    expect(harness.deliveries.prepareBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parts: expect.arrayContaining([
+          expect.objectContaining({
+            metadata: expect.objectContaining({ conversationTurnId: 'turn-1' }),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it('transcribes an audio turn before inference and selects voice in MIRROR mode', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: {
+        response: 'Sí, podemos crear esa web.',
+        detectedIntent: 'consulta_servicio',
+      },
+    });
+    const at = new Date('2026-09-20T18:00:00.000Z');
+    const audio = {
+      id: 'inbound-recovery',
+      wamid: 'wamid.audio',
+      type: 'AUDIO',
+      content: '[Audio]',
+      createdAt: at,
+      rawPayload: { audio: { id: 'media-inbound' } },
+    };
+    const turns = {
+      claim: jest.fn().mockResolvedValue({
+        id: 'turn-audio',
+        lastMessageId: audio.id,
+        processingToken: 'claim-token',
+      }),
+      messages: jest
+        .fn()
+        .mockResolvedValueOnce([audio])
+        .mockResolvedValueOnce([
+          { ...audio, content: 'Necesito una página web para una lavandería.' },
+        ]),
+      complete: jest.fn(),
+      release: jest.fn(),
+      findOpen: jest.fn(),
+    };
+    const voice = {
+      transcribe: jest.fn().mockResolvedValue({
+        text: 'Necesito una página web para una lavandería.',
+        language: 'es',
+        sourceType: 'AUDIO',
+      }),
+      synthesize: jest.fn().mockResolvedValue(Buffer.from('OggSopus')),
+    };
+    Object.assign(harness.service, {
+      inboundTurns: turns as unknown as InboundTurnService,
+      voice: voice as unknown as VoiceService,
+    });
+    const internals = harness.service as unknown as {
+      prisma: { message: { update: jest.Mock } };
+    };
+    internals.prisma.message.update = jest.fn().mockResolvedValue({});
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: audio.id,
+      inboundTurnId: 'turn-audio',
+    });
+
+    expect(voice.transcribe).toHaveBeenCalledWith('media-inbound');
+    expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+    expect(voice.synthesize).toHaveBeenCalled();
+    expect(harness.meta.uploadVoiceNote).toHaveBeenCalled();
+    expect(harness.deliveries.prepareBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        parts: expect.arrayContaining([
+          expect.objectContaining({
+            metadata: expect.objectContaining({
+              voiceMediaId: 'media-voice-1',
+            }),
+          }),
+        ]),
+      }),
+    );
+  });
+
+  it('delivers approved text when voice synthesis fails', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: {
+        response: 'Podemos crear su sitio web.',
+        detectedIntent: 'consulta_servicio',
+      },
+    });
+    const audio = {
+      id: 'inbound-recovery',
+      wamid: 'wamid.audio',
+      type: 'AUDIO',
+      content: 'Necesito una web',
+      createdAt: new Date('2026-09-20T18:00:00.000Z'),
+      rawPayload: { audio: { id: 'media-inbound' } },
+    };
+    Object.assign(harness.service, {
+      inboundTurns: {
+        claim: jest.fn().mockResolvedValue({
+          id: 'turn-audio',
+          lastMessageId: audio.id,
+          processingToken: 'claim-token',
+        }),
+        messages: jest.fn().mockResolvedValue([audio]),
+        complete: jest.fn(),
+        release: jest.fn(),
+      } as unknown as InboundTurnService,
+      voice: {
+        synthesize: jest.fn().mockRejectedValue(new Error('TTS unavailable')),
+      } as unknown as VoiceService,
+    });
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: audio.id,
+      inboundTurnId: 'turn-audio',
+    });
+
+    expect(harness.meta.uploadVoiceNote).not.toHaveBeenCalled();
+    const prepared = harness.deliveries.prepareBatch.mock.calls[0][0] as {
+      parts: Array<{ content: string; metadata?: { voiceMediaId?: string } }>;
+    };
+    expect(prepared.parts[0].content).toBe('Podemos crear su sitio web.');
+    expect(prepared.parts[0].metadata?.voiceMediaId).toBeUndefined();
+    expect(harness.deliveries.deliverPreparedBatch).toHaveBeenCalled();
+  });
+
+  it('asks to resend an untranscribable audio without calling Nous', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'No debe generarse' },
+    });
+    const turns = {
+      claim: jest.fn().mockResolvedValue({
+        id: 'turn-audio',
+        lastMessageId: 'inbound-recovery',
+        processingToken: 'claim-token',
+      }),
+      messages: jest.fn().mockResolvedValue([
+        {
+          id: 'inbound-recovery',
+          wamid: 'wamid.audio',
+          type: 'AUDIO',
+          content: '[Audio]',
+          createdAt: new Date(),
+          rawPayload: { audio: { id: 'media-inbound' } },
+        },
+      ]),
+      complete: jest.fn(),
+      release: jest.fn(),
+      findOpen: jest.fn(),
+    };
+    const voice = {
+      transcribe: jest.fn().mockRejectedValue(new Error('STT failed')),
+    };
+    Object.assign(harness.service, {
+      inboundTurns: turns as unknown as InboundTurnService,
+      voice: voice as unknown as VoiceService,
+    });
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+      inboundTurnId: 'turn-audio',
+    });
+
+    expect(harness.engine.respond).not.toHaveBeenCalled();
+    expect(harness.deliveries.prepareBatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        deliveryKind: 'SYSTEM_NOTICE',
+        parts: [
+          expect.objectContaining({
+            metadata: expect.objectContaining({
+              action: 'AUDIO_TRANSCRIPTION_FAILED',
+            }),
+          }),
+        ],
+      }),
+    );
+  });
 
   it('resumes a prepared batch before quota or inference', async () => {
     const harness = setupProcessHarness({

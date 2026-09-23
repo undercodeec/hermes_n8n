@@ -4,4 +4,5 @@ export interface AutoReplyJobData {
   conversationId: string;
   contactId: string;
   inboundMessageId: string;
+  inboundTurnId?: string;
 }

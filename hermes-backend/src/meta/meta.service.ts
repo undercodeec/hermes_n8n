@@ -45,6 +45,7 @@ export interface MetaMediaMetadata {
   id: string;
   mime_type?: string;
   file_size?: number;
+  url?: string;
 }
 
 @Injectable()
@@ -270,6 +271,105 @@ export class MetaService {
       );
       throw new BadRequestException(
         'El Media ID no es accesible desde el WABA configurado',
+      );
+    }
+  }
+
+  async downloadInboundAudio(
+    mediaId: string,
+    maxBytes: number,
+  ): Promise<{
+    bytes: Buffer;
+    mimeType: string;
+  }> {
+    const metadata = await this.graphClient.get<MetaMediaMetadata>(
+      `/${encodeURIComponent(mediaId)}`,
+      {
+        params: {
+          fields: 'id,mime_type,file_size,url',
+          phone_number_id: this.phoneNumberId,
+        },
+      },
+    );
+    const { url, mime_type: mimeType, file_size: size } = metadata.data;
+    if (!url || !mimeType?.startsWith('audio/') || (size && size > maxBytes))
+      throw new BadRequestException(
+        'Audio de Meta no válido o demasiado grande',
+      );
+    const parsed = new URL(url);
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.hostname !== 'lookaside.fbsbx.com' ||
+      parsed.username ||
+      parsed.password
+    )
+      throw new BadRequestException('Host de descarga de Meta no permitido');
+    const response = await axios.get<ArrayBuffer>(url, {
+      headers: {
+        Authorization: `Bearer ${this.config.get<string>('META_ACCESS_TOKEN', '')}`,
+      },
+      responseType: 'arraybuffer',
+      timeout: 15000,
+      maxContentLength: maxBytes,
+      maxRedirects: 0,
+    });
+    const bytes = Buffer.from(response.data);
+    if (!bytes.length || bytes.length > maxBytes)
+      throw new BadRequestException('Audio de Meta vacío o demasiado grande');
+    return { bytes, mimeType };
+  }
+
+  async uploadVoiceNote(oggOpus: Buffer): Promise<string> {
+    if (!oggOpus.length || oggOpus.length > 16 * 1024 * 1024)
+      throw new BadRequestException('Nota de voz inválida o demasiado grande');
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    const bytes = oggOpus.buffer.slice(
+      oggOpus.byteOffset,
+      oggOpus.byteOffset + oggOpus.byteLength,
+    ) as ArrayBuffer;
+    form.append(
+      'file',
+      new Blob([bytes], { type: 'audio/ogg; codecs=opus' }),
+      'voice.ogg',
+    );
+    const response = await this.httpClient.post<MetaUploadedMedia>(
+      '/media',
+      form,
+      {
+        timeout: 30000,
+        maxBodyLength: 16 * 1024 * 1024,
+      },
+    );
+    if (!response.data?.id) throw new Error('Meta no devolvió Media ID');
+    return response.data.id;
+  }
+
+  async sendVoiceNote(to: string, mediaId: string): Promise<MetaSendResponse> {
+    try {
+      const response = await this.httpClient.post<MetaSendResponse>(
+        '/messages',
+        {
+          messaging_product: 'whatsapp',
+          recipient_type: 'individual',
+          to,
+          type: 'audio',
+          audio: { id: mediaId, voice: true },
+        },
+      );
+      if (!response.data.messages?.[0]?.id)
+        throw new MetaSendError('AMBIGUOUS', false, 200, 'META_WAMID_MISSING');
+      return response.data;
+    } catch (error) {
+      if (error instanceof MetaSendError) throw error;
+      const safe = this.toSafeError(error);
+      throw new MetaSendError(
+        safe.status !== null && safe.status >= 400 && safe.status < 500
+          ? 'DEFINITIVE_REJECTION'
+          : 'AMBIGUOUS',
+        safe.status === 429,
+        safe.status,
+        safe.status ? `META_HTTP_${safe.status}` : 'META_TRANSPORT_ERROR',
       );
     }
   }

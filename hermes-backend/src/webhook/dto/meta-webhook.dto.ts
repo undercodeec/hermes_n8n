@@ -46,7 +46,13 @@ export class MetaWebhookMessage {
     filename?: string;
     caption?: string;
   };
-  audio?: { id: string; mime_type: string };
+  audio?: {
+    id: string;
+    mime_type: string;
+    sha256?: string;
+    voice?: boolean;
+    duration?: number;
+  };
   video?: { id: string; mime_type: string };
   location?: {
     latitude: number;

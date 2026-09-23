@@ -164,10 +164,18 @@ export class AutomatedDeliveryService
       }
 
       try {
-        const response = await this.meta.sendTextMessage(
-          claim.waId,
-          claim.operation.content,
-        );
+        const metadata = claim.operation.metadata;
+        const voiceMediaId =
+          metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+            ? metadata.voiceMediaId
+            : undefined;
+        const response =
+          typeof voiceMediaId === 'string'
+            ? await this.meta.sendVoiceNote(claim.waId, voiceMediaId)
+            : await this.meta.sendTextMessage(
+                claim.waId,
+                claim.operation.content,
+              );
         const wamid = response.messages[0].id;
         await this.confirm(claim.operation, claim.claimToken, wamid);
         confirmed += 1;
@@ -337,11 +345,13 @@ export class AutomatedDeliveryService
       id: string;
       createdAt: Date;
       rawPayload: Prisma.JsonValue;
+      inboundTurnId?: string | null;
     } | null;
     latestInbound: {
       id: string;
       createdAt: Date;
       rawPayload: Prisma.JsonValue;
+      inboundTurnId?: string | null;
     } | null;
     now: Date;
   }): string | null {
@@ -356,6 +366,24 @@ export class AutomatedDeliveryService
     } = input;
     if (!conversation || !contact || !sourceMessage || !latestInbound) {
       return 'DELIVERY_CONTEXT_MISSING';
+    }
+    const metadata = current.metadata;
+    const conversationTurnId =
+      metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+        ? metadata.conversationTurnId
+        : undefined;
+    if (
+      typeof conversationTurnId === 'string' &&
+      sourceMessage.inboundTurnId !== conversationTurnId
+    ) {
+      return 'TURN_ID_MISMATCH';
+    }
+    if (
+      typeof conversationTurnId === 'string' &&
+      latestInbound.inboundTurnId &&
+      latestInbound.inboundTurnId !== conversationTurnId
+    ) {
+      return 'NEWER_INBOUND';
     }
     const sourceAt = this.providerTimestamp(sourceMessage);
     const latestAt = this.providerTimestamp(latestInbound);
@@ -422,7 +450,13 @@ export class AutomatedDeliveryService
           contactId: operation.contactId,
           direction: MessageDirection.OUTBOUND,
           sender: operation.sender,
-          type: MessageType.TEXT,
+          type:
+            current.metadata &&
+            typeof current.metadata === 'object' &&
+            !Array.isArray(current.metadata) &&
+            typeof current.metadata.voiceMediaId === 'string'
+              ? MessageType.AUDIO
+              : MessageType.TEXT,
           content: operation.content,
           wamid,
           metadata: operation.metadata ?? undefined,

@@ -191,7 +191,7 @@ function expiredDispatchingRow(): Row {
 
 describe('AutomatedDeliveryService', () => {
   let store: DeliveryStore;
-  let meta: { sendTextMessage: jest.Mock };
+  let meta: { sendTextMessage: jest.Mock; sendVoiceNote: jest.Mock };
   let service: AutomatedDeliveryService;
 
   beforeEach(() => {
@@ -200,6 +200,9 @@ describe('AutomatedDeliveryService', () => {
       sendTextMessage: jest
         .fn()
         .mockResolvedValue(confirmedMetaResponse('wamid.1')),
+      sendVoiceNote: jest
+        .fn()
+        .mockResolvedValue(confirmedMetaResponse('wamid.voice')),
     };
     service = new AutomatedDeliveryService(
       store.prisma,
@@ -218,6 +221,37 @@ describe('AutomatedDeliveryService', () => {
     await service.prepareBatch(batch('uno', 'dos'));
     await service.deliverPreparedBatch('inbound-1');
     expect(pendingAtFirstSend[0]).toBe(2);
+  });
+
+  it('sends confirmed OGG media as a voice note while retaining canonical text', async () => {
+    store.source.inboundTurnId = 'turn-1';
+    store.latestInbound = store.source;
+    await service.prepareBatch({
+      ...batch('Precio autorizado: USD 360'),
+      parts: [
+        {
+          partIndex: 0,
+          content: 'Precio autorizado: USD 360',
+          metadata: {
+            conversationTurnId: 'turn-1',
+            voiceMediaId: 'media-voice-1',
+          },
+        },
+      ],
+    });
+    await service.deliverPreparedBatch('inbound-1');
+    expect(meta.sendVoiceNote).toHaveBeenCalledWith(
+      '593991234567',
+      'media-voice-1',
+    );
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(store.messages[0]).toEqual(
+      expect.objectContaining({
+        type: 'AUDIO',
+        content: 'Precio autorizado: USD 360',
+        wamid: 'wamid.voice',
+      }),
+    );
   });
 
   it('lets only one concurrent worker claim an operation', async () => {

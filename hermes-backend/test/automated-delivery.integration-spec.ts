@@ -7,6 +7,9 @@ import {
   MessageType,
   PrismaClient,
 } from '@prisma/client';
+import { AutomatedDeliveryService } from '../src/automated-deliveries/automated-delivery.service';
+import { MetaService } from '../src/meta/meta.service';
+import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('AutomatedDelivery PostgreSQL claims (integration)', () => {
   const databaseUrl = process.env.DATABASE_INTEGRATION_URL;
@@ -123,5 +126,83 @@ describe('AutomatedDelivery PostgreSQL claims (integration)', () => {
         },
       }),
     ).rejects.toBeDefined();
+  });
+
+  it('suppresses a prepared reply when a newer inbound arrives during the output delay', async () => {
+    if (!prisma || !contactId)
+      throw new Error('Integration fixture unavailable');
+    const delivery = await prisma.automatedDelivery.findUniqueOrThrow({
+      where: { id: deliveryId },
+    });
+    const meta = { sendTextMessage: jest.fn() };
+    const service = new AutomatedDeliveryService(
+      prisma as PrismaService,
+      meta as unknown as MetaService,
+    );
+    await prisma.message.create({
+      data: {
+        conversationId: delivery.conversationId,
+        contactId,
+        direction: MessageDirection.INBOUND,
+        sender: MessageSender.CONTACT,
+        type: MessageType.TEXT,
+        content: 'Un detalle más',
+        wamid: `wamid.later.${randomUUID()}`,
+        rawPayload: { timestamp: String(Math.floor(Date.now() / 1000) + 2) },
+      },
+    });
+    const result = await service.deliverPreparedBatch(delivery.sourceMessageId);
+    expect(result.reasonCode).toBe('NEWER_INBOUND');
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(
+      (
+        await prisma.automatedDelivery.findUniqueOrThrow({
+          where: { id: deliveryId },
+        })
+      ).status,
+    ).toBe(AutomatedDeliveryStatus.SUPPRESSED);
+  });
+
+  it('rechecks NEWER_INBOUND before each reply part', async () => {
+    if (!prisma || !contactId)
+      throw new Error('Integration fixture unavailable');
+    const delivery = await prisma.automatedDelivery.findUniqueOrThrow({
+      where: { id: deliveryId },
+    });
+    await prisma.automatedDelivery.create({
+      data: {
+        operationKey: `${delivery.sourceMessageId}:HERMES_REPLY:1`,
+        deliveryKind: AutomatedDeliveryKind.HERMES_REPLY,
+        partIndex: 1,
+        conversationId: delivery.conversationId,
+        contactId,
+        sourceMessageId: delivery.sourceMessageId,
+        sender: MessageSender.HERMES,
+        content: 'Pregunta de seguimiento',
+      },
+    });
+    const sendTextMessage = jest.fn().mockImplementation(async () => {
+      await prisma!.message.create({
+        data: {
+          conversationId: delivery.conversationId,
+          contactId,
+          direction: MessageDirection.INBOUND,
+          sender: MessageSender.CONTACT,
+          type: MessageType.TEXT,
+          content: 'Otra corrección',
+          wamid: `wamid.later.${randomUUID()}`,
+          rawPayload: { timestamp: String(Math.floor(Date.now() / 1000) + 2) },
+        },
+      });
+      return { messages: [{ id: `wamid.out.${randomUUID()}` }] };
+    });
+    const service = new AutomatedDeliveryService(
+      prisma as PrismaService,
+      { sendTextMessage } as unknown as MetaService,
+    );
+    const result = await service.deliverPreparedBatch(delivery.sourceMessageId);
+    expect(result.confirmed).toBe(1);
+    expect(result.reasonCode).toBe('NEWER_INBOUND');
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
   });
 });
