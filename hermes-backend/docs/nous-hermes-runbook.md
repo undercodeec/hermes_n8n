@@ -1,5 +1,8 @@
 # Runbook de Hermes CRM con Nous Hermes Agent
 
+La auditoría del contexto, las fuentes comerciales y el contrato de mensajes
+independientes está en [nous-commercial-conversation-change.md](nous-commercial-conversation-change.md).
+
 ## Alcance y estado seguro
 
 Este runbook corresponde al contrato privado VPS `contract_version=1`. La
@@ -24,7 +27,7 @@ cerrado.
 ## Contrato privado fijado
 
 El contrato JSON exacto, incluidas las cuatro formas de `proposedNextAction`,
-las 18 claves autorizadas de `commercialProfilePatch` y las condiciones de
+las 19 claves autorizadas de `commercialProfilePatch` y las condiciones de
 `fieldEvidence` y `actionEvidence`, está en
 `nous-hermes-conversational-integration.md`. En un saludo o consulta general
 basta `{"replyText":"Hola, ¿en qué puedo ayudarle?"}`. Una acción propuesta

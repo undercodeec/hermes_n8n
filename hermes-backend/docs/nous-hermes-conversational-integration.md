@@ -19,7 +19,8 @@ sin convertir una cadena en acción ni añadir evidencia.
 
 | Clave del JSON | Tipo y obligación | Restricción y consumidor |
 | --- | --- | --- |
-| `replyText` | cadena obligatoria | No vacía, máximo `AI_MAX_OUTPUT_CHARS` (900 por defecto); `AgentOutputValidator` y `AutoReplyService` aplican guardas comerciales antes de entrega. |
+| `replyText` | cadena obligatoria si no hay `replyParts` | No vacía, máximo `AI_MAX_OUTPUT_CHARS` (900 por defecto) para un mensaje. Si coexiste con `replyParts`, coincide con las partes unidas por un espacio. |
+| `replyParts` | lista opcional que puede sustituir `replyText` | De 1 a 6 mensajes completos, no vacíos, cada uno de hasta `AI_MAX_OUTPUT_CHARS`; el CRM valida y entrega las partes en orden. |
 | `detectedIntent` | cadena opcional | No vacía, máximo 80; `AutoReplyService` la contrasta con `HERMES_ALLOWED_INTENTS` o el catálogo predeterminado y descarta las no autorizadas. |
 | `suggestedTags` | lista opcional de cadenas | Máximo 8, cada una `[a-z0-9_-]` de 1–40 caracteres; `reviewAgentProposal` exige allowlist `HERMES_ALLOWED_TAGS` y mención en el mensaje actual. |
 | `commercialProfilePatch` | objeto opcional | Sólo las 18 claves indicadas abajo; valores de cadena no vacía de máximo 240. `contactPreference` sólo `WHATSAPP`, `CALL`, `VIDEO_CALL` o `EMAIL`. `reviewAgentProposal`, `AutoReplyService` y `LeadsService` consumen únicamente los valores respaldados. |
@@ -28,7 +29,7 @@ sin convertir una cadena en acción ni añadir evidencia.
 | `actionEvidence` | cadena condicional | Obligatoria y no vacía, máximo 300, para una acción distinta de `none`; omitida cuando no hay acción. Debe ser fragmento literal del mensaje actual y acompañar una solicitud afirmativa. |
 
 Claves permitidas de `commercialProfilePatch`: `service`, `company`, `sector`,
-`location`, `need`, `currentSituation`, `users`, `productCount`, `paymentNeeds`,
+`location`, `need`, `businessNeeds`, `currentSituation`, `users`, `productCount`, `paymentNeeds`,
 `shippingNeeds`, `inventoryNeeds`, `domainStatus`, `corporateEmailNeeds`,
 `integrations`, `budget`, `timeline`, `lastObjection`, `contactPreference`.
 La lista ejecutable está en `agent-output.contract.ts`; las claves de perfil
@@ -72,7 +73,7 @@ en la VPS; las pruebas locales sintéticas no demuestran resolución en producci
 
 `AutoReplyService` arma contexto del contacto y conversación actuales: historial reciente, resumen, ficha comercial, etapa, preguntas pendientes, tareas pendientes y completadas recientemente, capacidades y catálogo publicado. `NousHermesTransport` envía esos datos como datos no confiables en `messages` de Chat Completions al alias privado `hermes-agent`. No se pasan credenciales, teléfonos, herramientas ni sesiones del agente. El mensaje de sistema fija las reglas y el contenido del cliente permanece en rol de usuario.
 
-El contenido final de la respuesta del agente es un objeto JSON con `replyText` obligatorio y campos opcionales `detectedIntent`, `suggestedTags`, `commercialProfilePatch`, `fieldEvidence`, `proposedNextAction` y `actionEvidence`. Se usa el contenido de Chat Completions que ya soporta el transporte; no se presupone soporte de `response_format` o JSON Schema del servidor. Si no hay JSON válido, el CRM crea un diagnóstico y usa el flujo de revisión existente. No se hace una segunda llamada al modelo.
+El contenido final de la respuesta del agente es un objeto JSON con `replyText` o `replyParts` y campos opcionales `detectedIntent`, `suggestedTags`, `commercialProfilePatch`, `fieldEvidence`, `proposedNextAction` y `actionEvidence`. Se usa el contenido de Chat Completions que ya soporta el transporte; no se presupone soporte de `response_format` o JSON Schema del servidor. Si no hay JSON válido, el CRM crea un diagnóstico y usa el flujo de revisión existente. No se hace una segunda llamada al modelo.
 
 El CRM valida tipos y longitudes. Una actualización de perfil exige un fragmento literal del mensaje actual para cada campo y que el valor propuesto coincida con esa evidencia; los turnos anteriores no autorizan sobrescribir una corrección reciente. Las etiquetas deben estar en `HERMES_ALLOWED_TAGS` y aparecer en el mensaje actual; si la lista está vacía no se acepta ninguna. Las intenciones usan `HERMES_ALLOWED_INTENTS` o el catálogo predeterminado. Las acciones admitidas son `none`, `request_handoff`, `request_callback` y `propose_quote_task`; requieren evidencia textual y una solicitud afirmativa del cliente. La cotización crea una tarea pendiente de valoración, no una cotización confirmada. El callback crea una tarea pendiente, no confirma una llamada. Handoff se registra mediante el servicio existente. Calendario, reservas, cobros, envíos, herramientas arbitrarias, MCP y acceso directo a PostgreSQL, Meta o n8n siguen deshabilitados.
 

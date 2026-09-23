@@ -71,6 +71,9 @@ export class CommercialPolicyService {
       if (
         /\b(?:entrega|entregado|listo|terminado|implementado|plazo)\b.{0,70}\b\d+\s*(?:dias?|semanas?|meses?)\b|\b\d+\s*(?:dias?|semanas?|meses?)\b.{0,70}\b(?:entrega|listo|terminado|implementado)\b/.test(
           normalized,
+        ) ||
+        /\b(?:entrega(?:mos|remos)?|entregado|lista|listo|terminado|implementado|plazo|tarda|demora)\b.{0,70}\b(?:\d+|un|una|dos|tres|cuatro|cinco|seis|siete|ocho|diez|quince|treinta)(?:\s*(?:a|y|-)\s*\d+)?\s*(?:horas?|dias?|semanas?|meses?)\b|\b(?:entrega(?:mos|remos)?|lista|listo)\b.{0,40}\b(?:manana|proxima semana)\b/.test(
+          normalized,
         )
       ) {
         reasons.push('UNAUTHORIZED_TIMELINE');

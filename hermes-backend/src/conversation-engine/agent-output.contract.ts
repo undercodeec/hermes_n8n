@@ -5,6 +5,7 @@ export const AGENT_PROFILE_KEYS = [
   'sector',
   'location',
   'need',
+  'businessNeeds',
   'currentSituation',
   'users',
   'productCount',

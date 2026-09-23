@@ -330,6 +330,41 @@ describe('AutoReplyService', () => {
     expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
   });
 
+  it('sends Nous conversational parts in order without duplicating their joined text', async () => {
+    const harness = setupProcessHarness({
+      inboundContent:
+        'Tengo lavadoras para promocionar servicios y zapatos para vender por internet. ¿Cuánto cuesta y cuánto tarda?',
+      hermesResponse: { response: 'placeholder' },
+    });
+    harness.engine.respond.mockResolvedValue({
+      replyText:
+        'Para las lavadoras, Landing Básica USD $250 o Plan de Lanzamiento USD $360. Para los zapatos, Tienda de Lanzamiento USD $550. El plazo debe confirmarse según el alcance.',
+      replyParts: [
+        'Para las lavadoras, Landing Básica USD $250 o Plan de Lanzamiento USD $360.',
+        'Para los zapatos, Tienda de Lanzamiento USD $550.',
+        'El plazo debe confirmarse según el alcance.',
+      ],
+      proposedActions: [{ type: 'none' }],
+      engine: 'nous_hermes',
+      providerModel: 'hermes-agent',
+      traceId: 'inbound-recovery',
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const sent = harness.meta.sendTextMessage.mock.calls.map(
+      (call) => call[1] as string,
+    );
+    expect(sent).toEqual([
+      'Para las lavadoras, Landing Básica USD $250 o Plan de Lanzamiento USD $360.',
+      'Para los zapatos, Tienda de Lanzamiento USD $550.',
+      'El plazo debe confirmarse según el alcance.',
+    ]);
+    expect(harness.deliveries.prepareBatch).toHaveBeenCalledTimes(1);
+  });
+
   it('does not persist lead state when the delivery is suppressed', async () => {
     const harness = setupProcessHarness({
       hermesResponse: { response: 'respuesta', detectedIntent: 'info_general' },
@@ -510,7 +545,7 @@ describe('AutoReplyService', () => {
     ).toBeUndefined();
   });
 
-  it('executes an evidence-backed quote proposal without replacing the agent reply', async () => {
+  it('executes an evidence-backed quote proposal and includes the published price', async () => {
     const harness = setupProcessHarness({
       inboundContent: 'Quiero una cotización para mi sitio web',
       hermesResponse: {
@@ -533,7 +568,10 @@ describe('AutoReplyService', () => {
     expect(harness.tasks.requestQuote).toHaveBeenCalledTimes(1);
     expect(
       harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
-    ).toBe('Podemos preparar una valoración para su sitio web.');
+    ).toContain('Plan de Lanzamiento (sitio web): USD $360.');
+    expect(
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
+    ).toContain('Podemos preparar una valoración para su sitio web.');
   });
 
   it('repairs an unauthorized Nous price while retaining the valid answer', async () => {

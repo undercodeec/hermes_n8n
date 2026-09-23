@@ -20,6 +20,33 @@ describe('AgentOutputValidator', () => {
     ).toBe('Hola, ¿en qué puedo ayudarle?');
   });
 
+  it('accepts ordered conversational parts and derives legacy replyText', () => {
+    const result = validator.validate(
+      completion({
+        replyParts: [
+          'Para sus lavadoras, una landing.',
+          'Para los zapatos, una tienda online.',
+        ],
+      }),
+      900,
+    );
+    expect(result.replyParts).toEqual([
+      'Para sus lavadoras, una landing.',
+      'Para los zapatos, una tienda online.',
+    ]);
+    expect(result.replyText).toBe(result.replyParts?.join(' '));
+  });
+
+  it.each([
+    { replyParts: ['', 'Segundo'] },
+    { replyParts: Array(7).fill('Mensaje') },
+    { replyParts: ['Primero'], replyText: 'Otro' },
+  ])('rejects invalid independent parts %#', (proposal) => {
+    expect(() => validator.validate(completion(proposal), 900)).toThrow(
+      InvalidAgentOutputError,
+    );
+  });
+
   it.each([
     [
       {

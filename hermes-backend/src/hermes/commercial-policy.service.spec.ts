@@ -52,6 +52,15 @@ describe('CommercialPolicyService', () => {
     );
   });
 
+  it('removes a delivery promise expressed in words', () => {
+    const result = service.repairNousCommercialClaims(
+      'La tienda permite comprar por internet. Se la entregamos en una semana.',
+      ['Tienda online con carrito y pago.'],
+    );
+    expect(result.response).toBe('La tienda permite comprar por internet.');
+    expect(result.reasons).toContain('UNAUTHORIZED_TIMELINE');
+  });
+
   it('removes an unlisted inclusion but retains a catalog-backed one', () => {
     const result = service.repairNousCommercialClaims(
       'Incluye dominio y hosting. Incluye un CRM empresarial.',

@@ -88,6 +88,30 @@ describe('commercialCatalogContext', () => {
     ).toBe(true);
   });
 
+  it('keeps both businesses and binds each published price to its solution', () => {
+    const query =
+      'Tengo reparación de lavadoras para promocionar servicios y zapatos para vender por internet. ¿Precios y tiempos?';
+    const context = commercialCatalogContext(query).join('\n');
+    expect(context).toContain('Landing Básica');
+    expect(context).toContain('Plan de Lanzamiento');
+    expect(context).toContain('Tienda de Lanzamiento');
+    expect(
+      responseContainsOnlyAuthorizedPrices(
+        query,
+        'Landing Básica USD $250. Plan de Lanzamiento USD $360. Tienda de Lanzamiento USD $550.',
+      ),
+    ).toBe(true);
+    expect(
+      responseContainsOnlyAuthorizedPrices(
+        query,
+        'Tienda de Lanzamiento USD $360.',
+      ),
+    ).toBe(false);
+    expect(
+      responseContainsOnlyAuthorizedPrices(query, 'Landing Básica 80 €.'),
+    ).toBe(false);
+  });
+
   it('provides the complete authorized store catalog and discovery guidance', () => {
     const context = commercialCatalogContext(
       'Quiero una tienda online para vender mis productos',

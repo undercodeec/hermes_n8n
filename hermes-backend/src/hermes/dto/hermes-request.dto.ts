@@ -8,6 +8,8 @@ export type CommercialProfile = {
   /** Variante detectada con evidencia; NEUTRAL cuando aún no se puede determinar. */
   languageVariant?: 'ES' | 'LATAM' | 'NEUTRAL';
   need?: string;
+  /** Customer's own description of distinct businesses and their goals. */
+  businessNeeds?: string;
   currentSituation?: string;
   users?: string;
   /** Cantidad aproximada de productos indicada por el cliente. */

@@ -104,6 +104,48 @@ describe('NousHermesTransport', () => {
     expect(request.messages[0].content).toContain('Sin acción solicitada');
   });
 
+  it('passes distinct customer businesses and ordered reply parts through the private contract', async () => {
+    post.mockResolvedValue({
+      data: {
+        model: 'hermes-agent',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: JSON.stringify({
+                replyParts: [
+                  'Para lavadoras, una landing.',
+                  'Para zapatos, una tienda online.',
+                ],
+              }),
+            },
+          },
+        ],
+      },
+    });
+    const input = baseInput({
+      approvedContext: {
+        ...baseInput().approvedContext,
+        commercialProfile: {
+          businessNeeds:
+            'Reparación de lavadoras para promocionar servicios; zapatos para vender por internet',
+        },
+      },
+    });
+    const result = await configuredTransport().execute(input);
+    const request = post.mock.calls[0][1] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(request.messages.at(-1)?.content).toContain('businessNeeds');
+    expect(request.messages.at(-1)?.content).toContain(
+      'zapatos para vender por internet',
+    );
+    expect(result.replyParts).toEqual([
+      'Para lavadoras, una landing.',
+      'Para zapatos, una tienda online.',
+    ]);
+  });
+
   it.each([
     'https://nous-hermes-api:8642/v1/chat/completions',
     'http://public.example/v1/chat/completions',

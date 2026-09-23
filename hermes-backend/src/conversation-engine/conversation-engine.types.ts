@@ -61,6 +61,8 @@ export interface ConversationTurnInput {
 
 export interface ConversationTurnResult {
   replyText: string;
+  /** Conversational WhatsApp messages proposed by the agent, in send order. */
+  replyParts?: string[];
   proposedActions: ProposedAction[];
   engine: ConversationEngineId;
   /** Effective provider model when the runtime can verify it, otherwise `unknown`. */

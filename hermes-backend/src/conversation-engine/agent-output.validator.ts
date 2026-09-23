@@ -30,6 +30,7 @@ type ChatCompletionPayload = {
 
 export type ValidatedAgentOutput = {
   replyText: string;
+  replyParts?: string[];
   detectedIntent?: string;
   suggestedTags?: string[];
   commercialProfilePatch?: CommercialProfile;
@@ -97,12 +98,33 @@ export class AgentOutputValidator {
         'Agent final content is not a JSON proposal',
       );
     }
-    const replyText =
+    let replyParts: string[] | undefined;
+    if (proposal.replyParts !== undefined) {
+      if (
+        !Array.isArray(proposal.replyParts) ||
+        proposal.replyParts.length < 1 ||
+        proposal.replyParts.length > 6 ||
+        !proposal.replyParts.every(
+          (part) =>
+            typeof part === 'string' &&
+            Boolean(part.trim()) &&
+            part.length <= maximumReplyCharacters,
+        )
+      ) {
+        throw new InvalidAgentOutputError('Agent reply parts are invalid');
+      }
+      replyParts = proposal.replyParts.map((part: string) => part.trim());
+    }
+    const explicitReply =
       typeof proposal.replyText === 'string' ? proposal.replyText.trim() : '';
+    if (replyParts && explicitReply && explicitReply !== replyParts.join(' ')) {
+      throw new InvalidAgentOutputError('Agent reply text and parts disagree');
+    }
+    const replyText = explicitReply || replyParts?.join(' ') || '';
     if (!replyText) {
       throw new InvalidAgentOutputError('Agent final content is empty');
     }
-    if (replyText.length > maximumReplyCharacters) {
+    if (replyText.length > maximumReplyCharacters * (replyParts?.length ?? 1)) {
       throw new InvalidAgentOutputError('Agent final content is too long');
     }
     if (
@@ -266,6 +288,7 @@ export class AgentOutputValidator {
 
     return {
       replyText,
+      replyParts,
       detectedIntent,
       suggestedTags,
       commercialProfilePatch,

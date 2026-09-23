@@ -13,6 +13,20 @@ const result = (
 });
 
 describe('reviewAgentProposal', () => {
+  it('accepts a literal description of two businesses without treating it as policy', () => {
+    const description =
+      'Reparo lavadoras para promocionar servicios y vendo zapatos por internet';
+    const reviewed = reviewAgentProposal(
+      result({
+        business: { commercialProfile: { businessNeeds: description } },
+        proposalEvidence: { businessNeeds: description },
+      }),
+      description,
+      [],
+      [],
+    );
+    expect(reviewed.profilePatch.businessNeeds).toBe(description);
+  });
   it('accepts only profile values backed by literal customer evidence in this conversation', () => {
     const reviewed = reviewAgentProposal(
       result({

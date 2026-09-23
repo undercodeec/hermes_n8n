@@ -33,7 +33,10 @@ import {
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 import { reviewAgentProposal } from '../conversation-engine/agent-proposal-policy';
 import { AGENT_DEFAULT_INTENTS } from '../conversation-engine/agent-output.contract';
-import { responseContainsOnlyAuthorizedPrices } from '../hermes/commercial-catalog';
+import {
+  missingPublishedPriceAnswer,
+  responseContainsOnlyAuthorizedPrices,
+} from '../hermes/commercial-catalog';
 
 @Injectable()
 export class AutoReplyService {
@@ -221,6 +224,7 @@ export class AutoReplyService {
         context.productOfInterest,
         context.commercialProfile?.service,
         context.commercialProfile?.need,
+        context.commercialProfile?.businessNeeds,
         context.commercialProfile?.recommendedPlan,
       ]
         .filter(Boolean)
@@ -301,21 +305,23 @@ export class AutoReplyService {
         inbound.content,
         context.productOfInterest,
         context.commercialProfile?.service,
+        context.commercialProfile?.businessNeeds,
       ]
         .filter(Boolean)
         .join(' ');
       if (
         !responseContainsOnlyAuthorizedPrices(priceScope, response.response)
       ) {
-        response.response = response.response.replace(
-          /(?:\b(?:USD|dólares?)\s*\$?\s*\d[\d.,]*|\$\s*\d[\d.,]*|\b\d[\d.,]*\s*(?:USD|dólares?)\b)/giu,
-          'un precio sujeto a valoración',
-        );
-        if (
-          !responseContainsOnlyAuthorizedPrices(priceScope, response.response)
-        ) {
+        response.response = response.response
+          .split(/(?<=[.!?])\s+/u)
+          .filter((sentence) =>
+            responseContainsOnlyAuthorizedPrices(priceScope, sentence),
+          )
+          .join(' ')
+          .trim();
+        if (!response.response) {
           response.response =
-            'El valor específico requiere una valoración del equipo.';
+            'Puedo indicarle los precios publicados para cada solución; el valor de un alcance distinto requiere valoración.';
         }
         reviewedProposal.rejections.push('PRICE_NOT_AUTHORIZED');
       }
@@ -349,6 +355,13 @@ export class AutoReplyService {
       );
       response.response = safetyReview.response;
       reviewedProposal.rejections.push(...safetyReview.reasons);
+      if (policy.guidance.priceAnswerRequired) {
+        const missing = missingPublishedPriceAnswer(
+          priceScope,
+          response.response,
+        );
+        if (missing) response.response = `${missing} ${response.response}`;
+      }
     }
     const acceptedProfile = response.diagnostic
       ? context.commercialProfile
@@ -584,10 +597,35 @@ export class AutoReplyService {
       this.logSkip(data, 'CONVERSATION_STATUS_REJECTED_BEFORE_SEND');
       return;
     }
-    const messageParts = splitWhatsAppMessage(
-      response.response,
-      this.positiveInteger('AI_MESSAGE_SPLIT_THRESHOLD', 520),
+    const conversationalParts =
+      isNous &&
+      !response.diagnostic &&
+      engineResult.replyParts?.length &&
+      response.response === engineResult.replyText
+        ? engineResult.replyParts
+        : [response.response];
+    const messageParts = conversationalParts.flatMap((part) =>
+      splitWhatsAppMessage(
+        part,
+        this.positiveInteger('AI_MESSAGE_SPLIT_THRESHOLD', 520),
+      ),
     );
+    if (messageParts.length > 9) {
+      this.logSkip(data, 'TOO_MANY_REPLY_PARTS');
+      return;
+    }
+    if (
+      !response.diagnostic &&
+      messageParts.some(
+        (part) =>
+          !part.trim() ||
+          this.conversationGuard.inspectGeneratedResponse(part).action ===
+            'BLOCK',
+      )
+    ) {
+      this.logSkip(data, 'REPLY_PART_BLOCKED');
+      return;
+    }
     await this.deliveries.prepareBatch({
       deliveryKind: 'HERMES_REPLY',
       conversationId: data.conversationId,

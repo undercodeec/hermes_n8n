@@ -95,6 +95,29 @@ export class AutomatedDeliveryService
   async deliverPreparedBatch(
     sourceMessageId: string,
   ): Promise<AutomatedDeliveryBatchResult> {
+    const first = (
+      await this.prisma.automatedDelivery.findMany({
+        where: { sourceMessageId },
+        orderBy: { partIndex: 'asc' },
+        take: 1,
+        select: { conversationId: true },
+      })
+    )[0];
+    if (!first) return { handled: false, confirmed: 0, terminal: false };
+    // Serialize whole batches across workers and replicas. Claiming individual
+    // parts alone permits a second turn to interleave between two Meta calls.
+    return this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${first.conversationId}))`;
+        return this.deliverLockedBatch(sourceMessageId);
+      },
+      { timeout: 360_000 },
+    );
+  }
+
+  private async deliverLockedBatch(
+    sourceMessageId: string,
+  ): Promise<AutomatedDeliveryBatchResult> {
     const operations = await this.prisma.automatedDelivery.findMany({
       where: { sourceMessageId },
       orderBy: { partIndex: 'asc' },

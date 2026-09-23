@@ -114,16 +114,13 @@ function normalize(value: string): string {
 
 function requestedSolutionKinds(query: string): CommercialSolutionKind[] {
   const normalized = normalize(query);
-  if (
+  const customOnly =
     /\b(software a medida|sistema a medida|aplicacion movil|app movil)\b/.test(
       normalized,
-    )
-  ) {
-    return [];
-  }
+    );
   const kinds = new Set<CommercialSolutionKind>();
   if (
-    /\b(tienda online|ecommerce|comercio electronico|carrito|checkout|pasarela|vender online|venta online|comprar online|pagar online)\b/.test(
+    /\b(tienda online|ecommerce|comercio electronico|carrito|checkout|pasarela|vender online|vender por internet|venta online|comprar online|pagar online)\b/.test(
       normalized,
     )
   ) {
@@ -144,7 +141,16 @@ function requestedSolutionKinds(query: string): CommercialSolutionKind[] {
     kinds.add('WEBSITE');
   }
   if (
+    kinds.has('ONLINE_STORE') &&
+    /\b(promocionar|publicitar|promover)\b/.test(normalized) &&
+    /\b(servicios?|reparacion(?:es)?)\b/.test(normalized)
+  ) {
+    kinds.add('LANDING_PAGE');
+    kinds.add('WEBSITE');
+  }
+  if (
     kinds.size === 0 &&
+    !customOnly &&
     /\b(planes?|precios?|tarifas?|paquetes?)\b/.test(normalized)
   ) {
     return ['LANDING_PAGE', 'WEBSITE', 'ONLINE_STORE'];
@@ -189,13 +195,90 @@ export function publishedPriceAnswer(query: string): string | undefined {
   return kinds.map((kind) => summaries[kind]).join(' ');
 }
 
+export function missingPublishedPriceAnswer(
+  query: string,
+  response: string,
+): string | undefined {
+  const base: Record<CommercialSolutionKind, number> = {
+    LANDING_PAGE: COMMERCIAL_OFFERS.LANDING_BASIC.price,
+    WEBSITE: COMMERCIAL_OFFERS.WEBSITE_LAUNCH.price,
+    ONLINE_STORE: COMMERCIAL_OFFERS.STORE_LAUNCH.price,
+  };
+  const missing = requestedSolutionKinds(query).filter(
+    (kind) => !monetaryAmountsIn(response).includes(base[kind]),
+  );
+  if (!missing.length) return undefined;
+  const names: Record<CommercialSolutionKind, string> = {
+    LANDING_PAGE: 'Landing Básica',
+    WEBSITE: 'Plan de Lanzamiento (sitio web)',
+    ONLINE_STORE: 'Tienda de Lanzamiento',
+  };
+  return `${missing.map((kind) => `${names[kind]}: USD $${base[kind]}`).join('; ')}. Precios publicados con IVA incluido.`;
+}
+
 export function responseContainsOnlyAuthorizedPrices(
   query: string,
   response: string,
 ): boolean {
+  if (
+    /(?:€\s*\d|\d[\d.,]*\s*(?:€|EUR\b|euros?\b)|\bEUR\s*\d)/iu.test(response)
+  ) {
+    return false;
+  }
   const authorized = new Set(authorizedPricesFor(query));
-  const amounts = monetaryAmountsIn(response);
-  return amounts.every((amount) => authorized.has(amount));
+  const pattern =
+    /(?:\b(?:USD|dólares?)\s*\$?\s*([0-9]+(?:[.,][0-9]+)*)|\$\s*([0-9]+(?:[.,][0-9]+)*)|([0-9]+(?:[.,][0-9]+)*)\s*(?:USD|dólares?))/giu;
+  for (const match of response.matchAll(pattern)) {
+    const amount = parseMoneyAmount(match[1] || match[2] || match[3]);
+    if (amount === undefined || !authorized.has(amount)) return false;
+    if (
+      amount === BASIC_HOSTING_RENEWAL_PRICE &&
+      authorized.has(BASIC_HOSTING_RENEWAL_PRICE) &&
+      /\bhosting\b/.test(
+        normalize(response.slice(Math.max(0, match.index - 100), match.index)),
+      )
+    )
+      continue;
+    const preceding = normalize(
+      response
+        .slice(0, match.index)
+        .split(/[.!?;\n]/u)
+        .at(-1) ?? '',
+    );
+    const labels = [
+      {
+        kind: 'LANDING_PAGE',
+        pattern: /\b(?:landing|pagina de aterrizaje)\b/g,
+      },
+      {
+        kind: 'WEBSITE',
+        pattern:
+          /\b(?:sitio web|pagina web|plan de lanzamiento|plan de crecimiento|plan de autoridad)\b/g,
+      },
+      {
+        kind: 'ONLINE_STORE',
+        pattern:
+          /\b(?:tienda online|tienda de lanzamiento|tienda de crecimiento|tienda elite|ecommerce)\b/g,
+      },
+    ] as const;
+    const nearest = labels
+      .flatMap(({ kind, pattern: labelPattern }) =>
+        [...preceding.matchAll(labelPattern)].map((found) => ({
+          kind,
+          index: found.index,
+        })),
+      )
+      .sort((left, right) => right.index - left.index)[0];
+    if (!nearest && requestedSolutionKinds(query).length > 1) return false;
+    if (
+      nearest &&
+      !offerValues.some(
+        (offer) => offer.kind === nearest.kind && offer.price === amount,
+      )
+    )
+      return false;
+  }
+  return true;
 }
 
 export function monetaryAmountsIn(value: string): number[] {
@@ -232,7 +315,7 @@ function parseMoneyAmount(value: string): number | undefined {
 export function commercialCatalogContext(query: string): string[] {
   const normalized = normalize(query);
   const store =
-    /\b(tienda online|ecommerce|comercio electronico|carrito|checkout|pasarela|vender online|venta online|comprar online|pagar online)\b/.test(
+    /\b(tienda online|ecommerce|comercio electronico|carrito|checkout|pasarela|vender online|vender por internet|venta online|comprar online|pagar online)\b/.test(
       normalized,
     ) ||
     (/\b(550|850|3490)\b/.test(normalized) &&
@@ -254,7 +337,22 @@ export function commercialCatalogContext(query: string): string[] {
     /\b(promocionar|promocion|presencia|servicios|economico|economica|barato|barata|alternativa|opciones?)\b/.test(
       normalized,
     );
+  const promoteServices =
+    /\b(promocionar|publicitar|promover)\b/.test(normalized) &&
+    /\b(servicios?|reparacion(?:es)?)\b/.test(normalized);
 
+  if (
+    [store, landing, website].filter(Boolean).length > 1 ||
+    (store && promoteServices)
+  ) {
+    return [
+      GENERAL_SUMMARY,
+      `Para servicios: ${COMMERCIAL_OFFERS.LANDING_BASIC.name} (una página) USD $${COMMERCIAL_OFFERS.LANDING_BASIC.price} o ${COMMERCIAL_OFFERS.WEBSITE_LAUNCH.name} (hasta 5 páginas) USD $${COMMERCIAL_OFFERS.WEBSITE_LAUNCH.price}. Para vender y cobrar por internet: ${COMMERCIAL_OFFERS.STORE_LAUNCH.name} con carrito, pago seguro y carga inicial de hasta 20 productos, USD $${COMMERCIAL_OFFERS.STORE_LAUNCH.price}. Todos estos importes son USD e incluyen IVA. No atribuyas el precio de una solución a otra. Los plazos de entrega requieren confirmación según el alcance.`,
+      ...(store ? [STORE_DISCOVERY, STORE_CATALOG] : []),
+      ...(landing ? [LANDING_CATALOG] : []),
+      ...(website ? [WEBSITE_CATALOG] : []),
+    ];
+  }
   if (store) return [INFRASTRUCTURE_POLICY, STORE_DISCOVERY, STORE_CATALOG];
   if (landing) return [INFRASTRUCTURE_POLICY, LANDING_CATALOG];
   if (compareWebOptions)
