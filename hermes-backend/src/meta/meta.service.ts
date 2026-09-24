@@ -349,6 +349,7 @@ export class MetaService {
     let response: { data: MetaUploadedMedia };
     try {
       response = await this.httpClient.post<MetaUploadedMedia>('/media', form, {
+        headers: { 'Content-Type': undefined },
         timeout: 30000,
         maxBodyLength: 16 * 1024 * 1024,
       });

@@ -1,5 +1,7 @@
 import { ConfigService } from '@nestjs/config';
-import axios from 'axios';
+import axios, { AxiosInstance } from 'axios';
+import { AddressInfo } from 'node:net';
+import { createServer, IncomingHttpHeaders } from 'node:http';
 import {
   MetaMediaUploadError,
   MetaSendError,
@@ -18,6 +20,10 @@ function httpPost(service: MetaService): jest.Mock {
   };
   client.httpClient.post = jest.fn();
   return client.httpClient.post;
+}
+
+function realHttpClient(service: MetaService): AxiosInstance {
+  return (service as unknown as { httpClient: AxiosInstance }).httpClient;
 }
 
 function uploadAxiosError(
@@ -49,6 +55,7 @@ describe('MetaService typing indicator', () => {
     await expect(service.uploadVoiceNote(audio)).resolves.toBe('media-voice-1');
 
     expect(post).toHaveBeenCalledWith('/media', expect.any(FormData), {
+      headers: { 'Content-Type': undefined },
       timeout: 30000,
       maxBodyLength: 16 * 1024 * 1024,
     });
@@ -62,6 +69,89 @@ describe('MetaService typing indicator', () => {
     expect(file.type).toBe('audio/ogg; codecs=opus');
     expect(Buffer.from(await file.arrayBuffer())).toEqual(audio);
     expect(error).not.toHaveBeenCalled();
+  });
+
+  it('serializes voice uploads as multipart without inheriting the JSON header', async () => {
+    let headers: IncomingHttpHeaders | undefined;
+    let body: Buffer | undefined;
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        headers = request.headers;
+        body = Buffer.concat(chunks);
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ id: 'media-test-1' }));
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    try {
+      const service = createService();
+      const port = (server.address() as AddressInfo).port;
+      realHttpClient(service).defaults.baseURL = `http://127.0.0.1:${port}`;
+      const audio = Buffer.from('OggSopus-original-bytes');
+
+      await expect(service.uploadVoiceNote(audio)).resolves.toBe(
+        'media-test-1',
+      );
+
+      const contentType = headers?.['content-type'];
+      const serialized = body?.toString('latin1') ?? '';
+      expect(contentType).toMatch(/^multipart\/form-data; boundary=/);
+      expect(headers?.['content-length']).toEqual(expect.any(String));
+      expect(Number(headers?.['content-length'])).toBeGreaterThan(42);
+      expect(contentType).not.toBe('application/json');
+      expect(serialized).toContain('name="messaging_product"');
+      expect(serialized).toContain('whatsapp');
+      expect(serialized).toContain('filename="voice.ogg"');
+      expect(serialized).toContain('Content-Type: audio/ogg; codecs=opus');
+      expect(serialized).toContain(audio.toString('latin1'));
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
+  });
+
+  it('keeps the JSON content type for text message requests', async () => {
+    let headers: IncomingHttpHeaders | undefined;
+    let body: Buffer | undefined;
+    const server = createServer((request, response) => {
+      const chunks: Buffer[] = [];
+      request.on('data', (chunk: Buffer) => chunks.push(chunk));
+      request.on('end', () => {
+        headers = request.headers;
+        body = Buffer.concat(chunks);
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+        response.end(JSON.stringify({ messages: [{ id: 'wamid-test-1' }] }));
+      });
+    });
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject);
+      server.listen(0, '127.0.0.1', resolve);
+    });
+    try {
+      const service = createService();
+      const port = (server.address() as AddressInfo).port;
+      realHttpClient(service).defaults.baseURL = `http://127.0.0.1:${port}`;
+
+      await service.sendTextMessage('recipient-test', 'Mensaje de prueba');
+
+      expect(headers?.['content-type']).toBe('application/json');
+      expect(JSON.parse(body?.toString() ?? '')).toEqual(
+        expect.objectContaining({
+          messaging_product: 'whatsapp',
+          type: 'text',
+        }),
+      );
+    } finally {
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve())),
+      );
+    }
   });
 
   it('logs sanitized Meta diagnostics and classifies a 400 voice upload failure', async () => {
