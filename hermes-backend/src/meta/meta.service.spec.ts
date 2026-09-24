@@ -1,6 +1,10 @@
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
-import { MetaSendError, MetaService } from './meta.service';
+import {
+  MetaMediaUploadError,
+  MetaSendError,
+  MetaService,
+} from './meta.service';
 
 function createService(): MetaService {
   return new MetaService({
@@ -41,14 +45,22 @@ describe('MetaService typing indicator', () => {
       'error',
     );
 
-    await expect(
-      service.uploadVoiceNote(Buffer.from('OggSopus')),
-    ).resolves.toBe('media-voice-1');
+    const audio = Buffer.from('OggSopus');
+    await expect(service.uploadVoiceNote(audio)).resolves.toBe('media-voice-1');
 
     expect(post).toHaveBeenCalledWith('/media', expect.any(FormData), {
       timeout: 30000,
       maxBodyLength: 16 * 1024 * 1024,
     });
+    const uploadCall = post.mock.calls[0] as unknown as [string, FormData];
+    const form = uploadCall[1];
+    const file = form.get('file');
+    expect(form.get('messaging_product')).toBe('whatsapp');
+    expect(file).toBeInstanceOf(Blob);
+    if (!(file instanceof Blob)) throw new Error('Missing voice note file');
+    expect((file as Blob & { name: string }).name).toBe('voice.ogg');
+    expect(file.type).toBe('audio/ogg; codecs=opus');
+    expect(Buffer.from(await file.arrayBuffer())).toEqual(audio);
     expect(error).not.toHaveBeenCalled();
   });
 
@@ -83,6 +95,7 @@ describe('MetaService typing indicator', () => {
       .uploadVoiceNote(Buffer.from('OggSopus'))
       .catch((reason: unknown) => reason);
 
+    expect(failure).toBeInstanceOf(MetaMediaUploadError);
     expect(failure).toEqual(
       expect.objectContaining({ reasonCode: 'META_MEDIA_UPLOAD_FAILED' }),
     );
@@ -101,7 +114,7 @@ describe('MetaService typing indicator', () => {
         fbtraceId: 'FBTRACE-1',
         requestId: 'meta-request-1',
         responseContentType: 'application/json',
-        audioMimeType: 'audio/ogg',
+        audioMimeType: 'audio/ogg; codecs=opus',
         audioBytes: 8,
         filename: 'voice.ogg',
         graphApiVersion: 'v21.0',

@@ -57,6 +57,9 @@ export interface MetaMediaMetadata {
   url?: string;
 }
 
+const VOICE_NOTE_MIME_TYPE = 'audio/ogg; codecs=opus';
+const VOICE_NOTE_FILENAME = 'voice.ogg';
+
 @Injectable()
 export class MetaService {
   private readonly logger = new Logger(MetaService.name);
@@ -340,8 +343,8 @@ export class MetaService {
     ) as ArrayBuffer;
     form.append(
       'file',
-      new Blob([bytes], { type: 'audio/ogg; codecs=opus' }),
-      'voice.ogg',
+      new Blob([bytes], { type: VOICE_NOTE_MIME_TYPE }),
+      VOICE_NOTE_FILENAME,
     );
     let response: { data: MetaUploadedMedia };
     try {
@@ -461,9 +464,9 @@ export class MetaService {
       responseContentType: this.safeContentType(
         this.headerValue(headers, 'content-type'),
       ),
-      audioMimeType: 'audio/ogg',
+      audioMimeType: VOICE_NOTE_MIME_TYPE,
       audioBytes,
-      filename: 'voice.ogg',
+      filename: VOICE_NOTE_FILENAME,
       graphApiVersion: this.safeIdentifier(this.apiVersion, 30),
     };
   }
