@@ -24,6 +24,15 @@ export class MetaSendError extends ServiceUnavailableException {
     super('Meta no pudo confirmar el envío del mensaje');
   }
 }
+
+export class MetaMediaUploadError extends ServiceUnavailableException {
+  public readonly reasonCode = 'META_MEDIA_UPLOAD_FAILED';
+
+  constructor(public readonly providerStatus: number | null) {
+    super('Meta no pudo cargar la nota de voz');
+    this.name = 'MetaMediaUploadError';
+  }
+}
 export interface MetaTemplate {
   id?: string;
   name: string;
@@ -55,10 +64,11 @@ export class MetaService {
   private readonly graphClient: AxiosInstance;
   private readonly phoneNumberId: string;
   private readonly wabaId: string;
+  private readonly apiVersion: string;
 
   constructor(private readonly config: ConfigService) {
     const accessToken = this.config.get<string>('META_ACCESS_TOKEN', '');
-    const apiVersion = this.config.get<string>('META_API_VERSION', 'v21.0');
+    this.apiVersion = this.config.get<string>('META_API_VERSION', 'v21.0');
     this.phoneNumberId = this.config.get<string>('META_PHONE_NUMBER_ID', '');
     this.wabaId = this.config.get<string>('META_WABA_ID', '');
     const headers = {
@@ -66,13 +76,13 @@ export class MetaService {
       'Content-Type': 'application/json',
     };
     this.httpClient = axios.create({
-      baseURL: `https://graph.facebook.com/${apiVersion}/${this.phoneNumberId}`,
+      baseURL: `https://graph.facebook.com/${this.apiVersion}/${this.phoneNumberId}`,
       headers,
       timeout: 30000,
     });
     // Same service and server-only credentials; this base client serves WABA endpoints.
     this.graphClient = axios.create({
-      baseURL: `https://graph.facebook.com/${apiVersion}`,
+      baseURL: `https://graph.facebook.com/${this.apiVersion}`,
       headers,
       timeout: 30000,
     });
@@ -333,14 +343,19 @@ export class MetaService {
       new Blob([bytes], { type: 'audio/ogg; codecs=opus' }),
       'voice.ogg',
     );
-    const response = await this.httpClient.post<MetaUploadedMedia>(
-      '/media',
-      form,
-      {
+    let response: { data: MetaUploadedMedia };
+    try {
+      response = await this.httpClient.post<MetaUploadedMedia>('/media', form, {
         timeout: 30000,
         maxBodyLength: 16 * 1024 * 1024,
-      },
-    );
+      });
+    } catch (error) {
+      if (!axios.isAxiosError(error)) throw error;
+      this.logger.error(
+        JSON.stringify(this.voiceMediaUploadDiagnostics(error, oggOpus.length)),
+      );
+      throw new MetaMediaUploadError(error.response?.status ?? null);
+    }
     if (!response.data?.id) throw new Error('Meta no devolvió Media ID');
     return response.data.id;
   }
@@ -419,6 +434,106 @@ export class MetaService {
       code: code ? String(code) : status ? String(status) : null,
       message,
     };
+  }
+
+  private voiceMediaUploadDiagnostics(
+    error: AxiosError<unknown>,
+    audioBytes: number,
+  ): Record<string, string | number | null> {
+    const responseData = this.isRecord(error.response?.data)
+      ? error.response.data
+      : undefined;
+    const metaError = this.isRecord(responseData?.error)
+      ? responseData.error
+      : undefined;
+    const headers = error.response?.headers;
+    return {
+      event: 'meta_voice_media_upload_failed',
+      httpStatus: this.safeHttpStatus(error.response?.status),
+      metaErrorType: this.safeDiagnosticText(metaError?.type),
+      metaErrorCode: this.safeDiagnosticText(metaError?.code),
+      metaErrorSubcode: this.safeDiagnosticText(metaError?.error_subcode),
+      metaErrorMessage: this.safeDiagnosticText(metaError?.message),
+      fbtraceId: this.safeIdentifier(metaError?.fbtrace_id, 160),
+      transportCode: this.safeIdentifier(error.code, 80),
+      transportMessage: this.safeDiagnosticText(error.message),
+      requestId: this.requestId(headers),
+      responseContentType: this.safeContentType(
+        this.headerValue(headers, 'content-type'),
+      ),
+      audioMimeType: 'audio/ogg',
+      audioBytes,
+      filename: 'voice.ogg',
+      graphApiVersion: this.safeIdentifier(this.apiVersion, 30),
+    };
+  }
+
+  private isRecord(value: unknown): value is Record<string, unknown> {
+    return !!value && typeof value === 'object' && !Array.isArray(value);
+  }
+
+  private safeHttpStatus(value: unknown): number | null {
+    if (
+      typeof value !== 'number' ||
+      !Number.isSafeInteger(value) ||
+      value < 100 ||
+      value > 599
+    )
+      return null;
+    return value;
+  }
+
+  private safeIdentifier(value: unknown, maxLength: number): string | null {
+    if (typeof value !== 'string') return null;
+    const text = value.trim();
+    return /^[A-Za-z0-9._-]+$/u.test(text) && text.length <= maxLength
+      ? text
+      : null;
+  }
+
+  private safeContentType(value: unknown): string | null {
+    if (typeof value !== 'string') return null;
+    const text = value.split(';', 1)[0]?.trim().toLowerCase();
+    return text && /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/u.test(text) ? text : null;
+  }
+
+  private safeDiagnosticText(value: unknown): string | null {
+    if (typeof value !== 'string' && typeof value !== 'number') return null;
+    const text = String(value)
+      .replace(/https?:\/\/[^\s"'<>]+/giu, '[url redacted]')
+      .replace(/\+?\d(?:[\s().-]*\d){7,14}/gu, '[phone redacted]')
+      .replace(
+        /((?:["']?)(?:xi[-_]?api[-_]?key|authorization|api[-_]?key|access[-_]?token|token|x-amz-signature|signature|sig)(?:["']?)\s*[:=]\s*)(?:"[^"]*"|'[^']*'|[^\s,}\]]+)/giu,
+        '$1[redacted]',
+      )
+      .replace(/bearer\s+\S+/giu, 'Bearer [redacted]')
+      .trim();
+    return text ? text.slice(0, 240) : null;
+  }
+
+  private headerValue(headers: unknown, name: string): unknown {
+    if (!headers || typeof headers !== 'object') return undefined;
+    const get = (headers as { get?: unknown }).get;
+    if (typeof get === 'function') return get.call(headers, name);
+    const record = headers as Record<string, unknown>;
+    return record[name] ?? record[name.toLowerCase()];
+  }
+
+  private requestId(headers: unknown): string | null {
+    for (const name of [
+      'request-id',
+      'x-request-id',
+      'x-fb-request-id',
+      'x-correlation-id',
+      'x-trace-id',
+    ]) {
+      const requestId = this.safeIdentifier(
+        this.headerValue(headers, name),
+        160,
+      );
+      if (requestId) return requestId;
+    }
+    return null;
   }
 
   async markAsRead(messageId: string): Promise<void> {

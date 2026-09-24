@@ -16,7 +16,167 @@ function httpPost(service: MetaService): jest.Mock {
   return client.httpClient.post;
 }
 
+function uploadAxiosError(
+  status: number,
+  data: unknown,
+  headers: Record<string, string> = {},
+): axios.AxiosError {
+  return new axios.AxiosError(
+    `Request failed with status code ${status}`,
+    'ERR_BAD_REQUEST',
+    undefined,
+    {},
+    { data, status, statusText: 'Bad Request', headers } as never,
+  );
+}
+
 describe('MetaService typing indicator', () => {
+  it('returns a media ID without logging an error after a successful voice upload', async () => {
+    const service = createService();
+    const post = httpPost(service).mockResolvedValue({
+      data: { id: 'media-voice-1' },
+    });
+    const error = jest.spyOn(
+      (service as unknown as { logger: { error: jest.Mock } }).logger,
+      'error',
+    );
+
+    await expect(
+      service.uploadVoiceNote(Buffer.from('OggSopus')),
+    ).resolves.toBe('media-voice-1');
+
+    expect(post).toHaveBeenCalledWith('/media', expect.any(FormData), {
+      timeout: 30000,
+      maxBodyLength: 16 * 1024 * 1024,
+    });
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it('logs sanitized Meta diagnostics and classifies a 400 voice upload failure', async () => {
+    const service = createService();
+    const error = jest.spyOn(
+      (service as unknown as { logger: { error: jest.Mock } }).logger,
+      'error',
+    );
+    httpPost(service).mockRejectedValue(
+      uploadAxiosError(
+        400,
+        {
+          error: {
+            type: 'OAuthException',
+            code: 100,
+            error_subcode: 2494010,
+            message: 'Unsupported audio codec',
+            fbtrace_id: 'FBTRACE-1',
+            access_token: 'response-secret',
+          },
+        },
+        {
+          'content-type': 'application/json',
+          'x-request-id': 'meta-request-1',
+          authorization: 'Bearer header-secret',
+        },
+      ),
+    );
+
+    const failure = await service
+      .uploadVoiceNote(Buffer.from('OggSopus'))
+      .catch((reason: unknown) => reason);
+
+    expect(failure).toEqual(
+      expect.objectContaining({ reasonCode: 'META_MEDIA_UPLOAD_FAILED' }),
+    );
+    const diagnostic = JSON.parse(error.mock.calls[0][0] as string) as Record<
+      string,
+      unknown
+    >;
+    expect(diagnostic).toEqual(
+      expect.objectContaining({
+        event: 'meta_voice_media_upload_failed',
+        httpStatus: 400,
+        metaErrorType: 'OAuthException',
+        metaErrorCode: '100',
+        metaErrorSubcode: '2494010',
+        metaErrorMessage: 'Unsupported audio codec',
+        fbtraceId: 'FBTRACE-1',
+        requestId: 'meta-request-1',
+        responseContentType: 'application/json',
+        audioMimeType: 'audio/ogg',
+        audioBytes: 8,
+        filename: 'voice.ogg',
+        graphApiVersion: 'v21.0',
+      }),
+    );
+    expect(JSON.stringify(diagnostic)).not.toContain('response-secret');
+    expect(JSON.stringify(diagnostic)).not.toContain('header-secret');
+  });
+
+  it.each([401, 403])(
+    'sanitizes credentials when Meta rejects a voice upload with HTTP %i',
+    async (status) => {
+      const service = createService();
+      const error = jest.spyOn(
+        (service as unknown as { logger: { error: jest.Mock } }).logger,
+        'error',
+      );
+      httpPost(service).mockRejectedValue(
+        uploadAxiosError(
+          status,
+          { error: { message: 'Invalid token=body-secret' } },
+          {
+            'content-type': 'application/json',
+            authorization: 'Bearer header-secret',
+          },
+        ),
+      );
+
+      await expect(
+        service.uploadVoiceNote(Buffer.from('OggSopus')),
+      ).rejects.toEqual(
+        expect.objectContaining({ reasonCode: 'META_MEDIA_UPLOAD_FAILED' }),
+      );
+
+      expect(error).toHaveBeenCalledTimes(1);
+      const output = error.mock.calls[0][0] as string;
+      expect(output).not.toContain('body-secret');
+      expect(output).not.toContain('header-secret');
+    },
+  );
+
+  it('logs sanitized transport details when the voice upload has no response', async () => {
+    const service = createService();
+    const error = jest.spyOn(
+      (service as unknown as { logger: { error: jest.Mock } }).logger,
+      'error',
+    );
+    httpPost(service).mockRejectedValue(
+      new axios.AxiosError(
+        'socket failed for +593991234567 token=transport-secret',
+        'ECONNRESET',
+      ),
+    );
+
+    await expect(
+      service.uploadVoiceNote(Buffer.from('OggSopus')),
+    ).rejects.toEqual(
+      expect.objectContaining({ reasonCode: 'META_MEDIA_UPLOAD_FAILED' }),
+    );
+
+    const diagnostic = JSON.parse(error.mock.calls[0][0] as string) as Record<
+      string,
+      unknown
+    >;
+    expect(diagnostic).toEqual(
+      expect.objectContaining({
+        transportCode: 'ECONNRESET',
+        transportMessage: 'socket failed for [phone redacted] token=[redacted]',
+        httpStatus: null,
+      }),
+    );
+    expect(JSON.stringify(diagnostic)).not.toContain('transport-secret');
+    expect(JSON.stringify(diagnostic)).not.toContain('593991234567');
+  });
+
   it('uploads OGG/Opus and sends a native WhatsApp voice note', async () => {
     const service = createService();
     const post = httpPost(service)

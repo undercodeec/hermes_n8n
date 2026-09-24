@@ -14,7 +14,7 @@ import {
 } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { ConversationEngineService } from '../conversation-engine/conversation-engine.service';
-import { MetaService } from '../meta/meta.service';
+import { MetaMediaUploadError, MetaService } from '../meta/meta.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { LeadsService } from '../leads/leads.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -801,17 +801,47 @@ export class AutoReplyService {
     );
     let voiceMediaIds: string[] = [];
     if (wantsVoice && messageParts.length <= 3) {
+      let generated: Buffer[] | null = null;
       try {
-        const generated: Buffer[] = [];
+        const synthesized: Buffer[] = [];
         for (const content of messageParts)
-          generated.push(await this.voice!.synthesize(content));
-        for (const bytes of generated)
-          voiceMediaIds.push(await this.meta.uploadVoiceNote(bytes));
+          synthesized.push(await this.voice!.synthesize(content));
+        generated = synthesized;
       } catch (error) {
         voiceMediaIds = [];
+        const reasonCode =
+          error instanceof VoiceProcessingError
+            ? error.code
+            : 'AUDIO_SYNTHESIS_FAILED';
         this.logger.warn(
-          `TTS no disponible; respuesta textual: ${error instanceof Error ? error.name : 'UNKNOWN'}`,
+          JSON.stringify({
+            event:
+              reasonCode === 'AUDIO_TOOL_UNAVAILABLE' ||
+              reasonCode === 'AUDIO_CONVERSION_FAILED' ||
+              reasonCode === 'TTS_INVALID_OGG'
+                ? 'audio_conversion_failed'
+                : 'voice_synthesis_failed',
+            reasonCode,
+          }),
         );
+      }
+      if (generated) {
+        try {
+          for (const bytes of generated)
+            voiceMediaIds.push(await this.meta.uploadVoiceNote(bytes));
+        } catch (error) {
+          voiceMediaIds = [];
+          const reasonCode =
+            error instanceof MetaMediaUploadError
+              ? error.reasonCode
+              : 'VOICE_MEDIA_UPLOAD_FAILED';
+          this.logger.warn(
+            JSON.stringify({
+              event: 'voice_media_upload_failed',
+              reasonCode,
+            }),
+          );
+        }
       }
     }
     await this.deliveries.prepareBatch({

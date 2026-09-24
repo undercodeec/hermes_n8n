@@ -19,7 +19,7 @@ import {
 import { Queue } from 'bullmq';
 import { AutoReplyService } from './auto-reply.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { MetaService } from '../meta/meta.service';
+import { MetaMediaUploadError, MetaService } from '../meta/meta.service';
 import { ConversationEngineService } from '../conversation-engine/conversation-engine.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { LeadsService } from '../leads/leads.service';
@@ -675,6 +675,117 @@ describe('AutoReplyService', () => {
     expect(prepared.parts[0].content).toBe('Podemos crear su sitio web.');
     expect(prepared.parts[0].metadata?.voiceMediaId).toBeUndefined();
     expect(harness.deliveries.deliverPreparedBatch).toHaveBeenCalled();
+  });
+
+  it('keeps every reply part as text when synthesis fails after an earlier part', async () => {
+    const firstPart = `${'primera '.repeat(36).trim()}.`;
+    const secondPart = `${'segunda '.repeat(36).trim()}.`;
+    const harness = setupProcessHarness({
+      hermesResponse: {
+        response: `${firstPart} ${secondPart}`,
+        detectedIntent: 'consulta_servicio',
+      },
+    });
+    const audio = {
+      id: 'inbound-recovery',
+      wamid: 'wamid.audio',
+      type: 'AUDIO',
+      content: 'Necesito una web',
+      createdAt: new Date('2026-09-20T18:00:00.000Z'),
+      rawPayload: { audio: { id: 'media-inbound' } },
+    };
+    Object.assign(harness.service, {
+      inboundTurns: {
+        claim: jest.fn().mockResolvedValue({
+          id: 'turn-audio',
+          lastMessageId: audio.id,
+          processingToken: 'claim-token',
+        }),
+        messages: jest.fn().mockResolvedValue([audio]),
+        complete: jest.fn(),
+        release: jest.fn(),
+      } as unknown as InboundTurnService,
+      voice: {
+        synthesize: jest
+          .fn()
+          .mockResolvedValueOnce(Buffer.from('OggSfirst'))
+          .mockRejectedValueOnce(new Error('TTS unavailable')),
+      } as unknown as VoiceService,
+    });
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: audio.id,
+      inboundTurnId: 'turn-audio',
+    });
+
+    expect(harness.meta.uploadVoiceNote).not.toHaveBeenCalled();
+    const prepared = harness.deliveries.prepareBatch.mock.calls[0][0] as {
+      parts: Array<{ metadata?: { voiceMediaId?: string } }>;
+    };
+    expect(prepared.parts).toHaveLength(2);
+    expect(
+      prepared.parts.every((part) => part.metadata?.voiceMediaId === undefined),
+    ).toBe(true);
+  });
+
+  it('keeps the text fallback and reports a Meta upload failure without calling it TTS', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: {
+        response: 'Podemos crear su sitio web.',
+        detectedIntent: 'consulta_servicio',
+      },
+    });
+    const warn = jest.spyOn(
+      (harness.service as unknown as { logger: Logger }).logger,
+      'warn',
+    );
+    const audio = {
+      id: 'inbound-recovery',
+      wamid: 'wamid.audio',
+      type: 'AUDIO',
+      content: 'Necesito una web',
+      createdAt: new Date('2026-09-20T18:00:00.000Z'),
+      rawPayload: { audio: { id: 'media-inbound' } },
+    };
+    const uploadFailure = new MetaMediaUploadError(400);
+    harness.meta.uploadVoiceNote.mockRejectedValue(uploadFailure);
+    Object.assign(harness.service, {
+      inboundTurns: {
+        claim: jest.fn().mockResolvedValue({
+          id: 'turn-audio',
+          lastMessageId: audio.id,
+          processingToken: 'claim-token',
+        }),
+        messages: jest.fn().mockResolvedValue([audio]),
+        complete: jest.fn(),
+        release: jest.fn(),
+      } as unknown as InboundTurnService,
+      voice: {
+        synthesize: jest.fn().mockResolvedValue(Buffer.from('OggSopus')),
+      } as unknown as VoiceService,
+    });
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: audio.id,
+      inboundTurnId: 'turn-audio',
+    });
+
+    const prepared = harness.deliveries.prepareBatch.mock.calls[0][0] as {
+      parts: Array<{ content: string; metadata?: { voiceMediaId?: string } }>;
+    };
+    expect(prepared.parts[0].content).toBe('Podemos crear su sitio web.');
+    expect(prepared.parts[0].metadata?.voiceMediaId).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('"event":"voice_media_upload_failed"'),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('"reasonCode":"META_MEDIA_UPLOAD_FAILED"'),
+    );
+    expect(warn.mock.calls.flat().join('')).not.toContain('TTS no disponible');
   });
 
   it('returns to text in MIRROR mode when the last message is a text correction', async () => {
