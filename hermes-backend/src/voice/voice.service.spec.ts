@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { MetaService } from '../meta/meta.service';
@@ -275,5 +276,193 @@ describe('VoiceService', () => {
       16 * 1024 * 1024,
       30000,
     );
+  });
+
+  it('uses default ElevenLabs voice settings and preserves the OGG conversion pipeline', async () => {
+    const { voice } = setup({
+      ELEVENLABS_API_KEY: 'test-key',
+      HERMES_TTS_VOICE_ID: 'voice-id',
+    });
+    const post = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: Buffer.from('mp3'),
+    });
+    const convert = jest
+      .spyOn(voice as unknown as VoiceInternals, 'runBinary')
+      .mockResolvedValue(Buffer.from('OggSopus'));
+
+    await expect(voice.synthesize('Respuesta aprobada')).resolves.toEqual(
+      Buffer.from('OggSopus'),
+    );
+
+    expect(post).toHaveBeenCalledWith(
+      'https://api.elevenlabs.io/v1/text-to-speech/voice-id',
+      {
+        text: 'Respuesta aprobada',
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: {
+          stability: 0.48,
+          similarity_boost: 0.82,
+          style: 0.05,
+          use_speaker_boost: true,
+          speed: 0.96,
+        },
+      },
+      expect.objectContaining({
+        params: { output_format: 'mp3_44100_128' },
+        responseType: 'arraybuffer',
+        timeout: 30000,
+      }),
+    );
+    expect(convert).toHaveBeenCalledWith(
+      'ffmpeg',
+      expect.arrayContaining(['libopus', 'ogg']),
+      Buffer.from('mp3'),
+      16 * 1024 * 1024,
+      30000,
+    );
+  });
+
+  it('sends valid configured ElevenLabs voice settings', async () => {
+    const { voice } = setup({
+      ELEVENLABS_API_KEY: 'test-key',
+      HERMES_TTS_VOICE_ID: 'voice-id',
+      HERMES_TTS_MODEL_ID: 'eleven_flash_v2_5',
+      HERMES_TTS_STABILITY: '0.2',
+      HERMES_TTS_SIMILARITY_BOOST: '0.7',
+      HERMES_TTS_STYLE: '0.4',
+      HERMES_TTS_SPEAKER_BOOST: 'false',
+      HERMES_TTS_SPEED: '1.1',
+    });
+    const post = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: Buffer.from('mp3'),
+    });
+    jest
+      .spyOn(voice as unknown as VoiceInternals, 'runBinary')
+      .mockResolvedValue(Buffer.from('OggSopus'));
+
+    await voice.synthesize('Configuración personalizada');
+
+    expect(post).toHaveBeenCalledWith(
+      'https://api.elevenlabs.io/v1/text-to-speech/voice-id',
+      expect.objectContaining({
+        text: 'Configuración personalizada',
+        model_id: 'eleven_flash_v2_5',
+        voice_settings: {
+          stability: 0.2,
+          similarity_boost: 0.7,
+          style: 0.4,
+          use_speaker_boost: false,
+          speed: 1.1,
+        },
+      }),
+      expect.anything(),
+    );
+  });
+
+  it('falls back to safe defaults for out-of-range voice settings', async () => {
+    const { voice } = setup({
+      ELEVENLABS_API_KEY: 'test-key',
+      HERMES_TTS_VOICE_ID: 'voice-id',
+      HERMES_TTS_STABILITY: '5',
+    });
+    const post = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: Buffer.from('mp3'),
+    });
+    jest
+      .spyOn(voice as unknown as VoiceInternals, 'runBinary')
+      .mockResolvedValue(Buffer.from('OggSopus'));
+
+    await voice.synthesize('Configuración segura');
+
+    expect(post).toHaveBeenCalledWith(
+      'https://api.elevenlabs.io/v1/text-to-speech/voice-id',
+      {
+        text: 'Configuración segura',
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: {
+          stability: 0.48,
+          similarity_boost: 0.82,
+          style: 0.05,
+          use_speaker_boost: true,
+          speed: 0.96,
+        },
+      },
+      expect.anything(),
+    );
+  });
+
+  it('does not send a nonnumeric TTS speed to ElevenLabs', async () => {
+    const { voice } = setup({
+      ELEVENLABS_API_KEY: 'test-key',
+      HERMES_TTS_VOICE_ID: 'voice-id',
+      HERMES_TTS_SPEED: 'abc',
+    });
+    const post = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: Buffer.from('mp3'),
+    });
+    jest
+      .spyOn(voice as unknown as VoiceInternals, 'runBinary')
+      .mockResolvedValue(Buffer.from('OggSopus'));
+
+    await voice.synthesize('Velocidad segura');
+
+    expect(post).toHaveBeenCalledWith(
+      'https://api.elevenlabs.io/v1/text-to-speech/voice-id',
+      {
+        text: 'Velocidad segura',
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: {
+          stability: 0.48,
+          similarity_boost: 0.82,
+          style: 0.05,
+          use_speaker_boost: true,
+          speed: 0.96,
+        },
+      },
+      expect.anything(),
+    );
+  });
+
+  it('rejects blank numeric settings and keeps their values out of warnings', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const { voice } = setup({
+      ELEVENLABS_API_KEY: 'test-key',
+      HERMES_TTS_VOICE_ID: 'voice-id',
+      HERMES_TTS_STABILITY: '   ',
+      HERMES_TTS_SPEED: 'api_key=voice-secret',
+    });
+    const post = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: Buffer.from('mp3'),
+    });
+    jest
+      .spyOn(voice as unknown as VoiceInternals, 'runBinary')
+      .mockResolvedValue(Buffer.from('OggSopus'));
+
+    await voice.synthesize('Configuración segura');
+
+    expect(post).toHaveBeenCalledWith(
+      'https://api.elevenlabs.io/v1/text-to-speech/voice-id',
+      {
+        text: 'Configuración segura',
+        model_id: 'eleven_multilingual_v2',
+        voice_settings: {
+          stability: 0.48,
+          similarity_boost: 0.82,
+          style: 0.05,
+          use_speaker_boost: true,
+          speed: 0.96,
+        },
+      },
+      expect.anything(),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      'Invalid HERMES_TTS_STABILITY; using the safe default.',
+    );
+    expect(warn).toHaveBeenCalledWith(
+      'Invalid HERMES_TTS_SPEED; using the safe default.',
+    );
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('voice-secret');
   });
 });

@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { MetaService } from '../meta/meta.service';
@@ -37,6 +37,22 @@ type VoiceFailureLogDiagnostics = {
   transportMessage: string | null;
   requestId: string | null;
   failureKind: VoiceFailureDiagnostics['failureKind'] | null;
+};
+
+type ElevenLabsVoiceSettings = {
+  stability: number;
+  similarityBoost: number;
+  style: number;
+  speakerBoost: boolean;
+  speed: number;
+};
+
+const DEFAULT_ELEVENLABS_VOICE_SETTINGS: ElevenLabsVoiceSettings = {
+  stability: 0.48,
+  similarityBoost: 0.82,
+  style: 0.05,
+  speakerBoost: true,
+  speed: 0.96,
 };
 
 export function voiceFailureLogDiagnostics(
@@ -119,10 +135,15 @@ export class VoiceProcessingError extends Error {
 
 @Injectable()
 export class VoiceService {
+  private readonly logger = new Logger(VoiceService.name);
+  private readonly elevenLabsVoiceSettings: ElevenLabsVoiceSettings;
+
   constructor(
     private readonly config: ConfigService,
     private readonly meta: MetaService,
-  ) {}
+  ) {
+    this.elevenLabsVoiceSettings = this.getElevenLabsVoiceSettings();
+  }
 
   async transcribe(mediaId: string): Promise<VoiceTranscript> {
     const provider = this.config.get<string>(
@@ -302,6 +323,13 @@ export class VoiceService {
             'HERMES_TTS_MODEL_ID',
             'eleven_multilingual_v2',
           ),
+          voice_settings: {
+            stability: this.elevenLabsVoiceSettings.stability,
+            similarity_boost: this.elevenLabsVoiceSettings.similarityBoost,
+            style: this.elevenLabsVoiceSettings.style,
+            use_speaker_boost: this.elevenLabsVoiceSettings.speakerBoost,
+            speed: this.elevenLabsVoiceSettings.speed,
+          },
         },
         {
           params: { output_format: 'mp3_44100_128' },
@@ -513,5 +541,75 @@ export class VoiceService {
   private positiveInteger(key: string, fallback: number): number {
     const value = Number(this.config.get(key));
     return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+  }
+
+  private getElevenLabsVoiceSettings(): ElevenLabsVoiceSettings {
+    return {
+      stability: this.numberSetting(
+        'HERMES_TTS_STABILITY',
+        DEFAULT_ELEVENLABS_VOICE_SETTINGS.stability,
+        0,
+        1,
+      ),
+      similarityBoost: this.numberSetting(
+        'HERMES_TTS_SIMILARITY_BOOST',
+        DEFAULT_ELEVENLABS_VOICE_SETTINGS.similarityBoost,
+        0,
+        1,
+      ),
+      style: this.numberSetting(
+        'HERMES_TTS_STYLE',
+        DEFAULT_ELEVENLABS_VOICE_SETTINGS.style,
+        0,
+        1,
+      ),
+      speakerBoost: this.booleanSetting(
+        'HERMES_TTS_SPEAKER_BOOST',
+        DEFAULT_ELEVENLABS_VOICE_SETTINGS.speakerBoost,
+      ),
+      speed: this.numberSetting(
+        'HERMES_TTS_SPEED',
+        DEFAULT_ELEVENLABS_VOICE_SETTINGS.speed,
+        0.7,
+        1.2,
+      ),
+    };
+  }
+
+  private numberSetting(
+    key: string,
+    fallback: number,
+    minimum: number,
+    maximum: number,
+  ): number {
+    const raw = this.config.get<unknown>(key);
+    if (raw === undefined || raw === null || raw === '') return fallback;
+    const value =
+      typeof raw === 'number'
+        ? raw
+        : typeof raw === 'string' && raw.trim()
+          ? Number(raw.trim())
+          : Number.NaN;
+    if (Number.isFinite(value) && value >= minimum && value <= maximum)
+      return value;
+    this.warnInvalidTtsSetting(key);
+    return fallback;
+  }
+
+  private booleanSetting(key: string, fallback: boolean): boolean {
+    const raw = this.config.get<unknown>(key);
+    if (raw === undefined || raw === null || raw === '') return fallback;
+    if (typeof raw === 'boolean') return raw;
+    if (typeof raw === 'string') {
+      const value = raw.trim().toLowerCase();
+      if (value === 'true') return true;
+      if (value === 'false') return false;
+    }
+    this.warnInvalidTtsSetting(key);
+    return fallback;
+  }
+
+  private warnInvalidTtsSetting(key: string): void {
+    this.logger.warn(`Invalid ${key}; using the safe default.`);
   }
 }
