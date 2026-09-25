@@ -73,6 +73,44 @@ describe('commercial claims', () => {
     ).toContain('USD $360.00');
   });
 
+  it('answers the selected plan price when other authorized plans exist', () => {
+    const growth = {
+      ...offer,
+      id: 'growth',
+      name: 'Plan de Crecimiento',
+      amount: '510.00',
+    };
+    expect(
+      answerExplicitPriceIfMissing(
+        '',
+        { ...snapshot([offer, growth]), recommendedOfferId: 'growth' },
+        true,
+      ),
+    ).toContain('Plan de Crecimiento: USD $510.00');
+  });
+
+  it('permits only the renewal amount authorized for the selected tier', () => {
+    const premium = {
+      ...offer,
+      id: 'premium',
+      name: 'Plan de Autoridad',
+      renewalUsdPerYear: 80,
+    };
+    const context = { ...snapshot([premium]), recommendedOfferId: 'premium' };
+    expect(
+      reviewCommercialClaims(
+        'La renovación de hosting y dominio es USD $80 al año.',
+        context,
+      ).reasons,
+    ).toEqual([]);
+    expect(
+      reviewCommercialClaims(
+        'La renovación de hosting y dominio es USD $40 al año.',
+        context,
+      ).reasons,
+    ).toContain('PRICE_NOT_AUTHORIZED');
+  });
+
   it('asks once for the market when price depends on it', () => {
     expect(
       answerExplicitPriceIfMissing(

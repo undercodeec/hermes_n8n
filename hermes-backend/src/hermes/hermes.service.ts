@@ -84,7 +84,7 @@ Cuando ya se conozcan el tipo de solución, la actividad, el objetivo comercial 
 
 Undercodeec trabaja de forma remota, tiene presencia en algunos países de Latinoamérica, Europa y Estados Unidos, y su sede principal está en Quito, Ecuador. No invente oficinas, direcciones físicas, ciudades adicionales ni presencia en países concretos.
 
-Aplica divulgación progresiva al hablar de planes. Cuando dos opciones puedan servir, presenta primero sus nombres, precios autorizados en el contexto y una diferencia esencial para que el cliente elija; no vuelques de inmediato todas las prestaciones. Para promocionar servicios, considera tanto una landing como un sitio web de lanzamiento cuando ambos estén autorizados. Detalla qué incluye un plan solo cuando el cliente muestre interés claro en esa opción o pregunte por sus prestaciones. Si no está claro a qué plan se refiere, solicita una única aclaración breve.
+Aplica divulgación progresiva al hablar de planes. Recomienda un plan principal que cubra la necesidad, comenzando por el nivel más básico suficiente. Explica las prestaciones relevantes y separa las funciones adicionales que requieran valoración. No menciones precios hasta que el cliente los pregunte; entonces utiliza el importe vigente autorizado. Si no está claro a qué plan se refiere, solicita una única aclaración breve.
 
 Explora el presupuesto solo cuando exista contexto suficiente o el cliente pregunte por precios. Permite que no lo conozca o no quiera compartirlo. Un plazo deseado del cliente nunca es un compromiso de entrega de Undercodeec.
 
@@ -985,8 +985,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           request.commercialSnapshot?.offers.length) ||
         (request.conversationGuidance?.currentTopic === 'price' &&
           request.commercialSnapshot?.offers.length) ||
-        request.conversationGuidance?.allowPlanRecommendation ||
-        request.conversationGuidance?.offerWebAlternatives,
+        (request.commercialSnapshot?.renewalRequested &&
+          request.commercialSnapshot?.offers.length),
       );
       if (!pricesAreAuthorized || !priceContextAllowed) {
         return {
@@ -1041,13 +1041,12 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       request.conversationGuidance?.offerWebAlternatives === true &&
       landingOffer &&
       websiteOffer &&
-      (!normalized.includes(this.normalizeSearch(landingOffer.name)) ||
-        !normalized.includes(this.normalizeSearch(websiteOffer.name)))
+      !normalized.includes(this.normalizeSearch(landingOffer.name)) &&
+      !normalized.includes(this.normalizeSearch(websiteOffer.name))
     ) {
       return {
         code: 'MISSING_REQUIRED_WEB_OPTIONS',
-        reason:
-          'omite una de las dos alternativas web que debe presentar brevemente',
+        reason: 'omite el plan web que debe recomendar',
       };
     }
     if (
@@ -1201,8 +1200,12 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     );
     if (!landingOffer || !websiteOffer) return undefined;
 
+    const recommended =
+      request.commercialSnapshot?.offers.find(
+        (offer) => offer.id === request.commercialSnapshot?.recommendedOfferId,
+      ) ?? landingOffer;
     return {
-      response: `Para mostrar sus servicios, puede considerar ${landingOffer.name} o ${websiteOffer.name}. ¿Cuál de las dos opciones le interesa conocer?`,
+      response: `Para mostrar sus servicios, ${recommended.name} puede encajar: ${recommended.scope}`,
       detectedIntent: 'consulta_servicio',
       nextAction: 'continuar_descubrimiento',
       ...(request.commercialProfile
@@ -1265,6 +1268,21 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       content =
         'Este dato no está autorizado para confirmación automática y requiere validación humana.';
       requiresHumanReview = true;
+    } else if (
+      request.conversationGuidance?.allowPlanRecommendation &&
+      request.commercialSnapshot?.offers.length
+    ) {
+      const offers = request.commercialSnapshot.offers;
+      const recommended =
+        offers.find(
+          (offer) =>
+            offer.id === request.commercialSnapshot?.recommendedOfferId,
+        ) ??
+        [...offers].sort(
+          (left, right) =>
+            Number(left.amount ?? Infinity) - Number(right.amount ?? Infinity),
+        )[0];
+      content = `Por lo que me comenta, ${recommended.name} puede encajar: ${recommended.scope}`;
     } else if (request.conversationGuidance?.allowDiscoveryQuestion) {
       const conversationScope = this.normalizeSearch(
         [

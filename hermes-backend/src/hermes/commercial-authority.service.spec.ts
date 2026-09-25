@@ -285,6 +285,99 @@ describe('CommercialAuthorityService', () => {
     );
   });
 
+  it('keeps the restaurant website plan and separates automated reservations', async () => {
+    const products = [
+      {
+        id: 'launch',
+        name: 'Plan de Lanzamiento',
+        serviceCode: 'WEBSITE',
+        metadata: {
+          commercialTerms: { renewalUsdPerYear: 40, estimatedBusinessDays: 10 },
+        },
+        priceLists: [{ ...base, market: null, id: 'launch-price' }],
+      },
+      {
+        id: 'growth',
+        name: 'Plan de Crecimiento',
+        serviceCode: 'WEBSITE',
+        metadata: {
+          commercialTerms: { renewalUsdPerYear: 40, estimatedBusinessDays: 20 },
+        },
+        priceLists: [
+          {
+            ...base,
+            market: null,
+            id: 'growth-price',
+            price: new Prisma.Decimal('510.00'),
+          },
+        ],
+      },
+      {
+        id: 'authority',
+        name: 'Plan de Autoridad',
+        serviceCode: 'WEBSITE',
+        metadata: {
+          commercialTerms: { renewalUsdPerYear: 80, estimatedBusinessDays: 20 },
+        },
+        priceLists: [
+          {
+            ...base,
+            market: null,
+            id: 'authority-price',
+            price: new Prisma.Decimal('1010.00'),
+          },
+        ],
+      },
+    ];
+    const prisma = {
+      product: { findMany: jest.fn().mockResolvedValue(products) },
+    } as unknown as PrismaService;
+    const result = await new CommercialAuthorityService(prisma).snapshot({
+      customerMessage:
+        'Quiero recibir pedidos, captar clientes y reservas con calendario',
+      profile: {
+        service: 'sitio web',
+        need: 'Restaurante: mostrar empresa y platos',
+      },
+      recentCustomerMessages: [
+        'Quiero una página web muy sencilla',
+        'Es para un restaurante',
+      ],
+      priceRequested: false,
+      now,
+    });
+    expect(result.relevantServiceCodes).toEqual(['WEBSITE']);
+    expect(
+      result.offers.find((offer) => offer.id === result.recommendedOfferId),
+    ).toEqual(
+      expect.objectContaining({
+        name: 'Plan de Lanzamiento',
+        renewalUsdPerYear: 40,
+        estimatedBusinessDays: 10,
+      }),
+    );
+    expect(result.additionalScope).toContain(
+      'Reservas con calendario o disponibilidad automática',
+    );
+    expect(commercialSnapshotKnowledge(result).join(' ')).toContain(
+      'No presentes todo el proyecto como personalizado',
+    );
+    const growth = await new CommercialAuthorityService(prisma).snapshot({
+      customerMessage: 'Necesito posicionamiento local y Analytics',
+      profile: { service: 'sitio web' },
+      priceRequested: false,
+      now,
+    });
+    expect(
+      growth.offers.find((offer) => offer.id === growth.recommendedOfferId),
+    ).toEqual(
+      expect.objectContaining({
+        name: 'Plan de Crecimiento',
+        estimatedBusinessDays: 20,
+      }),
+    );
+  });
+
   it('recovers the service from recent customer turns for a follow-up price question', async () => {
     const { authority, findMany } = service([base]);
     await authority.snapshot({
@@ -298,6 +391,28 @@ describe('CommercialAuthorityService', () => {
         where: { isActive: true, serviceCode: { in: ['ONLINE_STORE'] } },
       }),
     );
+  });
+
+  it('uses the structured policy for a custom mobile-app timeline', async () => {
+    const policy =
+      'Aplicaciones móviles: mínimo aproximado de 30 días laborables, sujeto a valoración y entrega de material.';
+    const findMany = jest.fn();
+    const prisma = {
+      knowledgeDocument: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue({ content: policy, isActive: true }),
+      },
+      product: { findMany },
+    } as unknown as PrismaService;
+    const result = await new CommercialAuthorityService(prisma).snapshot({
+      customerMessage: '¿Cuál es el plazo de una app móvil?',
+      priceRequested: false,
+      now,
+    });
+    expect(result.offers).toEqual([]);
+    expect(commercialSnapshotKnowledge(result)).toContain(policy);
+    expect(findMany).not.toHaveBeenCalled();
   });
 
   it('selects a linked live promotion and falls back to base when it expires', async () => {

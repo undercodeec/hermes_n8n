@@ -28,6 +28,33 @@ type PolicyContext = {
   commercialProfile?: CommercialProfile;
 };
 
+export function requestsCommercialContact(content: string): boolean {
+  const normalized = normalizeCommonSpanishTypos(
+    content
+      .toLocaleLowerCase('es')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
+  if (
+    /\b(?:no quiero|no necesito|no deseo|sin)\b.{0,50}\b(?:hablar|conversar|comunicarme|contactar|llamar)\b.{0,40}\b(?:persona|humano|asesor|agente|ventas)\b/.test(
+      normalized,
+    )
+  )
+    return false;
+  return [
+    /\b(hablar|conversar|comunicarme) con (una persona|alguien|un humano|un asesor|un comercial)\b/,
+    /\b(asesor|agente|persona) (real|humano)\b/,
+    /\b(?:hablar|conversar|comunicarme|pasarme|pasame)\s+(?:con|a)\s+(?:un |una |al? )?(?:asesor|asesora|agente|persona|ventas|comercial)\b/,
+    /\b(?:me|nos)\s+(?:puede[n]?|podria[n]?)\s+(?:hacer\s+)?contactar\s+con\s+(?:algun |un |una )?(?:asesor|asesora|agente|persona|ventas)\b/,
+    /\b(?:me|nos)\s+(?:puede[n]?|podria[n]?)\s+contactar\s+(?:alguien|un asesor|una asesora)\b/,
+    /\b(?:cotizacion|presupuesto)\b.{0,35}\b(?:con alguien|con un asesor|con una asesora|con ventas)\b/,
+    /\b(?:quiero|necesito|podrian|pueden|puede)\s+(?:que\s+)?(?:me\s+)?(?:contacten|contactar|llamen|llamar|asesoren)\b/,
+    /\b(?:con quien puedo cerrar|quiero avanzar|quiero contratar|como podemos empezar)\b/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
 @Injectable()
 export class CommercialPolicyService {
   /** Conserva información válida y retira condiciones que la instantánea CRM no respalda. */
@@ -78,8 +105,26 @@ export class CommercialPolicyService {
           normalized,
         )
       ) {
-        reasons.push('UNAUTHORIZED_TIMELINE');
-        return false;
+        const days = [...normalized.matchAll(/\b(\d+)\s+dias?\b/g)].map(
+          (match) => Number(match[1]),
+        );
+        const authorizedDays = new Set(
+          [...catalog.matchAll(/\b(\d+)\s+dias? laborables\b/g)].map((match) =>
+            Number(match[1]),
+          ),
+        );
+        const conditional =
+          /\b(?:estimad[oa]|aproximad[oa]|alrededor|sujeto|depende)\b/.test(
+            normalized,
+          );
+        if (
+          !days.length ||
+          !days.every((day) => authorizedDays.has(day)) ||
+          !conditional
+        ) {
+          reasons.push('UNAUTHORIZED_TIMELINE');
+          return false;
+        }
       }
       if (
         /\b(?:cuotas?|anticipo|abono|financiacion|50\s*\/\s*50|pago[s]?\s+(?:a|en)\s+plazos?)\b/.test(
@@ -124,7 +169,11 @@ export class CommercialPolicyService {
       ),
     );
 
-    if (/\b(cuanto (cuesta|vale)|precio|coste|costo|cotiz)/.test(normalized)) {
+    if (
+      /\b(cuanto (cuesta|vale)|precio|coste|costo|cotiz|que valores|cuanto tendria que pagar|que tendria que pagar)/.test(
+        normalized,
+      )
+    ) {
       pending.add('price');
     }
     if (
@@ -138,14 +187,7 @@ export class CommercialPolicyService {
       pending.add('proposal');
     }
 
-    const requestsHuman =
-      !/\b(?:no quiero|no necesito|no deseo|sin)\b.{0,40}\b(?:hablar|conversar|comunicarme)\b.{0,30}\b(?:persona|humano|asesor|agente)\b/.test(
-        normalized,
-      ) &&
-      this.matches(normalized, [
-        /\b(hablar|conversar|comunicarme) con (una persona|alguien|un humano|un asesor|un comercial)\b/,
-        /\b(asesor|agente|persona) (real|humano)\b/,
-      ]);
+    const requestsHuman = requestsCommercialContact(content);
     const requestsCall = this.matches(normalized, [
       /\b(llamada|llamarme|llamenme|me llamen|hablar por telefono)\b/,
       /\b(puede[n]? llamar|podemos hablar)\b/,
@@ -613,14 +655,18 @@ export class CommercialPolicyService {
     if (paymentContext === 'STORE_CHECKOUT') return 'store_payment';
     if (this.isOrganizationLocationQuestion(value)) return 'business_location';
     if (
-      /\b(?:renovacion|renovar|segundo ano|despues del primer ano)\b/.test(
+      /\b(?:renovacion|renovar|segundo ano|despues del primer ano|gastos? anuales?|costos? anuales?|gastos? posteriores)\b/.test(
         value,
       )
     )
       return 'renewal';
     if (/\b(?:hosting|dominio|ssl|https|correo corporativo)\b/.test(value))
       return 'infrastructure';
-    if (/\b(?:cuanto (?:cuesta|vale)|precio|coste|costo|cotiz)\b/.test(value))
+    if (
+      /\b(?:cuanto (?:cuesta|vale)|precio|coste|costo|cotiz|que valores|cuanto tendria que pagar|que tendria que pagar)\b/.test(
+        value,
+      )
+    )
       return 'price';
     if (
       /\b(?:cuanto (?:tarda|demora)|plazo|tiempo de entrega|para cuando)\b/.test(

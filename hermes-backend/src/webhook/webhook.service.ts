@@ -13,6 +13,7 @@ import { AdvertisingService } from '../advertising/advertising.service';
 import { normalizeWhatsAppId } from '../campaigns/phone-normalizer';
 import { ConversationEventsService } from '../conversations/conversation-events.service';
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
+import { requestsCommercialContact } from '../hermes/commercial-policy.service';
 import {
   MetaWebhookDto,
   MetaWebhookMessage,
@@ -282,6 +283,7 @@ export class WebhookService {
         contact.id,
         messageContent || '',
         supportContext,
+        requestsCommercialContact(messageContent || ''),
       );
       if (guardDecision.action === 'SUPPORT') {
         await this.handoffService.create({

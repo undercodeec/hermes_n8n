@@ -321,6 +321,150 @@ describe('AutoReplyService', () => {
     };
   }
 
+  it('recommends the restaurant base plan while separating reservations from the plan', async () => {
+    const launch = {
+      ...testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+      scope:
+        'Hasta cinco páginas, formulario y WhatsApp para presentar el restaurante y sus platos.',
+      renewalUsdPerYear: 40,
+      estimatedBusinessDays: 10,
+    };
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['WEBSITE'],
+      offers: [launch],
+      recommendedOfferId: launch.id,
+      additionalScope: [
+        'Reservas automatizadas si necesita calendario y disponibilidad',
+        'Pedidos automatizados si necesita gestión interna o pagos en línea',
+      ],
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent:
+        'Quiero recibir pedidos, captar clientes y reservar un salón.',
+      persistedProfile: {
+        service: 'sitio web',
+        sector: 'restaurante',
+        need: 'Mostrar la empresa y los platos',
+      },
+      hermesResponse: {
+        response:
+          'El valor depende de las funciones específicas; el equipo debe confirmarlo según el alcance.',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const answer =
+      harness.deliveries.prepareBatch.mock.calls.at(-1)?.[0].parts[0].content;
+    expect(answer).toContain('Plan de Lanzamiento');
+    expect(answer).toContain('formulario y WhatsApp');
+    expect(answer).toContain('Reservas automatizadas');
+    expect(answer).not.toMatch(/USD|\$360/);
+  });
+
+  it('answers annual renewal from the selected product terms', async () => {
+    const launch = {
+      ...testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+      renewalUsdPerYear: 40,
+    };
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['WEBSITE'],
+      offers: [launch],
+      recommendedOfferId: launch.id,
+      renewalRequested: true,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: '¿Qué gastos anuales tendré por hosting y dominio?',
+      persistedProfile: {
+        service: 'sitio web',
+        need: 'Mostrar mi restaurante',
+      },
+      hermesResponse: { response: 'El equipo debe confirmar esos gastos.' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const answer =
+      harness.deliveries.prepareBatch.mock.calls.at(-1)?.[0].parts[0].content;
+    expect(answer).toContain('USD 40 anuales');
+    expect(answer).toContain('primer año');
+  });
+
+  it('shares the existing restaurant plan price when the customer asks for it', async () => {
+    const launch = {
+      ...testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+      scope: 'Hasta cinco páginas, formulario y WhatsApp.',
+    };
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['WEBSITE'],
+      offers: [launch],
+      recommendedOfferId: launch.id,
+      additionalScope: ['Reservas automatizadas con calendario'],
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: '¿Sí me puede compartir un precio?',
+      persistedProfile: {
+        service: 'sitio web',
+        sector: 'restaurante',
+        need: 'Mostrar empresa, platos y recibir reservas',
+      },
+      hermesResponse: {
+        response:
+          'El valor depende de las funciones específicas; el equipo debe confirmarlo según el alcance.',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const answer =
+      harness.deliveries.prepareBatch.mock.calls.at(-1)?.[0].parts[0].content;
+    expect(answer).toContain('Plan de Lanzamiento: USD $360.00');
+    expect(answer).toContain('Reservas automatizadas con calendario');
+    expect(answer).not.toContain('El valor depende');
+    expect(harness.tasks.requestQuote).not.toHaveBeenCalled();
+  });
+
+  it('answers the authorized custom timeline with material dependency', async () => {
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: [],
+      offers: [],
+      policies: [
+        'Aplicaciones móviles: mínimo aproximado de 30 días laborables, sujeto a valoración y entrega de material.',
+      ],
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: '¿Cuál es el plazo de una app móvil?',
+      persistedProfile: {
+        service: 'aplicación móvil',
+        need: 'App para clientes',
+      },
+      hermesResponse: { response: 'El equipo debe confirmar el plazo.' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const answer =
+      harness.deliveries.prepareBatch.mock.calls.at(-1)?.[0].parts[0].content;
+    expect(answer).toContain('30 días laborables');
+    expect(answer).toContain('sujeto a que entregue a tiempo');
+  });
+
   it('uses one inference for all messages in a claimed conversation turn', async () => {
     const harness = setupProcessHarness({
       hermesResponse: {
@@ -2016,7 +2160,7 @@ describe('AutoReplyService', () => {
     );
   });
 
-  it('creates a pending callback task and reuses the WhatsApp number', async () => {
+  it('creates a commercial handoff for a callback request before confirming it', async () => {
     const inbound = {
       id: 'inbound-call',
       conversationId: 'conversation-1',
@@ -2077,12 +2221,15 @@ describe('AutoReplyService', () => {
       consumeAiQuota: jest.fn(),
     } as unknown as ConversationGuardService;
     const deliveries = passthroughDeliveries(meta);
+    const handoffs = {
+      create: jest.fn().mockResolvedValue({ id: 'handoff-1' }),
+    };
     const service = new AutoReplyService(
       { get: jest.fn() } as unknown as ConfigService,
       prisma,
       meta,
       engine,
-      { create: jest.fn() } as unknown as HandoffService,
+      handoffs as unknown as HandoffService,
       leads,
       tasks,
       new CommercialPolicyService(),
@@ -2098,11 +2245,10 @@ describe('AutoReplyService', () => {
       inboundMessageId: 'inbound-call',
     });
 
-    expect(tasks.requestCallback).toHaveBeenCalledWith(
-      expect.objectContaining({
-        conversationId: 'conversation-1',
-        sourceMessageId: 'inbound-call',
-      }),
+    expect(handoffs.create).toHaveBeenCalledWith(
+      expect.objectContaining({ conversationId: 'conversation-1' }),
+      undefined,
+      { sourceMessageId: 'inbound-call', callRequested: true },
     );
     expect(
       (deliveries.prepareBatch as jest.Mock).mock.calls[0][0].parts[0].content,
@@ -2185,6 +2331,25 @@ describe('AutoReplyService', () => {
     });
 
     expect(callOrder).toEqual(['handoff', 'send', 'persist']);
+  });
+
+  it('does not confirm advisor contact when the CRM transaction fails', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: '¿Me puede hacer contactar con algún asesor?',
+      hermesResponse: { response: 'Un asesor lo contactará.' },
+    });
+    harness.handoffs.create.mockRejectedValueOnce(
+      new Error('database unavailable'),
+    );
+    await expect(
+      harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      }),
+    ).rejects.toThrow('database unavailable');
+    expect(harness.deliveries.prepareBatch).not.toHaveBeenCalled();
+    expect(harness.engine.respond).not.toHaveBeenCalled();
   });
 
   it('creates a real quote task instead of extending discovery when scope is sufficient', async () => {

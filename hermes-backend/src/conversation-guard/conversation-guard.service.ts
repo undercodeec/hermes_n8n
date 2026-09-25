@@ -35,6 +35,7 @@ export class ConversationGuardService implements OnModuleDestroy {
     contactId: string,
     content: string,
     supportContext = content,
+    priorityContact = false,
   ): Promise<GuardDecision> {
     const normalized = this.normalize(content);
     if (this.isSupportRequest(this.normalize(supportContext))) {
@@ -75,6 +76,7 @@ export class ConversationGuardService implements OnModuleDestroy {
       if (
         count > this.positiveInteger('AI_CONTACT_MAX_MESSAGES_PER_WINDOW', 15)
       ) {
+        if (priorityContact) return { action: 'ALLOW' };
         await this.setCooldown(contactId);
         return {
           action: 'BLOCK',
@@ -88,7 +90,7 @@ export class ConversationGuardService implements OnModuleDestroy {
       const cooldown = await (
         await this.redis()
       ).get(`hermes:guard:cooldown:${contactId}`);
-      return cooldown
+      return cooldown && !priorityContact
         ? { action: 'BLOCK', category: 'SPAM' }
         : { action: 'ALLOW' };
     } catch (error) {

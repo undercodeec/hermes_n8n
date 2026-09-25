@@ -81,9 +81,27 @@ export function reviewCommercialClaims(
   const kept = sentences.filter((sentence) => {
     const tokens = [...sentence.matchAll(MONEY)];
     for (const token of tokens) {
+      const renewalContext = sentence.slice(
+        Math.max(0, token.index - 120),
+        token.index,
+      );
+      const renewal =
+        /\b(?:renovaci[oó]n|renovar|segundo a[nñ]o)\b/iu.test(renewalContext) &&
+        /\b(?:hosting|dominio)\b/iu.test(renewalContext);
+      const renewalOffer = snapshot.offers.find(
+        (offer) => offer.id === snapshot.recommendedOfferId,
+      );
       const offer = referencedOffer(sentence, token.index, snapshot.offers);
       const amount = moneyAmount(token[0]);
       const currency = moneyCurrency(token[0]);
+      if (
+        renewal &&
+        renewalOffer?.renewalUsdPerYear &&
+        amount === renewalOffer.renewalUsdPerYear.toFixed(2) &&
+        currency === 'USD'
+      ) {
+        continue;
+      }
       const preceding = normalized(sentence.slice(0, token.index));
       const offerIndex = offer
         ? preceding.lastIndexOf(normalized(offer.name))
@@ -177,8 +195,10 @@ export function answerExplicitPriceIfMissing(
   if (snapshot.needsMarketClarification)
     return '¿El proyecto sería para Ecuador o España?';
   if ([...response.matchAll(MONEY)].length > 0) return response;
-  if (snapshot.offers.length !== 1) return response;
-  const offer = snapshot.offers[0];
+  const offer =
+    snapshot.offers.find((item) => item.id === snapshot.recommendedOfferId) ??
+    (snapshot.offers.length === 1 ? snapshot.offers[0] : undefined);
+  if (!offer) return response;
   if (offer.priceType === CommercialPriceType.QUOTE_REQUIRED) {
     return /\b(?:valoracion|cotizacion|presupuesto|evaluacion)\b/.test(
       normalized(response),
@@ -195,5 +215,12 @@ export function answerExplicitPriceIfMissing(
       : offer.taxMode === CommercialTaxMode.EXCLUDED
         ? `, más ${offer.taxLabel ?? 'impuestos'}`
         : '';
-  return `${offer.name}: ${intro}${amount}${tax}.${response ? ` ${response}` : ''}`;
+  const genericDeferral =
+    /\b(?:valor|precio|importe)\b.{0,90}\b(?:depende|confirmar|confirma|valoraci[oó]n)\b/iu.test(
+      response,
+    );
+  const additional = snapshot.additionalScope?.length
+    ? ` ${snapshot.additionalScope.join(' y ')} requiere valoración aparte; ese adicional no tiene un precio confirmado.`
+    : '';
+  return `${offer.name}: ${intro}${amount}${tax}.${additional}${response && !genericDeferral ? ` ${response}` : ''}`.trim();
 }

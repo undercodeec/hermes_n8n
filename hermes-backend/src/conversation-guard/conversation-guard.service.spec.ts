@@ -127,4 +127,28 @@ describe('ConversationGuardService', () => {
       guard.inspect('contact-1', 'Hola, quisiera conocer sus servicios.'),
     ).resolves.toEqual({ action: 'ALLOW' });
   });
+
+  it('preserves an explicit advisor request during a natural message burst', async () => {
+    const guard = new ConversationGuardService(config);
+    const transaction = {
+      incr: jest.fn(),
+      expire: jest.fn(),
+      exec: jest.fn().mockResolvedValue([
+        [null, 16],
+        [null, 1],
+      ]),
+    };
+    jest.spyOn(guard as unknown as GuardInternals, 'redis').mockResolvedValue({
+      multi: jest.fn().mockReturnValue(transaction),
+      get: jest.fn().mockResolvedValue(null),
+    });
+    await expect(
+      guard.inspect(
+        'contact-1',
+        '¿Me puede contactar un asesor?',
+        undefined,
+        true,
+      ),
+    ).resolves.toEqual({ action: 'ALLOW' });
+  });
 });

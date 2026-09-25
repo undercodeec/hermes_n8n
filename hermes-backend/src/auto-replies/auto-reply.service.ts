@@ -327,19 +327,31 @@ export class AutoReplyService {
       : undefined;
 
     if (policy.requestsHuman) {
-      await this.handoffs.create({
-        conversationId: data.conversationId,
-        reason: HandoffReason.CUSTOM,
-        reasonDetail:
-          'El cliente solicitó expresamente hablar con una persona.',
-      });
+      this.logger.log(
+        JSON.stringify({
+          event: 'handoff_requested',
+          conversationId: data.conversationId,
+          sourceMessageId: inbound.id,
+        }),
+      );
+      await this.handoffs.create(
+        {
+          conversationId: data.conversationId,
+          reason: HandoffReason.CUSTOM,
+          reasonDetail:
+            'El cliente solicitó expresamente hablar con una persona.',
+        },
+        undefined,
+        { sourceMessageId: inbound.id, callRequested: policy.requestsCall },
+      );
       const delivery = await this.sendAndPersist({
         conversationId: data.conversationId,
         contactId: data.contactId,
         sourceMessageId: inbound.id,
         inboundWamid: inbound.wamid,
-        content:
-          'He registrado su solicitud para que continúe con una persona del equipo. La conversación queda pendiente de asignación.',
+        content: policy.requestsCall
+          ? 'He registrado su solicitud para que un asesor coordine una llamada usando este mismo número de WhatsApp. Está pendiente de asignación y confirmación del horario.'
+          : 'He registrado su solicitud para que continúe con una persona del equipo. La conversación queda pendiente de asignación.',
         metadata: { action: 'HUMAN_HANDOFF_CREATED' },
         allowHandedOff: true,
       });
@@ -536,6 +548,110 @@ export class AutoReplyService {
       commercialSnapshot,
       policy.guidance.currentTopic === 'price',
     );
+    if (
+      !policy.guidance.priceAnswerRequired &&
+      !commercialSnapshot.renewalRequested &&
+      /\b(?:USD|EUR)\s*\$?\s*\d|[$€]\s*\d/iu.test(response.response)
+    ) {
+      const recommended = commercialSnapshot.offers.find(
+        (offer) => offer.id === commercialSnapshot.recommendedOfferId,
+      );
+      response.response = recommended
+        ? `Por lo que me comenta, ${recommended.name} puede encajar para la parte incluida en el plan: ${recommended.scope} ${commercialSnapshot.additionalScope?.length ? `La parte de ${commercialSnapshot.additionalScope.join(' y ')} requiere valoración aparte.` : ''}`.trim()
+        : 'Puedo orientarle sobre la opción que mejor cubra su necesidad. ¿Qué función es la más importante para usted?';
+      reviewedProposal?.rejections.push('UNREQUESTED_PRICE');
+    }
+    const recommended = commercialSnapshot.offers.find(
+      (offer) => offer.id === commercialSnapshot.recommendedOfferId,
+    );
+    if (
+      policy.guidance.priceAnswerRequired &&
+      commercialSnapshot.additionalScope?.length &&
+      !/\b(?:valoraci[oó]n|cotizaci[oó]n|estimar)\b/iu.test(response.response)
+    ) {
+      response.response =
+        `${response.response} ${commercialSnapshot.additionalScope.join(' y ')} requiere valoración aparte; no hay precio confirmado para ese adicional.`.trim();
+    }
+    if (
+      !response.diagnostic &&
+      policy.guidance.allowPlanRecommendation &&
+      recommended &&
+      !response.response
+        .toLocaleLowerCase('es')
+        .includes(recommended.name.toLocaleLowerCase('es'))
+    ) {
+      const recommendation = `Por lo que me comenta, ${recommended.name} puede cubrir la parte de presencia web y captación: ${recommended.scope}`;
+      const additional = commercialSnapshot.additionalScope?.length
+        ? ` ${commercialSnapshot.additionalScope.join(' y ')} requiere valoración por separado.`
+        : '';
+      response.response =
+        /\b(?:todo|proyecto completo)\b.{0,80}\b(?:personalizado|a medida|valoraci[oó]n)\b|\b(?:valor|precio)\b.{0,80}\b(?:depende|confirmar|valoraci[oó]n)\b/iu.test(
+          response.response,
+        )
+          ? `${recommendation}${additional}`
+          : `${recommendation}${additional} ${response.response}`.trim();
+    }
+    if (
+      commercialSnapshot.renewalRequested &&
+      recommended?.renewalUsdPerYear &&
+      !new RegExp(`\\b${recommended.renewalUsdPerYear}\\b`).test(
+        response.response,
+      )
+    ) {
+      const terms = `El primer año de dominio y hosting está incluido según el alcance de ${recommended.name}. Desde el segundo año, la renovación conjunta cuesta USD ${recommended.renewalUsdPerYear} anuales.`;
+      response.response =
+        policy.guidance.currentTopic === 'renewal' ||
+        policy.guidance.currentTopic === 'infrastructure'
+          ? terms
+          : `${response.response} ${terms}`.trim();
+    }
+    if (
+      policy.pendingQuestions.includes('timeline') &&
+      commercialSnapshot.policies?.length
+    ) {
+      const customScope = [
+        customerMessage,
+        context.commercialProfile?.service,
+        context.commercialProfile?.need,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLocaleLowerCase('es')
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '');
+      const days =
+        recommended?.estimatedBusinessDays ??
+        (/\b(?:software a medida|aplicacion movil|app movil|aplicacion web|web app|moodle)\b/.test(
+          customScope,
+        )
+          ? 30
+          : undefined);
+      if (days)
+        response.response = response.response
+          .split(/(?<=[.!?])\s+/u)
+          .filter((sentence) => {
+            const quantities = [...sentence.matchAll(/\b(\d+)\s+d[ií]as\b/giu)];
+            return (
+              !quantities.length ||
+              (quantities.every((match) => Number(match[1]) === days) &&
+                /\b(?:estimad[oa]|aproximad[oa]|alrededor|sujeto|depende)\b/iu.test(
+                  sentence,
+                ))
+            );
+          })
+          .join(' ')
+          .trim();
+      if (
+        days &&
+        !new RegExp(`\\b${days}\\s+d[ií]as`).test(response.response)
+      ) {
+        const terms = `El plazo estimado es de aproximadamente ${days} días laborables, sujeto a que entregue a tiempo textos, imágenes, accesos y demás material necesario; si se retrasa la entrega, el plazo se desplaza.`;
+        response.response =
+          policy.guidance.currentTopic === 'timeline'
+            ? terms
+            : `${response.response} ${terms}`.trim();
+      }
+    }
     response.response = this.polishInitialGreeting({
       reply: response.response,
       customerMessage:
@@ -740,11 +856,24 @@ export class AutoReplyService {
       response.nextAction = 'solicitar_cotizacion_humana';
     }
     if (shouldHandoff) {
-      await this.handoffs.create({
-        conversationId: data.conversationId,
-        reason: this.handoffReason(response.detectedIntent),
-        reasonDetail: `Handoff automático. Mensaje trigger: ${customerMessage.substring(0, 200)}`,
-      });
+      this.logger.log(
+        JSON.stringify({
+          event: 'handoff_requested',
+          conversationId: data.conversationId,
+          sourceMessageId: inbound.id,
+        }),
+      );
+      await this.handoffs.create(
+        {
+          conversationId: data.conversationId,
+          reason: this.handoffReason(response.detectedIntent),
+          reasonDetail: 'Handoff automático solicitado en la conversación.',
+        },
+        undefined,
+        response.detectedIntent === 'solicitud_humano'
+          ? { sourceMessageId: inbound.id }
+          : undefined,
+      );
       actionResult = 'HUMAN_HANDOFF_CREATED';
       if (isNous) {
         response.detectedIntent = 'solicitud_humano';

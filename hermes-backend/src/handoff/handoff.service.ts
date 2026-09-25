@@ -6,7 +6,14 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
-import { ConversationStatus, HandoffStatus, Prisma } from '@prisma/client';
+import {
+  ConversationStatus,
+  HandoffStatus,
+  LeadStage,
+  Prisma,
+  TaskStatus,
+  TaskType,
+} from '@prisma/client';
 import { ClsService } from 'nestjs-cls';
 import { ConversationHandoffRequestedEvent } from '../common/events/conversation.events';
 import { PrismaService } from '../prisma/prisma.service';
@@ -46,75 +53,191 @@ export class HandoffService {
       : undefined;
   }
 
-  async create(dto: CreateHandoffDto, actorUserId?: string) {
-    const result = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${dto.conversationId}))`;
-
-      const conversation = await tx.conversation.findUnique({
-        where: { id: dto.conversationId },
-        include: { contact: true },
-      });
-      if (!conversation) {
-        throw new NotFoundException('Conversación no encontrada');
-      }
-      if (conversation.status === ConversationStatus.CLOSED) {
-        throw new ConflictException(
-          'No se puede abrir un handoff sobre una conversación cerrada',
-        );
-      }
-
-      const existing = await tx.humanHandoff.findFirst({
-        where: {
-          conversationId: dto.conversationId,
-          status: { in: OPEN_HANDOFF_STATUSES },
-        },
-        orderBy: { createdAt: 'desc' },
+  async create(
+    dto: CreateHandoffDto,
+    actorUserId?: string,
+    commercial?: { sourceMessageId: string; callRequested?: boolean },
+  ) {
+    let result: {
+      handoff: Prisma.HumanHandoffGetPayload<{
         include: {
-          conversation: { include: { contact: true } },
-          assignedAgent: true,
-        },
-      });
+          conversation: { include: { contact: true } };
+          assignedAgent: true;
+        };
+      }>;
+      created: boolean;
+      stageChanged: boolean;
+    };
+    try {
+      result = await this.prisma.$transaction(async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${dto.conversationId}))`;
 
-      await tx.conversation.update({
-        where: { id: dto.conversationId },
-        data: { status: ConversationStatus.HANDED_OFF, closedAt: null },
-      });
+        const conversation = await tx.conversation.findUnique({
+          where: { id: dto.conversationId },
+          include: { contact: true },
+        });
+        if (!conversation) {
+          throw new NotFoundException('Conversación no encontrada');
+        }
+        if (conversation.status === ConversationStatus.CLOSED) {
+          throw new ConflictException(
+            'No se puede abrir un handoff sobre una conversación cerrada',
+          );
+        }
 
-      if (existing) {
-        return { handoff: existing, created: false };
-      }
-
-      const handoff = await tx.humanHandoff.create({
-        data: {
-          ...dto,
-          status: dto.assignedAgentId
-            ? HandoffStatus.ASSIGNED
-            : HandoffStatus.PENDING,
-        },
-        include: {
-          conversation: { include: { contact: true } },
-          assignedAgent: true,
-        },
-      });
-
-      if (actorUserId) {
-        await tx.auditLog.create({
-          data: {
-            userId: actorUserId,
-            action: 'HANDOFF_CREATED',
-            entity: 'human_handoffs',
-            entityId: handoff.id,
-            changes: {
+        let stageChanged = false;
+        if (commercial) {
+          const lead = await tx.lead.findFirst({
+            where: {
+              contactId: conversation.contactId,
               conversationId: dto.conversationId,
-              reason: dto.reason,
-              reasonDetail: dto.reasonDetail,
             },
+            orderBy: { createdAt: 'desc' },
+          });
+          if (!lead) {
+            throw new NotFoundException(
+              'Lead comercial no encontrado para el handoff',
+            );
+          }
+          if (lead.stage === LeadStage.NEW) {
+            await tx.lead.update({
+              where: { id: lead.id },
+              data: {
+                stage: LeadStage.CONTACTED,
+                nextAction: 'Atender solicitud de asesor',
+                metadata: {
+                  ...(lead.metadata &&
+                  typeof lead.metadata === 'object' &&
+                  !Array.isArray(lead.metadata)
+                    ? lead.metadata
+                    : {}),
+                  lastCommercialHandoff: {
+                    source: 'AUTO_REPLY',
+                    sourceMessageId: commercial.sourceMessageId,
+                    intent: 'solicitud_humano',
+                  },
+                },
+              },
+            });
+            stageChanged = true;
+          }
+          if (commercial.callRequested) {
+            const callback = await tx.task.findFirst({
+              where: {
+                conversationId: dto.conversationId,
+                type: TaskType.CALLBACK,
+                status: { in: [TaskStatus.PENDING, TaskStatus.IN_PROGRESS] },
+              },
+            });
+            if (!callback)
+              await tx.task.create({
+                data: {
+                  conversationId: dto.conversationId,
+                  leadId: lead.id,
+                  type: TaskType.CALLBACK,
+                  status: TaskStatus.PENDING,
+                  title: 'Contactar al cliente por teléfono',
+                  description:
+                    'El cliente solicitó que un asesor lo llame. Confirmar el horario por WhatsApp.',
+                  metadata: {
+                    source: 'AUTO_REPLY',
+                    sourceMessageId: commercial.sourceMessageId,
+                  },
+                },
+              });
+          }
+        }
+
+        const existing = await tx.humanHandoff.findFirst({
+          where: {
+            conversationId: dto.conversationId,
+            status: { in: OPEN_HANDOFF_STATUSES },
+          },
+          orderBy: { createdAt: 'desc' },
+          include: {
+            conversation: { include: { contact: true } },
+            assignedAgent: true,
           },
         });
-      }
 
-      return { handoff, created: true };
-    });
+        await tx.conversation.update({
+          where: { id: dto.conversationId },
+          data: { status: ConversationStatus.HANDED_OFF, closedAt: null },
+        });
+
+        if (existing) {
+          return { handoff: existing, created: false, stageChanged };
+        }
+
+        const handoff = await tx.humanHandoff.create({
+          data: {
+            ...dto,
+            status: dto.assignedAgentId
+              ? HandoffStatus.ASSIGNED
+              : HandoffStatus.PENDING,
+            ...(commercial
+              ? {
+                  metadata: {
+                    source: 'AUTO_REPLY',
+                    sourceMessageId: commercial.sourceMessageId,
+                    intent: 'solicitud_humano',
+                  },
+                }
+              : {}),
+          },
+          include: {
+            conversation: { include: { contact: true } },
+            assignedAgent: true,
+          },
+        });
+
+        if (actorUserId) {
+          await tx.auditLog.create({
+            data: {
+              userId: actorUserId,
+              action: 'HANDOFF_CREATED',
+              entity: 'human_handoffs',
+              entityId: handoff.id,
+              changes: {
+                conversationId: dto.conversationId,
+                reason: dto.reason,
+                reasonDetail: dto.reasonDetail,
+              },
+            },
+          });
+        }
+
+        return { handoff, created: true, stageChanged };
+      });
+    } catch (error) {
+      if (commercial)
+        this.logger.error(
+          JSON.stringify({
+            event: 'pipeline_stage_change_failed',
+            conversationId: dto.conversationId,
+            sourceMessageId: commercial.sourceMessageId,
+            error: error instanceof Error ? error.name : 'UNKNOWN',
+          }),
+        );
+      throw error;
+    }
+
+    this.logger.log(
+      JSON.stringify({
+        event: result.created ? 'handoff_created' : 'handoff_reused',
+        conversationId: dto.conversationId,
+        handoffId: result.handoff.id,
+        source: commercial ? 'AUTO_REPLY' : 'CRM',
+      }),
+    );
+    if (result.stageChanged)
+      this.logger.log(
+        JSON.stringify({
+          event: 'pipeline_stage_changed',
+          conversationId: dto.conversationId,
+          stage: LeadStage.CONTACTED,
+        }),
+      );
 
     if (result.created) {
       const contact = result.handoff.conversation.contact;

@@ -5,6 +5,36 @@ import {
 import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 
 describe('CommercialPolicyService', () => {
+  it.each([
+    '¿Me puede hacer contactar con algún asesor?',
+    'Quiero hablar con ventas',
+    'Pásame con un asesor',
+    'Necesito que me llamen',
+    'Quiero contratar',
+  ])('detects explicit commercial handoff: %s', (message) => {
+    const decision = new CommercialPolicyService().analyze(message, new Date());
+    expect(decision.requestsHuman).toBe(true);
+    expect(decision.intent).toBe('solicitud_humano');
+  });
+
+  it('retains an authorized estimated timeline and rejects a fixed promise', () => {
+    const policy = new CommercialPolicyService();
+    const knowledge = [
+      'Para Plan de Lanzamiento, plazo estimado de aproximadamente 10 días laborables, sujeto a material entregado a tiempo.',
+    ];
+    expect(
+      policy.repairNousCommercialClaims(
+        'El plazo estimado es de 10 días laborables, sujeto a recibir su contenido a tiempo.',
+        knowledge,
+      ).reasons,
+    ).not.toContain('UNAUTHORIZED_TIMELINE');
+    expect(
+      policy.repairNousCommercialClaims(
+        'Se entrega en 10 días garantizados.',
+        knowledge,
+      ).reasons,
+    ).toContain('UNAUTHORIZED_TIMELINE');
+  });
   const service = new CommercialPolicyService();
   const receivedAt = new Date('2026-09-18T20:00:00.000Z');
   const sectorCases = [

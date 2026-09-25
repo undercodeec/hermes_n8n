@@ -27,6 +27,8 @@ export type AuthorizedOffer = {
   policyVersion: string;
   promotion: boolean;
   validUntil?: string;
+  renewalUsdPerYear?: number;
+  estimatedBusinessDays?: number;
 };
 
 export type CommercialSnapshot = {
@@ -35,6 +37,10 @@ export type CommercialSnapshot = {
   relevantServiceCodes: string[];
   offers: AuthorizedOffer[];
   needsMarketClarification: boolean;
+  recommendedOfferId?: string;
+  additionalScope?: string[];
+  policies?: string[];
+  renewalRequested?: boolean;
 };
 
 function normalize(value: string): string {
@@ -95,6 +101,7 @@ type ProductWithPrices = Prisma.ProductGetPayload<{
     id: true;
     name: true;
     serviceCode: true;
+    metadata: true;
     priceLists: {
       select: {
         id: true;
@@ -144,23 +151,68 @@ export class CommercialAuthorityService {
       input.customerMessage,
       false,
     );
+    const explicitCurrentService =
+      /\b(?:landing|p[aá]gina de aterrizaje|sitio web|p[aá]gina web|tienda online|ecommerce|comercio electr[oó]nico|app m[oó]vil|software a medida)\b/i.test(
+        input.customerMessage,
+      );
     const recentServiceCodes =
       [...(input.recentCustomerMessages ?? [])]
         .reverse()
         .map((message) => requestedSolutionKinds(message, false))
         .find((codes) => codes.length > 0) ?? [];
-    const relevantServiceCodes = currentServiceCodes.length
-      ? currentServiceCodes
-      : requestedSolutionKinds(priorContext, false).length
-        ? requestedSolutionKinds(priorContext, false)
-        : recentServiceCodes;
+    const relevantServiceCodes =
+      currentServiceCodes.length && explicitCurrentService
+        ? currentServiceCodes
+        : requestedSolutionKinds(priorContext, false).length
+          ? requestedSolutionKinds(priorContext, false)
+          : currentServiceCodes.length
+            ? currentServiceCodes
+            : recentServiceCodes;
+    const currentText = normalize(input.customerMessage);
+    const preferredCode = /\b(?:sitio web|pagina web|web corporativa)\b/.test(
+      currentText,
+    )
+      ? 'WEBSITE'
+      : /\b(?:tienda online|ecommerce)\b/.test(currentText)
+        ? 'ONLINE_STORE'
+        : /\b(?:landing|pagina de aterrizaje)\b/.test(currentText)
+          ? 'LANDING_PAGE'
+          : undefined;
+    if (preferredCode && relevantServiceCodes.includes(preferredCode)) {
+      relevantServiceCodes.sort(
+        (left, right) =>
+          Number(right === preferredCode) - Number(left === preferredCode),
+      );
+    }
     const result: CommercialSnapshot = {
       market: resolution.market,
       marketSource: resolution.source,
       relevantServiceCodes,
       offers: [],
       needsMarketClarification: false,
+      renewalRequested:
+        /\b(?:renovacion|renovar|hosting|dominio|gastos|costos? anuales?|segundo ano|despues del primer ano|que valores tendria que asumir|cuanto tendria que pagar)\b/.test(
+          normalize(input.customerMessage),
+        ),
     };
+    if (
+      /\b(?:plazo|tiempo de entrega|cuanto tarda|cuanto demora|dias laborables|para cuando|fecha de entrega)\b/.test(
+        normalize(input.customerMessage),
+      )
+    ) {
+      try {
+        const deliveryPolicy = await this.prisma.knowledgeDocument.findUnique({
+          where: { id: 'commercial-delivery-policy-v1' },
+          select: { content: true, isActive: true },
+        });
+        if (deliveryPolicy?.isActive)
+          result.policies = [deliveryPolicy.content];
+      } catch (error) {
+        this.logger.warn(
+          `Commercial delivery policy unavailable: ${error instanceof Error ? error.name : 'UNKNOWN'}`,
+        );
+      }
+    }
     if (!relevantServiceCodes.length) return result;
     const now = input.now ?? new Date();
     try {
@@ -173,6 +225,7 @@ export class CommercialAuthorityService {
           id: true,
           name: true,
           serviceCode: true,
+          metadata: true,
           priceLists: {
             where: {
               isActive: true,
@@ -203,6 +256,53 @@ export class CommercialAuthorityService {
       result.offers = products.flatMap((product) =>
         this.currentOffer(product, resolution.market),
       );
+      const scopeText = normalize(
+        [
+          ...(input.recentCustomerMessages ?? []),
+          input.profile?.need,
+          input.customerMessage,
+        ]
+          .filter(Boolean)
+          .join(' '),
+      );
+      const advanced =
+        /\b(?:automatizacion|ia|facturacion electronica|internacional|sistemas empresariales|animaciones inmersivas)\b/.test(
+          scopeText,
+        );
+      const growth =
+        /\b(?:inventario en tiempo real|carritos abandonados|filtros avanzados|posicionamiento local|analytics|search console|ocho paginas)\b/.test(
+          scopeText,
+        );
+      const offers = result.offers.filter(
+        (offer) => offer.serviceCode === relevantServiceCodes[0],
+      );
+      const ordered = [...offers].sort(
+        (left, right) =>
+          Number(left.amount ?? Infinity) - Number(right.amount ?? Infinity),
+      );
+      const named = ordered.find((offer) =>
+        normalize(scopeText).includes(normalize(offer.name)),
+      );
+      result.recommendedOfferId = (
+        named ?? ordered[advanced ? 2 : growth ? 1 : 0]
+      )?.id;
+      result.additionalScope = [
+        /\b(?:reservas? (?:con|en) calendario|disponibilidad automatica|calendario (?:de )?reservas?)\b/.test(
+          scopeText,
+        )
+          ? 'Reservas con calendario o disponibilidad automática'
+          : /\breserv(?:a|ar|as)\b/.test(scopeText)
+            ? 'Reservas automatizadas si necesita calendario y disponibilidad'
+            : '',
+        /\b(?:sistema de pedidos|pedidos automatizados|gestion de pedidos)\b/.test(
+          scopeText,
+        )
+          ? 'Sistema de gestión de pedidos'
+          : relevantServiceCodes[0] !== 'ONLINE_STORE' &&
+              /\bpedidos?\b/.test(scopeText)
+            ? 'Pedidos automatizados si necesita gestión interna o pagos en línea'
+            : '',
+      ].filter(Boolean);
       result.needsMarketClarification =
         input.priceRequested &&
         !resolution.market &&
@@ -248,6 +348,18 @@ export class CommercialAuthorityService {
       selected = base[0];
     }
     if (!selected) return [];
+    const metadata =
+      product.metadata &&
+      typeof product.metadata === 'object' &&
+      !Array.isArray(product.metadata)
+        ? (product.metadata as Record<string, unknown>)
+        : {};
+    const terms =
+      metadata.commercialTerms &&
+      typeof metadata.commercialTerms === 'object' &&
+      !Array.isArray(metadata.commercialTerms)
+        ? (metadata.commercialTerms as Record<string, unknown>)
+        : {};
     return [
       {
         id: selected.id,
@@ -269,6 +381,13 @@ export class CommercialAuthorityService {
           : {}),
         policyVersion: selected.policyVersion!.trim(),
         promotion: selected.isPromotion,
+        ...(terms.renewalUsdPerYear === 40 || terms.renewalUsdPerYear === 80
+          ? { renewalUsdPerYear: terms.renewalUsdPerYear }
+          : {}),
+        ...(terms.estimatedBusinessDays === 10 ||
+        terms.estimatedBusinessDays === 20
+          ? { estimatedBusinessDays: terms.estimatedBusinessDays }
+          : {}),
         ...(selected.validUntil
           ? { validUntil: selected.validUntil.toISOString() }
           : {}),
@@ -302,15 +421,32 @@ export function commercialSnapshotKnowledge(
   }
   if (!snapshot.offers.length) {
     return [
+      ...(snapshot.policies ?? []),
       snapshot.market
         ? `No hay tarifas comerciales aprobadas y vigentes para los servicios consultados en ${snapshot.market}. No comunique importes.`
         : 'No hay tarifas comerciales globales aprobadas y vigentes para los servicios consultados. No comunique importes.',
     ];
   }
-  return snapshot.offers.map((offer) =>
+  const offerKnowledge = snapshot.offers.map((offer) =>
     JSON.stringify({
       source: 'CRM_APPROVED_PRICE_LIST',
       ...offer,
     }),
   );
+  const recommended = snapshot.offers.find(
+    (offer) => offer.id === snapshot.recommendedOfferId,
+  );
+  if (recommended)
+    offerKnowledge.push(
+      `Plan principal sugerido: ${recommended.name}. Explica las prestaciones relevantes de su scope. No menciones el precio salvo que el cliente lo solicite. ${snapshot.additionalScope?.length ? `Necesidades adicionales por valorar separadamente: ${snapshot.additionalScope.join('; ')}. No presentes todo el proyecto como personalizado.` : ''}`,
+    );
+  if (recommended?.renewalUsdPerYear && snapshot.renewalRequested)
+    offerKnowledge.push(
+      `Para ${recommended.name}, el primer año de dominio y hosting está incluido si el alcance del plan lo indica. La renovación conjunta de hosting y dominio desde el segundo año es USD ${recommended.renewalUsdPerYear} anuales. Esta cifra no es mantenimiento de desarrollo ni soporte adicional.`,
+    );
+  if (recommended?.estimatedBusinessDays && snapshot.policies?.length)
+    offerKnowledge.push(
+      `Para ${recommended.name}, el plazo estimado es de aproximadamente ${recommended.estimatedBusinessDays} días laborables, sujeto a la entrega oportuna del material del cliente.`,
+    );
+  return [...offerKnowledge, ...(snapshot.policies ?? [])];
 }

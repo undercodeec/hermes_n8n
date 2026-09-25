@@ -5,6 +5,8 @@ import {
   ConversationStatus,
   HandoffReason,
   HandoffStatus,
+  LeadStage,
+  TaskType,
 } from '@prisma/client';
 import { ClsService } from 'nestjs-cls';
 import { PrismaService } from '../prisma/prisma.service';
@@ -97,6 +99,83 @@ describe('HandoffService', () => {
         reasonDetail: 'Soporte solicitado',
       }),
     ).resolves.toEqual(expect.objectContaining({ id: 'handoff-1' }));
+    expect(createTx.humanHandoff.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('moves a new lead to CONTACTED and creates one callback task with the handoff', async () => {
+    const contact = { id: 'contact-1', name: 'Ana', waId: '593991234567' };
+    const lead = { id: 'lead-1', stage: LeadStage.NEW, metadata: null };
+    const handoff = {
+      id: 'handoff-1',
+      conversationId: 'conversation-1',
+      reason: HandoffReason.CUSTOM,
+      assignedAgentId: null,
+      conversation: { contact },
+    };
+    const createTx = {
+      $executeRaw: jest.fn(),
+      conversation: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'conversation-1',
+          contactId: contact.id,
+          contact,
+          status: ConversationStatus.ACTIVE,
+        }),
+        update: jest.fn(),
+      },
+      lead: { findFirst: jest.fn().mockResolvedValue(lead), update: jest.fn() },
+      task: { findFirst: jest.fn().mockResolvedValue(null), create: jest.fn() },
+      humanHandoff: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue(handoff),
+      },
+      auditLog: { create: jest.fn() },
+    };
+    const events = { emit: jest.fn() };
+    const createService = new HandoffService(
+      {
+        $transaction: jest.fn((run: (tx: typeof createTx) => unknown) =>
+          run(createTx),
+        ),
+      } as unknown as PrismaService,
+      events as unknown as EventEmitter2,
+      { isActive: jest.fn().mockReturnValue(false) } as unknown as ClsService,
+      { get: jest.fn() } as unknown as ConfigService,
+    );
+    const dto = {
+      conversationId: 'conversation-1',
+      reason: HandoffReason.CUSTOM,
+    };
+    await createService.create(dto, undefined, {
+      sourceMessageId: 'message-1',
+      callRequested: true,
+    });
+    expect(createTx.lead.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'lead-1' },
+        data: expect.objectContaining({ stage: LeadStage.CONTACTED }),
+      }),
+    );
+    expect(createTx.task.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          type: TaskType.CALLBACK,
+          leadId: 'lead-1',
+        }),
+      }),
+    );
+    expect(createTx.humanHandoff.create).toHaveBeenCalledTimes(1);
+    expect(events.emit).toHaveBeenCalledTimes(1);
+
+    lead.stage = LeadStage.CONTACTED;
+    createTx.humanHandoff.findFirst.mockResolvedValue(handoff);
+    createTx.task.findFirst.mockResolvedValue({ id: 'task-1' });
+    await createService.create(dto, undefined, {
+      sourceMessageId: 'message-2',
+      callRequested: true,
+    });
+    expect(createTx.lead.update).toHaveBeenCalledTimes(1);
+    expect(createTx.task.create).toHaveBeenCalledTimes(1);
     expect(createTx.humanHandoff.create).toHaveBeenCalledTimes(1);
   });
 

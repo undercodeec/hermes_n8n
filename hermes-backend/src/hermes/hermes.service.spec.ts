@@ -1129,7 +1129,7 @@ describe('HermesService commercial contract', () => {
     );
   });
 
-  it('retries a full plan dump and presents two brief promotional-web options', async () => {
+  it('retries unsolicited prices and falls back to one plan without a price', async () => {
     const fullPlan = JSON.stringify({
       response:
         'El Plan de Lanzamiento cuesta USD $360 e incluye hasta 5 páginas, dominio, hosting, SSL, correos corporativos, formulario, WhatsApp, Google y soporte.',
@@ -1172,12 +1172,13 @@ describe('HermesService commercial contract', () => {
     });
 
     expect(post).toHaveBeenCalledTimes(2);
-    expect(result.response).toContain('Landing Básica de USD $275');
-    expect(result.response).toContain('Plan de Lanzamiento de USD $425');
+    expect(result.response).toContain('Landing Básica');
+    expect(result.response).not.toContain('Plan de Lanzamiento');
+    expect(result.response).not.toMatch(/USD|\$/);
     expect(result.response).not.toContain('dominio');
   });
 
-  it('recovers locally with CRM offer names when both attempts omit web alternatives', async () => {
+  it('accepts one relevant website recommendation without listing alternatives', async () => {
     const incomplete = JSON.stringify({
       response:
         'El Plan de Lanzamiento le permite mostrar sus servicios en un sitio web.',
@@ -1211,13 +1212,13 @@ describe('HermesService commercial contract', () => {
       },
     });
 
-    expect(post).toHaveBeenCalledTimes(2);
+    expect(post).toHaveBeenCalledTimes(1);
     expect(result.detectedIntent).toBe('consulta_servicio');
-    expect(result.nextAction).toBe('continuar_descubrimiento');
-    expect(result.response).toContain('Landing Básica');
     expect(result.response).toContain('Plan de Lanzamiento');
     expect(result.response).not.toMatch(/USD|\$/);
-    expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
+    expect(result.commercialProfile?.recommendedPlan).toBe(
+      'Plan de Lanzamiento',
+    );
   });
 
   it('uses a contextual commercial fallback when both model attempts violate policy', async () => {
