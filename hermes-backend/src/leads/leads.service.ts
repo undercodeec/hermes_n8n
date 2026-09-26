@@ -9,6 +9,7 @@ import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
   HandoffStatus,
   Lead,
+  Meeting,
   LeadStage,
   MessageSender,
   Prisma,
@@ -59,6 +60,51 @@ export class LeadsService {
 
   private traceId(): string | undefined {
     return this.cls.isActive() ? this.cls.get<string>('traceId') : undefined;
+  }
+
+  async recordConfirmedMeeting(tx: Prisma.TransactionClient, meeting: Meeting) {
+    if (meeting.status !== 'CONFIRMED' || !meeting.leadId) return null;
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${meeting.contactId}))`;
+    const lead = await tx.lead.findUnique({ where: { id: meeting.leadId } });
+    if (
+      !lead ||
+      lead.contactId !== meeting.contactId ||
+      !AUTOMATICALLY_PROMOTABLE_STAGES.includes(lead.stage)
+    )
+      return null;
+    const updated = await tx.lead.update({
+      where: { id: lead.id },
+      data: { stage: LeadStage.QUALIFIED },
+    });
+    await tx.auditLog.create({
+      data: {
+        action: 'MEETING_LEAD_QUALIFIED',
+        entity: 'leads',
+        entityId: lead.id,
+        changes: {
+          before: { stage: lead.stage },
+          after: { stage: LeadStage.QUALIFIED },
+          meetingId: meeting.id,
+        },
+      },
+    });
+    const contact = await tx.contact.findUniqueOrThrow({
+      where: { id: meeting.contactId },
+      select: { name: true, waId: true },
+    });
+    return { lead: updated, contact, conversationId: meeting.conversationId };
+  }
+
+  publishMeetingQualification(
+    result: Awaited<ReturnType<LeadsService['recordConfirmedMeeting']>>,
+  ): void {
+    if (result)
+      this.emitQualified(
+        result.lead,
+        result.conversationId,
+        result.contact,
+        'reunion_confirmada',
+      );
   }
 
   private crmUrl(leadId: string): string | undefined {

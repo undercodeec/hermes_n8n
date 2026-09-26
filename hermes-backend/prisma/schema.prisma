@@ -136,6 +136,7 @@ model Contact {
   advertisingAttributions AdvertisingAttribution[]
   advertisingConversions  AdvertisingConversion[]
   automatedDeliveries     AutomatedDelivery[]
+  meetings                Meeting[]
 
   @@map("contacts")
 }
@@ -274,6 +275,7 @@ model Lead {
   contact                 Contact                  @relation(fields: [contactId], references: [id], onDelete: Cascade)
   conversation            Conversation?            @relation(fields: [conversationId], references: [id], onDelete: SetNull)
   tasks                   Task[]
+  meetings                Meeting[]
   campaignSource          CampaignSource?          @relation(fields: [campaignSourceId], references: [id])
   campaignSourceId        String?
   advertisingAttributions AdvertisingAttribution[]
@@ -315,6 +317,7 @@ model Conversation {
   advertisingAttributions AdvertisingAttribution[]
   automatedDeliveries     AutomatedDelivery[]
   inboundTurns            InboundTurn[]
+  meetings                Meeting[]
 
   @@index([contactId, updatedAt])
   @@index([status, updatedAt])
@@ -332,6 +335,7 @@ model ConversationState {
   closeScore          Float? // Puntaje de probabilidad de cierre
   leadStage           String? // Etapa del lead según la conversación
   lastObjection       String? // Última objeción detectada
+  meetingState        Json?
   updatedAt           DateTime @updatedAt
 
   // Relaciones
@@ -645,8 +649,83 @@ model Task {
   lead         Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
   conversation Conversation? @relation(fields: [conversationId], references: [id], onDelete: SetNull)
   assignedUser User?         @relation("AssignedUser", fields: [assignedUserId], references: [id], onDelete: SetNull)
+  meeting      Meeting?
 
   @@map("tasks")
+}
+
+enum MeetingStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+  FAILED
+}
+
+enum MeetingOperationKind {
+  CREATE
+  RESCHEDULE
+  CANCEL
+}
+
+enum MeetingOperationStatus {
+  PREPARED
+  APPLYING
+  RETRY
+  COMPLETED
+  FAILED
+}
+
+model Meeting {
+  id                String        @id @default(uuid())
+  conversationId    String
+  contactId         String
+  leadId            String?
+  taskId            String?       @unique
+  provider          String        @default("GOOGLE")
+  googleEventId     String
+  calendarId        String
+  meetUrl           String?
+  attendeeEmail     String
+  startAt           DateTime
+  endAt             DateTime
+  timezone          String
+  status            MeetingStatus @default(PENDING)
+  idempotencyKey    String        @unique
+  serviceContext    String?
+  cancelledAt       DateTime?
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  conversation      Conversation  @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  contact           Contact       @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  lead              Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  task              Task?         @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  operations        MeetingOperation[]
+
+  @@unique([calendarId, googleEventId])
+  @@index([conversationId, status, startAt])
+  @@index([calendarId, status, startAt, endAt])
+  @@map("meetings")
+}
+
+model MeetingOperation {
+  id              String                 @id @default(uuid())
+  meetingId       String
+  operationKey    String                 @unique
+  sourceMessageId String
+  kind            MeetingOperationKind
+  status          MeetingOperationStatus @default(PREPARED)
+  targetStartAt   DateTime
+  targetEndAt     DateTime
+  claimToken      String?
+  claimExpiresAt  DateTime?
+  attempts        Int                    @default(0)
+  errorCode       String?
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  meeting         Meeting                @relation(fields: [meetingId], references: [id], onDelete: Restrict)
+
+  @@index([status, claimExpiresAt])
+  @@map("meeting_operations")
 }
 
 enum HandoffReason {

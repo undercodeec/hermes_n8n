@@ -321,6 +321,54 @@ describe('AutoReplyService', () => {
     };
   }
 
+  it.each(['gemini_direct', 'nous_hermes'])(
+    'routes meeting requests through durable calendar flow for %s',
+    async (engine) => {
+      const harness = setupProcessHarness({
+        inboundContent: 'Quiero agendar una reunión por Meet',
+        hermesResponse: { response: 'No debe redactar' },
+      });
+      const meetings = {
+        handleTurn: jest.fn().mockResolvedValue({
+          handled: true,
+          content: 'Tengo disponibilidad el lunes a las 09:00. ¿Le queda bien?',
+        }),
+      };
+      Object.assign(harness.service, { meetings });
+      harness.engine.selectedEngine.mockReturnValue(engine);
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      expect(harness.engine.respond).not.toHaveBeenCalled();
+      expect(harness.tasks.requestCallback).not.toHaveBeenCalled();
+      expect(harness.messageCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            content: expect.stringContaining('disponibilidad'),
+          }),
+        }),
+      );
+    },
+  );
+
+  it('keeps an explicit human request ahead of calendar scheduling', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Quiero hablar con un asesor ahora y agendar una reunión',
+      hermesResponse: { response: 'No debe redactar' },
+    });
+    const meetings = { handleTurn: jest.fn(), interrupt: jest.fn() };
+    Object.assign(harness.service, { meetings });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.handoffs.create).toHaveBeenCalledTimes(1);
+    expect(meetings.handleTurn).not.toHaveBeenCalled();
+  });
+
   it('recommends the restaurant base plan while separating reservations from the plan', async () => {
     const launch = {
       ...testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),

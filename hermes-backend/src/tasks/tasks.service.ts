@@ -2,7 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskDto } from './dto/update-task.dto';
-import { Prisma, TaskStatus, TaskType } from '@prisma/client';
+import { Meeting, Prisma, TaskStatus, TaskType } from '@prisma/client';
 import {
   HermesDiagnosticCategory,
   sanitizeDiagnosticSummary,
@@ -11,6 +11,25 @@ import {
 @Injectable()
 export class TasksService {
   constructor(private readonly prisma: PrismaService) {}
+
+  async syncMeeting(tx: Prisma.TransactionClient, meeting: Meeting) {
+    const data = {
+      conversationId: meeting.conversationId,
+      leadId: meeting.leadId,
+      type: TaskType.APPOINTMENT,
+      status:
+        meeting.status === 'CANCELLED'
+          ? TaskStatus.CANCELLED
+          : TaskStatus.PENDING,
+      title: 'Reunión comercial por Google Meet',
+      description: meeting.meetUrl,
+      dueAt: meeting.startAt,
+      metadata: { meetingId: meeting.id, googleEventId: meeting.googleEventId },
+    };
+    return meeting.taskId
+      ? tx.task.update({ where: { id: meeting.taskId }, data })
+      : tx.task.create({ data });
+  }
 
   async create(dto: CreateTaskDto) {
     return this.prisma.task.create({

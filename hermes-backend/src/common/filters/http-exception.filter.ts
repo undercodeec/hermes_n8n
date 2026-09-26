@@ -16,6 +16,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const ctx = host.switchToHttp();
     const response = ctx.getResponse<Response>();
     const request = ctx.getRequest<Request>();
+    const path = request.url.split('?')[0];
 
     const status =
       exception instanceof HttpException
@@ -35,7 +36,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       ...responseDetails,
       statusCode: status,
       timestamp: new Date().toISOString(),
-      path: request.url,
+      path,
       method: request.method,
       message:
         typeof message === 'string'
@@ -45,11 +46,15 @@ export class HttpExceptionFilter implements ExceptionFilter {
 
     if (status >= 500) {
       this.logger.error(
-        `${request.method} ${request.url} - ${status}`,
-        exception instanceof Error ? exception.stack : undefined,
+        `${request.method} ${path} - ${status}`,
+        path.startsWith('/api/integrations/google')
+          ? undefined
+          : exception instanceof Error
+            ? exception.stack
+            : undefined,
       );
     } else {
-      this.logger.warn(`${request.method} ${request.url} - ${status}`);
+      this.logger.warn(`${request.method} ${path} - ${status}`);
     }
 
     response.status(status).json(errorResponse);

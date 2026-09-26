@@ -43,6 +43,7 @@ import { AutomatedDeliveryService } from '../automated-deliveries/automated-deli
 import { reviewAgentProposal } from '../conversation-engine/agent-proposal-policy';
 import { AGENT_DEFAULT_INTENTS } from '../conversation-engine/agent-output.contract';
 import { InboundTurnService } from './inbound-turn.service';
+import { MeetingsService } from '../integrations/google-calendar/meetings.service';
 import {
   VoiceProcessingError,
   VoiceService,
@@ -69,6 +70,7 @@ export class AutoReplyService {
     private readonly deliveries: AutomatedDeliveryService,
     @Optional() private readonly inboundTurns?: InboundTurnService,
     @Optional() private readonly voice?: VoiceService,
+    @Optional() private readonly meetings?: MeetingsService,
   ) {}
 
   async enqueue(data: AutoReplyJobData, messageLength: number): Promise<void> {
@@ -327,6 +329,7 @@ export class AutoReplyService {
       : undefined;
 
     if (policy.requestsHuman) {
+      await this.meetings?.interrupt(data.conversationId);
       this.logger.log(
         JSON.stringify({
           event: 'handoff_requested',
@@ -362,6 +365,36 @@ export class AutoReplyService {
         });
       }
       return;
+    }
+
+    if (this.meetings) {
+      const meetingReply = await this.meetings.handleTurn({
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        sourceMessageId: inbound.id,
+        text:
+          turnMessages?.map((message) => message.content ?? '').join('\n') ??
+          customerMessage,
+        now: new Date(),
+        serviceContext:
+          context.productOfInterest ?? context.commercialProfile?.service,
+      });
+      if (meetingReply.handled && meetingReply.content) {
+        await this.sendAndPersist({
+          conversationId: data.conversationId,
+          contactId: data.contactId,
+          sourceMessageId: inbound.id,
+          inboundWamid: inbound.wamid,
+          content: meetingReply.content,
+          metadata: {
+            action: 'GOOGLE_CALENDAR_MEETING',
+            meetingId: meetingReply.meetingId,
+            errorCode: meetingReply.errorCode,
+          },
+          allowHandedOff: false,
+        });
+        return;
+      }
     }
 
     if (policy.requestsCall && selectedEngine !== 'nous_hermes') {

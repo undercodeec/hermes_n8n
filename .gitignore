@@ -11,6 +11,7 @@
 secrets/
 **/secrets/
 *.secret
+client_secret_*.apps.googleusercontent.com.json
 *.pem
 *.key
 *.p12
@@ -62,3 +63,4 @@ coverage/
 !hermes-backend/docs/nous-hermes-runbook.md
 !hermes-backend/docs/security-preflight-2026-09-21.md
 !hermes-backend/docs/deployment-vps-runbook-2026-09-22.md
+!hermes-backend/docs/google-calendar-runbook.md

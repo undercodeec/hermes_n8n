@@ -22,6 +22,7 @@ import { TasksModule } from './tasks/tasks.module';
 import { CampaignsModule } from './campaigns/campaigns.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AdvertisingModule } from './advertising/advertising.module';
+import { GoogleCalendarModule } from './integrations/google-calendar/google-calendar.module';
 
 @Module({
   imports: [
@@ -58,6 +59,7 @@ import { AdvertisingModule } from './advertising/advertising.module';
 
     // Base de datos
     PrismaModule,
+    GoogleCalendarModule,
 
     // Autenticación
     AuthModule,

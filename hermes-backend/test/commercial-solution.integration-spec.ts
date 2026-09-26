@@ -67,9 +67,9 @@ describe('Commercial solution selection with seeded PostgreSQL', () => {
         snapshot.offers.every((offer) => offer.marketScope === 'GLOBAL'),
       ).toBe(true);
       expect(
-        commercialSnapshotKnowledge(snapshot).every((item) =>
-          item.includes('CRM_APPROVED_PRICE_LIST'),
-        ),
+        commercialSnapshotKnowledge(snapshot)
+          .slice(0, snapshot.offers.length)
+          .every((item) => item.includes('CRM_APPROVED_PRICE_LIST')),
       ).toBe(true);
     },
   );

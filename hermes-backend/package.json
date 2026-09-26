@@ -6,6 +6,7 @@
   "private": true,
   "license": "UNLICENSED",
   "scripts": {
+    "google:calendar:authorize": "ts-node src/scripts/google-calendar-authorize.ts",
     "build": "nest build",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\"",
     "start": "nest start",
@@ -43,6 +44,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "google-auth-library": "^10.9.1",
+    "googleapis": "^182.0.0",
     "ioredis": "^5.11.1",
     "multer": "^2.3.0",
     "nestjs-cls": "^6.2.1",
