@@ -47,9 +47,14 @@ export function parseMeetingDate(
       hasDate = true;
     }
   }
-  const hour = s.match(
-    /\b(a las?|despues de las?|desde las?)\s+(\d{1,2})(?::(\d{2}))?(?:\s*(de la tarde|de la manana|de la noche|am|pm))?/,
-  );
+  const hour =
+    s.match(
+      /\b(a las?|despues de las?|desde las?)\s+(\d{1,2})(?::(\d{2}))?(?:\s*(de la tarde|de la manana|de la noche|am|pm))?/,
+    ) ??
+    (() => {
+      const clock = s.match(/\b(\d{1,2}):(\d{2})(?:\s*(am|pm))?\b/);
+      return clock ? [clock[0], 'a las', clock[1], clock[2], clock[3]] : null;
+    })();
   let startHour = 0,
     startMinute = 0,
     endHour = 24,

@@ -10,6 +10,11 @@ import { CalendarError } from './calendar.errors';
 import { CalendarSlot, MeetingDraft, MeetingTurn } from './calendar.types';
 import { generateSlots, overlaps, validRange } from './slot-engine';
 import { AutomatedDeliveryService } from '../../automated-deliveries/automated-delivery.service';
+import {
+  meetingPolicy,
+  meetingDualTime,
+  isRegionalTimezone,
+} from './meeting-region';
 
 const ACTIVE = ['PREPARED', 'APPLYING', 'RETRY'] as const;
 export interface PrepareMeeting {
@@ -17,6 +22,7 @@ export interface PrepareMeeting {
   slot: CalendarSlot;
   email: string;
   meetingId?: string;
+  timezone?: string;
 }
 
 @Injectable()
@@ -130,16 +136,22 @@ export class MeetingOperationsService {
         });
         if (active) throw new CalendarError('MEETING_OPERATION_PENDING', true);
       }
+      const timezone =
+        meeting?.timezone ?? input.timezone ?? this.google.config.timezone;
+      if (!meeting && input.timezone && !isRegionalTimezone(input.timezone))
+        throw new CalendarError('GOOGLE_CALENDAR_EVENT_CREATE_FAILED');
       if (kind !== 'CANCEL') {
         const valid = generateSlots(
           { from: input.slot.start, to: input.slot.end },
           [],
-          this.google.config,
+          meetingPolicy(this.google.config, timezone),
           turn.now,
         );
         if (
           !valid.some(
-            (s) => Date.parse(s.start) === Date.parse(input.slot.start),
+            (s) =>
+              Date.parse(s.start) === Date.parse(input.slot.start) &&
+              Date.parse(s.end) === Date.parse(input.slot.end),
           )
         )
           throw new CalendarError('MEETING_SLOT_OCCUPIED');
@@ -185,7 +197,7 @@ export class MeetingOperationsService {
             attendeeEmail: input.email,
             startAt: new Date(input.slot.start),
             endAt: new Date(input.slot.end),
-            timezone: this.google.config.timezone,
+            timezone,
             idempotencyKey: input.key,
             serviceContext: turn.serviceContext?.slice(0, 240),
           },
@@ -373,11 +385,13 @@ export class MeetingOperationsService {
           meeting,
         );
         if (notify && !interrupted) {
-          const date = new Intl.DateTimeFormat('es-EC', {
-            timeZone: meeting.timezone,
-            dateStyle: 'full',
-            timeStyle: 'short',
-          }).format(meeting.startAt);
+          const date = meetingDualTime(
+            {
+              start: meeting.startAt.toISOString(),
+              end: meeting.endAt.toISOString(),
+            },
+            meeting.timezone,
+          );
           await tx.automatedDelivery.upsert({
             where: {
               operationKey: `${operation.sourceMessageId}:SYSTEM_NOTICE:1000`,
@@ -394,7 +408,7 @@ export class MeetingOperationsService {
               content:
                 operation.kind === 'CANCEL'
                   ? 'Su reunión quedó cancelada. La invitación del calendario fue actualizada.'
-                  : `Su reunión quedó agendada para ${date} (${meeting.timezone}). La invitación fue enviada al correo indicado. Google Meet: ${meeting.meetUrl}`,
+                  : `Su reunión quedó agendada para ${date}. La invitación fue enviada al correo indicado. Google Meet: ${meeting.meetUrl}`,
               metadata: {
                 action: 'GOOGLE_CALENDAR_RECOVERED',
                 meetingId: meeting.id,

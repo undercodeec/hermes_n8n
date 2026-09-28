@@ -59,6 +59,22 @@ describe('Google Calendar boundary', () => {
       }),
     ).toEqual([draft.slot]);
   });
+  it('queries adjacent busy periods so buffers apply at the requested range boundaries', async () => {
+    const { api, service } = setup();
+    await service.getAvailability({
+      from: '2026-09-28T14:00:00Z',
+      to: '2026-09-28T14:30:00Z',
+    });
+    expect(api.freebusy.query).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestBody: expect.objectContaining({
+          timeMin: '2026-09-28T13:45:00.000Z',
+          timeMax: '2026-09-28T14:45:00.000Z',
+        }),
+      }),
+      expect.anything(),
+    );
+  });
   it('fails closed for a partial FreeBusy error', async () => {
     const { api, service } = setup();
     api.freebusy.query.mockResolvedValue({
@@ -162,6 +178,74 @@ describe('Google Calendar boundary', () => {
       expect.anything(),
     );
     expect(api.events.insert).not.toHaveBeenCalled();
+  });
+  it.each(['createEvent', 'rescheduleEvent'] as const)(
+    'labels both local times in %s and persists regional metadata',
+    async (method) => {
+      const { api, service } = setup();
+      await service[method]({
+        ...draft,
+        timezone: 'Europe/Madrid',
+        serviceContext: 'Sitio web',
+        slot: { start: '2026-09-28T12:00:00Z', end: '2026-09-28T12:30:00Z' },
+      });
+      const call =
+        method === 'createEvent' ? api.events.insert : api.events.patch;
+      expect(call).toHaveBeenCalledWith(
+        expect.objectContaining({
+          requestBody: expect.objectContaining({
+            summary: expect.stringContaining('[ES]'),
+            description: expect.stringMatching(
+              /Hora España:.*14:00[\s\S]*Hora Ecuador:.*07:00/,
+            ),
+            extendedProperties: {
+              private: expect.objectContaining({
+                hermesMeetingId: 'meeting-1',
+                hermesTimezone: 'Europe/Madrid',
+                hermesRegion: 'ES',
+              }),
+            },
+          }),
+        }),
+        expect.anything(),
+      );
+    },
+  );
+  it('preserves manually added calendar notes and private properties while updating both times', async () => {
+    const { api, service } = setup();
+    api.events.get.mockResolvedValue({
+      data: {
+        ...event,
+        summary: '[ES] Demostración de CRM',
+        description:
+          'Referencia CRM: meeting-1\nHora España: lunes, 14:00 (Europe/Madrid)\nHora Ecuador: lunes, 07:00 (America/Guayaquil)\nTraer propuesta comercial.',
+        extendedProperties: {
+          private: { hermesMeetingId: 'meeting-1', operatorNote: 'preserve' },
+        },
+      },
+    });
+    await service.rescheduleEvent({
+      ...draft,
+      timezone: 'Europe/Madrid',
+      slot: { start: '2026-10-26T13:00:00Z', end: '2026-10-26T13:30:00Z' },
+    });
+    expect(api.events.patch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        requestBody: expect.objectContaining({
+          summary: '[ES] Demostración de CRM',
+          description: expect.stringMatching(
+            /Hora Ecuador:.*08:00[\s\S]*Traer propuesta comercial/,
+          ),
+          extendedProperties: {
+            private: expect.objectContaining({
+              operatorNote: 'preserve',
+              hermesTimezone: 'Europe/Madrid',
+            }),
+          },
+        }),
+      }),
+      expect.anything(),
+    );
   });
   it.each([404, 410])('treats delete %s as already cancelled', async (code) => {
     const { api, service } = setup();

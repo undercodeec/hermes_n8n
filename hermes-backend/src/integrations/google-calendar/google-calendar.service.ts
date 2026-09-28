@@ -20,6 +20,7 @@ import {
   classifyCalendarError,
 } from './calendar.errors';
 import { validRange, zonedDate } from './slot-engine';
+import { meetingEventDetails } from './meeting-region';
 
 export const GOOGLE_CALENDAR_CLIENT = Symbol('GOOGLE_CALENDAR_CLIENT');
 export const GOOGLE_SCOPES = [
@@ -100,6 +101,9 @@ export class GoogleCalendarService {
   async getAvailability(range: AvailabilityRequest): Promise<CalendarSlot[]> {
     if (!validRange(range))
       throw new CalendarError('GOOGLE_CALENDAR_FREEBUSY_FAILED');
+    const buffer = this.config.bufferMinutes * 60000;
+    const timeMin = new Date(Date.parse(range.from) - buffer).toISOString();
+    const timeMax = new Date(Date.parse(range.to) + buffer).toISOString();
     const busy = await this.call(
       'freeBusy',
       'GOOGLE_CALENDAR_FREEBUSY_FAILED',
@@ -107,8 +111,8 @@ export class GoogleCalendarService {
         const result = await this.client.freebusy.query(
           {
             requestBody: {
-              timeMin: range.from,
-              timeMax: range.to,
+              timeMin,
+              timeMax,
               timeZone: this.config.timezone,
               items: [{ id: this.config.calendarId }],
             },
@@ -138,8 +142,8 @@ export class GoogleCalendarService {
           const response = await this.client.events.list(
             {
               calendarId: this.config.calendarId,
-              timeMin: range.from,
-              timeMax: range.to,
+              timeMin,
+              timeMax,
               singleEvents: true,
               maxResults: 2500,
               pageToken,
@@ -270,14 +274,10 @@ export class GoogleCalendarService {
               sendUpdates: 'all',
               requestBody: {
                 id: draft.eventId,
-                summary: 'Reunión comercial - Undercodeec',
-                description: `Referencia CRM: ${draft.meetingId}${draft.serviceContext ? `\nServicio: ${draft.serviceContext.replace(/[<>]/g, '').slice(0, 240)}` : ''}`,
+                ...meetingEventDetails(draft),
                 start: { dateTime: draft.slot.start, timeZone: draft.timezone },
                 end: { dateTime: draft.slot.end, timeZone: draft.timezone },
                 attendees: [{ email: draft.email }],
-                extendedProperties: {
-                  private: { hermesMeetingId: draft.meetingId },
-                },
                 conferenceData: {
                   createRequest: {
                     requestId: draft.eventId,
@@ -306,6 +306,24 @@ export class GoogleCalendarService {
     const existing = await this.getEvent(draft);
     if (!existing)
       throw new CalendarError('GOOGLE_CALENDAR_EVENT_UPDATE_FAILED');
+    const details = meetingEventDetails(draft);
+    const notes = existing.description
+      ?.split(/\r?\n/)
+      .filter(
+        (line) =>
+          !/^(?:Referencia CRM:|Servicio:|Zona de la reunión:|Hora España:|Hora Ecuador:)/.test(
+            line,
+          ),
+      )
+      .join('\n')
+      .trim();
+    if (notes) details.description += `\n${notes}`;
+    if (existing.summary)
+      details.summary = `${details.summary.match(/^\[[^\]]+\]/)![0]} ${existing.summary.replace(/^\[(?:EC|ES|OTRO)\]\s*/, '')}`;
+    details.extendedProperties.private = {
+      ...existing.extendedProperties?.private,
+      ...details.extendedProperties.private,
+    };
     const response = await this.call(
       'patch',
       'GOOGLE_CALENDAR_EVENT_UPDATE_FAILED',
@@ -317,6 +335,7 @@ export class GoogleCalendarService {
             conferenceDataVersion: 1,
             sendUpdates: 'all',
             requestBody: {
+              ...details,
               start: { dateTime: draft.slot.start, timeZone: draft.timezone },
               end: { dateTime: draft.slot.end, timeZone: draft.timezone },
             },

@@ -34,7 +34,7 @@ describe('Meeting conversation A–J', () => {
     conversationId: 'conversation',
     contactId: 'contact',
     sourceMessageId: 'message',
-    text: 'Quiero agendar una reunión',
+    text: 'Quiero agendar una reunión hoy',
     now: new Date('2026-09-28T12:00:00Z'),
     serviceContext: 'Sitio web del proyecto actual',
   };
@@ -42,6 +42,14 @@ describe('Meeting conversation A–J', () => {
     let state: any = null;
     let email: string | null = null;
     let confirmed: any = null;
+    let metadata: any = {
+      other: 'preserved',
+      schedulingLocation: {
+        city: 'Quito',
+        country: 'EC',
+        timezone: 'America/Guayaquil',
+      },
+    };
     const tx: any = {
       conversationState: {
         findUnique: jest.fn(async () => ({ meetingState: state })),
@@ -50,9 +58,14 @@ describe('Meeting conversation A–J', () => {
         }),
       },
       contact: {
-        findUniqueOrThrow: jest.fn(async () => ({ id: 'contact', email })),
+        findUniqueOrThrow: jest.fn(async () => ({
+          id: 'contact',
+          email,
+          metadata,
+        })),
         update: jest.fn(async ({ data }) => {
-          email = data.email;
+          if (data.email !== undefined) email = data.email;
+          if (data.metadata !== undefined) metadata = data.metadata;
         }),
       },
       meeting: {
@@ -90,7 +103,7 @@ describe('Meeting conversation A–J', () => {
           status: 'CONFIRMED',
           startAt: new Date(state.selected.start as string),
           endAt: new Date(state.selected.end as string),
-          timezone: 'America/Guayaquil',
+          timezone: state.timezone,
           meetUrl: 'https://meet.google.com/abc-defg-hij',
         };
         return confirmed;
@@ -112,15 +125,238 @@ describe('Meeting conversation A–J', () => {
       setMeeting: (v: any) => {
         confirmed = v;
       },
+      setMetadata: (v: any) => {
+        metadata = v;
+      },
+      getMetadata: () => metadata,
     };
   };
-  it('A: offers at most three slots without booking', async () => {
+  it('A: makes every free start accessible in numbered pages without booking', async () => {
     const f = setup();
     const reply = await f.service.handleTurn(turn);
     expect(reply.handled).toBe(true);
     expect(reply.content).toContain('1.');
-    expect(f.getState().slots).toHaveLength(3);
+    expect(f.getState().slots).toHaveLength(47);
+    expect(reply.content).toContain('08:00');
+    expect(reply.content).toContain('12.');
+    expect(reply.content).not.toContain('13.');
+    expect(reply.content).toMatch(/más horarios/);
     expect(f.operations.prepare).not.toHaveBeenCalled();
+  });
+  it('asks city and country before querying Google when location is unknown', async () => {
+    const f = setup();
+    f.setMetadata({ other: 'preserved' });
+    const reply = await f.service.handleTurn(turn);
+    expect(reply.content).toMatch(/ciudad y país/);
+    expect(f.google.getAvailability).not.toHaveBeenCalled();
+    await f.service.handleTurn({ ...turn, text: 'Quito, Ecuador' });
+    expect(f.getState().slots[0].start).toBe('2026-09-28T13:00:00.000Z');
+    expect(f.getMetadata()).toMatchObject({
+      other: 'preserved',
+      schedulingLocation: { timezone: 'America/Guayaquil' },
+    });
+  });
+  it('asks for a day after resolving the location if the request has no date', async () => {
+    const f = setup();
+    f.setMetadata(null);
+    await f.service.handleTurn({ ...turn, text: 'Quiero agendar una cita' });
+    const reply = await f.service.handleTurn({ ...turn, text: 'Madrid' });
+    expect(reply.content).toMatch(/día/);
+    expect(f.google.getAvailability).not.toHaveBeenCalled();
+    const offered = await f.service.handleTurn({ ...turn, text: 'mañana' });
+    expect(offered.content).toContain('Europe/Madrid');
+    expect(f.getState().slots[0].start).toBe('2026-09-29T12:00:00.000Z');
+    expect(f.getState().slots.at(-1).end).toBe('2026-09-29T18:00:00.000Z');
+  });
+  it('keeps tomorrow relative to the original request across midnight while asking location', async () => {
+    const f = setup();
+    f.setMetadata(null);
+    await f.service.handleTurn({
+      ...turn,
+      text: 'reunión mañana',
+      now: new Date('2026-09-28T21:30:00Z'),
+    });
+    await f.service.handleTurn({
+      ...turn,
+      text: 'Madrid',
+      now: new Date('2026-09-28T22:30:00Z'),
+    });
+    expect(f.getState().slots[0].start).toBe('2026-09-29T12:00:00.000Z');
+  });
+  it('retains the requested date while clarifying an unknown or ambiguous city', async () => {
+    const f = setup();
+    f.setMetadata(null);
+    await f.service.handleTurn({ ...turn, text: 'reunión mañana' });
+    const reply = await f.service.handleTurn({ ...turn, text: 'Santiago' });
+    expect(reply.content).toMatch(/ciudad y país/);
+    expect(f.google.getAvailability).not.toHaveBeenCalled();
+    await f.service.handleTurn({
+      ...turn,
+      text: 'Santiago de Compostela, España',
+    });
+    expect(f.getState().timezone).toBe('Europe/Madrid');
+    expect(f.getState().slots[0].start).toBe('2026-09-29T12:00:00.000Z');
+  });
+  it('offers Canary Islands times instead of mainland Spain times', async () => {
+    const f = setup();
+    f.setMetadata(null);
+    await f.service.handleTurn({
+      ...turn,
+      text: 'reunión mañana, estoy en Las Palmas, España',
+    });
+    expect(f.getState().timezone).toBe('Atlantic/Canary');
+    expect(f.getState().slots[0].start).toBe('2026-09-29T13:00:00.000Z');
+  });
+  it('paginates all starts without skipping and accepts options beyond three', async () => {
+    const f = setup();
+    f.setEmail('client@example.com');
+    await f.service.handleTurn(turn);
+    const next = await f.service.handleTurn({
+      ...turn,
+      text: 'ver más horarios',
+    });
+    expect(next.content).toContain('13.');
+    expect(next.content).toContain('11:00');
+    expect(f.operations.prepare).not.toHaveBeenCalled();
+    const reply = await f.service.handleTurn({ ...turn, text: 'opción 14' });
+    expect(reply.content).toContain('11:15');
+    expect(reply.content).toContain('agendada');
+  });
+  it('selects a free explicit hour not yet displayed and passes the local timezone to booking', async () => {
+    const f = setup();
+    f.setMetadata(null);
+    f.setEmail('client@example.com');
+    await f.service.handleTurn({ ...turn, text: 'reunión mañana en Madrid' });
+    const reply = await f.service.handleTurn({ ...turn, text: 'a las 19:30' });
+    expect(reply.content).toContain('19:30');
+    expect(reply.content).toContain('12:30');
+    expect(reply.content).toContain('hora Ecuador');
+    expect(f.operations.prepare).toHaveBeenCalledWith(
+      'CREATE',
+      expect.anything(),
+      expect.objectContaining({
+        timezone: 'Europe/Madrid',
+        slot: {
+          start: '2026-09-29T17:30:00.000Z',
+          end: '2026-09-29T18:00:00.000Z',
+        },
+      }),
+    );
+  });
+  it('excludes Google busy periods, local reservations and buffers from every page', async () => {
+    const f = setup();
+    f.google.getAvailability.mockResolvedValue([
+      { start: '2026-09-28T14:00:00Z', end: '2026-09-28T15:00:00Z' },
+    ]);
+    f.operations.localBusy.mockResolvedValue([
+      { start: '2026-09-28T19:00:00Z', end: '2026-09-28T19:30:00Z' },
+    ]);
+    await f.service.handleTurn(turn);
+    const starts = f.getState().slots.map((s: any) => s.start);
+    expect(starts).not.toContain('2026-09-28T13:30:00.000Z');
+    expect(starts).not.toContain('2026-09-28T15:00:00.000Z');
+    expect(starts).not.toContain('2026-09-28T19:30:00.000Z');
+    expect(starts).toContain('2026-09-28T19:45:00.000Z');
+  });
+  it('accepts a bare clock time against the offered local day', async () => {
+    const f = setup();
+    f.setEmail('client@example.com');
+    await f.service.handleTurn(turn);
+    const reply = await f.service.handleTurn({ ...turn, text: '19:30' });
+    expect(reply.content).toContain('agendada');
+    expect(reply.content).toContain('19:30');
+  });
+  it('uses a location correction instead of a previously offered or remembered zone', async () => {
+    const f = setup();
+    f.setEmail('client@example.com');
+    await f.service.handleTurn({ ...turn, text: 'reunión mañana' });
+    const reply = await f.service.handleTurn({
+      ...turn,
+      text: 'Estoy en Madrid',
+    });
+    expect(reply.content).toContain('Europe/Madrid');
+    expect(f.getState().slots[0].start).toBe('2026-09-29T12:00:00.000Z');
+    expect(f.operations.prepare).not.toHaveBeenCalled();
+    expect(f.getMetadata().schedulingLocation.timezone).toBe('Europe/Madrid');
+  });
+  it('does not reuse remembered Ecuador location when a new explicit city cannot be resolved', async () => {
+    const f = setup();
+    const reply = await f.service.handleTurn({
+      ...turn,
+      text: 'Quiero una reunión mañana, estoy en Lima, Perú',
+    });
+    expect(reply.content).toMatch(/ciudad y país/);
+    expect(f.google.getAvailability).not.toHaveBeenCalled();
+  });
+  it('does not interpret a nationality as the current location', async () => {
+    const f = setup();
+    f.setMetadata(null);
+    const reply = await f.service.handleTurn({
+      ...turn,
+      text: 'Soy ecuatoriano y quiero una reunión mañana, estoy en Madrid',
+    });
+    expect(reply.content).toContain('Europe/Madrid');
+    expect(f.getState().slots[0].start).toBe('2026-09-29T12:00:00.000Z');
+  });
+  it('accepts a country name inside an email without treating it as a location change', async () => {
+    const f = setup();
+    await f.service.handleTurn({ ...turn, text: 'reunión mañana en Madrid' });
+    await f.service.handleTurn({ ...turn, text: 'la primera' });
+    const reply = await f.service.handleTurn({
+      ...turn,
+      text: 'espana@example.com',
+    });
+    expect(reply.content).toContain('agendada');
+    expect(f.getState().timezone).toBe('Europe/Madrid');
+  });
+  it('selects the existing Spanish meeting using its own local hour', async () => {
+    const f = setup();
+    const m = {
+      id: 'spanish',
+      attendeeEmail: 'client@example.com',
+      timezone: 'Europe/Madrid',
+      startAt: new Date('2026-09-29T12:00:00Z'),
+      endAt: new Date('2026-09-29T12:30:00Z'),
+    };
+    f.setMeeting([
+      m,
+      {
+        ...m,
+        id: 'later',
+        startAt: new Date('2026-09-29T15:00:00Z'),
+        endAt: new Date('2026-09-29T15:30:00Z'),
+      },
+    ]);
+    await f.service.handleTurn({ ...turn, text: 'cambiar reunión' });
+    await f.service.handleTurn({ ...turn, text: 'mañana a las 14:00' });
+    expect(f.getState().meetingId).toBe('spanish');
+    expect(f.getState().timezone).toBe('Europe/Madrid');
+  });
+  it('does not guess mainland Spain when a stored location says only España', async () => {
+    const f = setup();
+    f.setMetadata(null);
+    await f.service.handleTurn(turn);
+    const reply = await f.service.handleTurn({ ...turn, text: 'España' });
+    expect(reply.content).toMatch(/ciudad y país/);
+    expect(f.google.getAvailability).not.toHaveBeenCalled();
+  });
+  it('returns to the previous page and reaches the last slot without cycling', async () => {
+    const f = setup();
+    await f.service.handleTurn(turn);
+    await f.service.handleTurn({ ...turn, text: 'ver más horarios' });
+    expect(
+      (await f.service.handleTurn({ ...turn, text: 'horarios anteriores' }))
+        .content,
+    ).toContain('1.');
+    for (let i = 0; i < 3; i++)
+      await f.service.handleTurn({ ...turn, text: 'ver más horarios' });
+    const last = await f.service.handleTurn({
+      ...turn,
+      text: 'ver más horarios',
+    });
+    expect(last.content).toContain('47.');
+    expect(last.content).toContain('19:30');
+    expect(last.content).not.toContain('«ver más horarios»');
   });
   it.each(['no quiero la primera', 'no quiero una reunión'])(
     'rejects proposal: %s',

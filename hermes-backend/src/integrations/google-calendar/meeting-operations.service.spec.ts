@@ -116,6 +116,10 @@ export function operationFixture() {
   };
 }
 describe('Durable meeting operations', () => {
+  beforeEach(() =>
+    jest.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-09-27T12:00:00Z')),
+  );
+  afterEach(() => jest.restoreAllMocks());
   const turn = {
     conversationId: 'conversation',
     contactId: 'contact',
@@ -128,6 +132,62 @@ describe('Durable meeting operations', () => {
     slot: { start: '2026-09-28T14:00:00Z', end: '2026-09-28T14:30:00Z' },
     email: 'client@example.com',
   };
+  it.each([
+    ['Europe/Madrid', '2026-09-28T12:00:00Z', '2026-09-28T12:30:00Z'],
+    ['Europe/Madrid', '2026-10-26T13:00:00Z', '2026-10-26T13:30:00Z'],
+    ['America/Guayaquil', '2026-09-28T13:00:00Z', '2026-09-28T13:30:00Z'],
+  ])(
+    'validates and persists the %s policy for %s',
+    async (timezone, start, end) => {
+      const f = operationFixture();
+      const op = await f.service.prepare('CREATE', turn, {
+        ...input,
+        ...{ timezone },
+        slot: { start, end },
+      });
+      expect(f.getMeeting().timezone).toBe(timezone);
+      expect((await f.service.apply(op.id)).status).toBe('CONFIRMED');
+      expect(f.google.createEvent).toHaveBeenCalledWith(
+        expect.objectContaining({ timezone }),
+      );
+    },
+  );
+  it('rejects Spanish morning slots even when they fit Ecuador business hours', async () => {
+    const f = operationFixture();
+    await expect(
+      f.service.prepare('CREATE', turn, {
+        ...input,
+        ...{ timezone: 'Europe/Madrid' },
+        slot: { start: '2026-09-28T11:00:00Z', end: '2026-09-28T11:30:00Z' },
+      }),
+    ).rejects.toMatchObject({ code: 'MEETING_SLOT_OCCUPIED' });
+    expect(f.tx.meeting.create).not.toHaveBeenCalled();
+  });
+  it('rejects a duration different from the generated slot', async () => {
+    const f = operationFixture();
+    await expect(
+      f.service.prepare('CREATE', turn, {
+        ...input,
+        slot: { start: input.slot.start, end: '2026-09-28T15:00:00Z' },
+      }),
+    ).rejects.toMatchObject({ code: 'MEETING_SLOT_OCCUPIED' });
+  });
+  it('preserves the meeting timezone when rescheduling after global configuration changes', async () => {
+    const f = operationFixture();
+    const op = await f.service.prepare('CREATE', turn, {
+      ...input,
+      ...{ timezone: 'Europe/Madrid' },
+    });
+    const meeting = await f.service.apply(op.id);
+    f.google.config.timezone = 'America/New_York';
+    const move = await f.service.prepare('RESCHEDULE', turn, {
+      ...input,
+      key: 'move',
+      meetingId: meeting.id,
+      slot: { start: '2026-09-29T12:00:00Z', end: '2026-09-29T12:30:00Z' },
+    });
+    expect((await f.service.apply(move.id)).timezone).toBe('Europe/Madrid');
+  });
   it('reserves once and returns the same operation for repeated confirmation', async () => {
     const f = operationFixture();
     const first = await f.service.prepare('CREATE', turn, input);

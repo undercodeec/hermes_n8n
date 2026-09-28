@@ -13,9 +13,24 @@ import {
 } from './calendar.types';
 import { generateSlots, validRange, localParts } from './slot-engine';
 import { normalizeMeetingText, parseMeetingDate } from './meeting-date-parser';
+import {
+  MeetingLocation,
+  readMeetingLocation,
+  resolveMeetingLocation,
+  meetingPolicy,
+  meetingTimeLabel,
+  meetingDualTime,
+  mentionsMeetingLocation,
+} from './meeting-region';
+
+const PAGE_SIZE = 12;
+const LOCATION_QUESTION =
+  'Para mostrarle los horarios correctos, ¿en qué ciudad y país se encuentra? Atendemos reuniones para Ecuador y España. Si está en España, puede indicar también si es península/Baleares o Canarias.';
 
 interface MeetingState {
   phase:
+    | 'AWAITING_LOCATION'
+    | 'AWAITING_DATE'
     | 'OFFERING'
     | 'AWAITING_EMAIL'
     | 'BOOKING'
@@ -35,6 +50,11 @@ interface MeetingState {
   serviceContext?: string;
   meetingChoices?: string[];
   cancelChoice?: boolean;
+  timezone?: string;
+  location?: MeetingLocation;
+  pageOffset?: number;
+  requestedText?: string;
+  requestedAt?: string;
 }
 const emailPattern =
   /\b[A-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?(?:\.[A-Z0-9](?:[A-Z0-9-]*[A-Z0-9])?)+\b/i;
@@ -43,7 +63,11 @@ export function isMeetingRequest(text: string): boolean {
   return (
     /\b(?:reunion|reunirnos|reunir|meet|videollamada|video llamada|videoconferencia|reprogramar)\b/.test(
       s,
-    ) || /\b(?:agendar|programar)\b.{0,30}\bllamada\b/.test(s)
+    ) ||
+    /\b(?:agendar|programar|reservar)\b.{0,30}\b(?:llamada|cita|reunion)\b/.test(
+      s,
+    ) ||
+    /^(?:quiero |quisiera |podemos )?agendar[.!]?$/.test(s)
   );
 }
 function readState(value: unknown): MeetingState | undefined {
@@ -52,6 +76,8 @@ function readState(value: unknown): MeetingState | undefined {
   const v = value as MeetingState;
   if (
     ![
+      'AWAITING_LOCATION',
+      'AWAITING_DATE',
       'OFFERING',
       'AWAITING_EMAIL',
       'BOOKING',
@@ -64,11 +90,26 @@ function readState(value: unknown): MeetingState | undefined {
     !['CREATE', 'RESCHEDULE'].includes(v.mode) ||
     typeof v.attemptId !== 'string' ||
     !Array.isArray(v.slots) ||
-    v.slots.length > 3 ||
+    v.slots.length > 3100 ||
     v.slots.some((s) => !validRange({ from: s.start, to: s.end }))
   )
     return undefined;
   if (v.selected && !validRange({ from: v.selected.start, to: v.selected.end }))
+    return undefined;
+  if (v.timezone !== undefined) {
+    if (typeof v.timezone !== 'string') return undefined;
+    try {
+      new Intl.DateTimeFormat('es', { timeZone: v.timezone }).format();
+    } catch {
+      return undefined;
+    }
+  }
+  if (
+    v.pageOffset !== undefined &&
+    (!Number.isInteger(v.pageOffset) ||
+      v.pageOffset < 0 ||
+      v.pageOffset > v.slots.length)
+  )
     return undefined;
   return v;
 }
@@ -97,15 +138,7 @@ export class MeetingsService {
     slot: CalendarSlot,
     timezone = this.google.config.timezone,
   ): string {
-    return new Intl.DateTimeFormat('es-EC', {
-      timeZone: timezone,
-      weekday: 'long',
-      day: 'numeric',
-      month: 'long',
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23',
-    }).format(new Date(slot.start));
+    return meetingTimeLabel(slot, timezone);
   }
   private confirmation(meeting: Meeting): MeetingReply {
     if (meeting.status === 'CANCELLED')
@@ -120,7 +153,7 @@ export class MeetingsService {
     return {
       handled: true,
       meetingId: meeting.id,
-      content: `Listo. Su reunión quedó agendada para ${this.label({ start: meeting.startAt.toISOString(), end: meeting.endAt.toISOString() }, meeting.timezone)} (${meeting.timezone}). Le envié la invitación al correo indicado. Puede ingresar por Google Meet aquí: ${meeting.meetUrl}`,
+      content: `Listo. Su reunión quedó agendada para ${meetingDualTime({ start: meeting.startAt.toISOString(), end: meeting.endAt.toISOString() }, meeting.timezone)}. Le envié la invitación al correo indicado. Puede ingresar por Google Meet aquí: ${meeting.meetUrl}`,
     };
   }
   private async active(turn: MeetingTurn): Promise<Meeting[]> {
@@ -141,10 +174,20 @@ export class MeetingsService {
     range?: AvailabilityRequest,
     prefix = '',
   ): Promise<MeetingReply> {
-    const actual = range ?? {
-      from: turn.now.toISOString(),
-      to: new Date(turn.now.getTime() + 7 * 86400000).toISOString(),
-    };
+    if (!state.timezone) {
+      await this.save(turn, {
+        ...state,
+        phase: 'AWAITING_LOCATION',
+        slots: [],
+        selected: undefined,
+      });
+      return { handled: true, content: LOCATION_QUESTION };
+    }
+    const actual = range ??
+      state.range ?? {
+        from: turn.now.toISOString(),
+        to: new Date(turn.now.getTime() + 7 * 86400000).toISOString(),
+      };
     if (!validRange(actual) || Date.parse(actual.to) <= turn.now.getTime())
       return {
         handled: true,
@@ -168,38 +211,98 @@ export class MeetingsService {
     const all = generateSlots(
       actual,
       [...busy, ...local],
-      this.google.config,
+      meetingPolicy(this.google.config, state.timezone),
       turn.now,
     );
-    const selected: CalendarSlot[] = [];
-    for (const slot of all) {
-      if (
-        !selected.length ||
-        Date.parse(slot.start) - Date.parse(selected.at(-1)!.start) >=
-          2 * 3600000
-      )
-        selected.push(slot);
-      if (selected.length === 3) break;
-    }
     state = {
       ...state,
       phase: 'OFFERING',
       range: actual,
-      slots: selected,
+      slots: all,
+      pageOffset: 0,
       selected: undefined,
       operationId: undefined,
     };
     await this.save(turn, state);
-    if (!selected.length)
+    if (!all.length)
       return {
         handled: true,
         content:
           'No encontré horarios disponibles en ese rango. ¿Qué otro día le viene bien?',
       };
+    return this.page(state, prefix);
+  }
+  private page(state: MeetingState, prefix = ''): MeetingReply {
+    const offset = state.pageOffset ?? 0;
+    const page = state.slots.slice(offset, offset + PAGE_SIZE);
+    const timezone = state.timezone ?? this.google.config.timezone;
+    const more = offset + PAGE_SIZE < state.slots.length;
     return {
       handled: true,
-      content: `${prefix}Tengo estos horarios disponibles (${this.google.config.timezone}):\n${selected.map((s, i) => `${i + 1}. ${this.label(s)}`).join('\n')}\n¿Cuál le queda mejor?`,
+      content: `${prefix}Horarios disponibles (${timezone}), reuniones de ${this.google.config.durationMinutes} minutos:\n${page.map((s, i) => `${offset + i + 1}. ${this.label(s, timezone)}`).join('\n')}\n¿Cuál le queda mejor? Puede indicar el número o la hora.${more ? '\nEscriba «ver más horarios» para consultar los siguientes.' : ''}${offset ? '\nEscriba «horarios anteriores» para volver.' : ''}\nTambién puede pedir otro día.`,
     };
+  }
+  private async rememberLocation(
+    turn: MeetingTurn,
+    location: MeetingLocation,
+  ): Promise<void> {
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`contact:${turn.contactId}`}))`;
+      const contact = await tx.contact.findUniqueOrThrow({
+        where: { id: turn.contactId },
+        select: { metadata: true },
+      });
+      const metadata =
+        contact.metadata &&
+        typeof contact.metadata === 'object' &&
+        !Array.isArray(contact.metadata)
+          ? contact.metadata
+          : {};
+      await tx.contact.update({
+        where: { id: turn.contactId },
+        data: {
+          metadata: { ...metadata, schedulingLocation: { ...location } },
+        },
+      });
+    });
+  }
+  private async beginDate(
+    turn: MeetingTurn,
+    state: MeetingState,
+    text: string,
+    referenceNow = turn.now,
+  ): Promise<MeetingReply> {
+    const timezone = state.timezone!;
+    const date = parseMeetingDate(text, referenceNow, timezone);
+    if (date.ambiguous) {
+      const day = parseMeetingDate(
+        text.replace(
+          /\b(?:a las?|despues de las?|desde las?)\s+\d{1,2}(?::\d{2})?(?:\s*(?:de la tarde|de la manana|de la noche|am|pm))?/gi,
+          '',
+        ),
+        referenceNow,
+        timezone,
+      );
+      await this.save(turn, {
+        ...state,
+        phase: 'OFFERING',
+        range: day.range,
+        slots: [],
+      });
+      return {
+        handled: true,
+        content:
+          '¿Puede indicar la fecha y hora, aclarando si es por la mañana o por la tarde?',
+      };
+    }
+    if (!date.range) {
+      await this.save(turn, { ...state, phase: 'AWAITING_DATE' });
+      return {
+        handled: true,
+        content: `¿Qué día le viene bien para la reunión? Le mostraré todos los horarios libres en su hora local (${timezone}).`,
+      };
+    }
+    return this.offer(turn, state, date.range);
   }
   private async book(
     turn: MeetingTurn,
@@ -220,6 +323,7 @@ export class MeetingsService {
           slot: state.selected,
           email: state.email,
           meetingId: kind === 'CREATE' ? undefined : state.meetingId,
+          timezone: state.timezone,
         },
       );
       state = { ...state, phase: 'BOOKING', operationId: operation.id };
@@ -250,12 +354,13 @@ export class MeetingsService {
       email: meeting.attendeeEmail,
       meetingId: meeting.id,
       serviceContext: meeting.serviceContext ?? undefined,
+      timezone: meeting.timezone ?? this.google.config.timezone,
     };
     if (!cancel) return this.offer(turn, state);
     await this.save(turn, state);
     return {
       handled: true,
-      content: `¿Confirma que desea cancelar la reunión de ${this.label(state.selected!)}?`,
+      content: `¿Confirma que desea cancelar la reunión de ${this.label(state.selected!, state.timezone)} (${state.timezone})?`,
     };
   }
   async handleTurn(turn: MeetingTurn): Promise<MeetingReply> {
@@ -319,26 +424,125 @@ export class MeetingsService {
         };
       }
       if (state?.phase === 'BOOKING') return await this.book(turn, state);
+      if (state?.phase === 'AWAITING_LOCATION') {
+        const location = resolveMeetingLocation(turn.text);
+        if (!location) return { handled: true, content: LOCATION_QUESTION };
+        await this.rememberLocation(turn, location);
+        state = {
+          ...state,
+          timezone: location.timezone,
+          location,
+          phase: 'AWAITING_DATE',
+        };
+        await this.save(turn, state);
+        // Preserve relative dates from the original message even if the reply crosses midnight.
+        const originalNow =
+          state.requestedAt && Number.isFinite(Date.parse(state.requestedAt))
+            ? new Date(state.requestedAt)
+            : turn.now;
+        const replyDate = parseMeetingDate(
+          turn.text,
+          turn.now,
+          state.timezone!,
+        );
+        return await this.beginDate(
+          turn,
+          state,
+          replyDate.range || replyDate.ambiguous
+            ? turn.text
+            : (state.requestedText ?? ''),
+          replyDate.range || replyDate.ambiguous ? turn.now : originalNow,
+        );
+      }
+      if (
+        state &&
+        ['OFFERING', 'AWAITING_EMAIL', 'AWAITING_DATE'].includes(state.phase) &&
+        !state.timezone
+      ) {
+        await this.save(turn, {
+          ...state,
+          phase: 'AWAITING_LOCATION',
+          slots: [],
+          selected: undefined,
+          range: undefined,
+          requestedText: undefined,
+        });
+        return { handled: true, content: LOCATION_QUESTION };
+      }
+      if (
+        state &&
+        ['OFFERING', 'AWAITING_EMAIL', 'AWAITING_DATE'].includes(state.phase)
+      ) {
+        const location = resolveMeetingLocation(turn.text);
+        if (location || mentionsMeetingLocation(turn.text)) {
+          if (state.mode === 'RESCHEDULE')
+            return {
+              handled: true,
+              content: `La reunión existente se reprograma en ${state.timezone}. ¿Qué día y hora le vienen bien en esa zona?`,
+            };
+          if (!location) {
+            await this.save(turn, {
+              ...state,
+              phase: 'AWAITING_LOCATION',
+              slots: [],
+              selected: undefined,
+              range: undefined,
+              requestedText: turn.text,
+              requestedAt: turn.now.toISOString(),
+            });
+            return { handled: true, content: LOCATION_QUESTION };
+          }
+          const oldRange = state.range;
+          const day = oldRange
+            ? localParts(new Date(oldRange.from), state.timezone!)
+                .slice(0, 3)
+                .map((n, i) => (i ? String(n).padStart(2, '0') : String(n)))
+                .join('-')
+            : '';
+          await this.rememberLocation(turn, location);
+          state = {
+            ...state,
+            location,
+            timezone: location.timezone,
+            slots: [],
+            selected: undefined,
+            range: undefined,
+            operationId: undefined,
+            attemptId: randomUUID(),
+            pageOffset: 0,
+          };
+          await this.save(turn, state);
+          const date = parseMeetingDate(turn.text, turn.now, location.timezone);
+          return await this.beginDate(
+            turn,
+            state,
+            date.range || date.ambiguous ? turn.text : day,
+          );
+        }
+      }
+      if (state?.phase === 'AWAITING_DATE')
+        return await this.beginDate(turn, state, turn.text);
       if (state?.phase === 'AWAITING_MEETING_SELECTION') {
         const meetings = (await this.active(turn)).filter((m) =>
           state!.meetingChoices?.includes(m.id),
         );
         const index = text.match(/^(?:(?:la )?opcion\s*)?([1-4])[.!]?$/)?.[1];
-        const date = parseMeetingDate(
-          turn.text,
-          turn.now,
-          this.google.config.timezone,
-        );
         const matches = index
           ? meetings.filter(
               (m) => m.id === state!.meetingChoices?.[Number(index) - 1],
             )
-          : meetings.filter(
-              (m) =>
-                date.range &&
-                m.startAt.getTime() >= Date.parse(date.range.from) &&
-                m.startAt.getTime() < Date.parse(date.range.to),
-            );
+          : meetings.filter((m) => {
+              const date = parseMeetingDate(
+                turn.text,
+                turn.now,
+                m.timezone ?? this.google.config.timezone,
+              );
+              return date.exact
+                ? m.startAt.getTime() === Date.parse(date.exact)
+                : date.range &&
+                    m.startAt.getTime() >= Date.parse(date.range.from) &&
+                    m.startAt.getTime() < Date.parse(date.range.to);
+            });
         if (matches.length !== 1)
           return {
             handled: true,
@@ -394,7 +598,7 @@ export class MeetingsService {
           });
           return {
             handled: true,
-            content: `Hay varias reuniones activas. ¿Cuál desea modificar?\n${meetings.map((m, i) => `${i + 1}. ${this.label({ start: m.startAt.toISOString(), end: m.endAt.toISOString() })}`).join('\n')}`,
+            content: `Hay varias reuniones activas. ¿Cuál desea modificar?\n${meetings.map((m, i) => `${i + 1}. ${this.label({ start: m.startAt.toISOString(), end: m.endAt.toISOString() }, m.timezone)} (${m.timezone})`).join('\n')}`,
           };
         }
         if (meetings.length !== 1)
@@ -423,10 +627,11 @@ export class MeetingsService {
               phase: 'AWAITING_RESCHEDULE_CONFIRMATION',
               meetingId: meetings[0].id,
               email: meetings[0].attendeeEmail,
+              timezone: meetings[0].timezone,
             });
             return {
               handled: true,
-              content: `Ya tiene una reunión agendada para ${this.label({ start: meetings[0].startAt.toISOString(), end: meetings[0].endAt.toISOString() })}. ¿Desea cambiar ese horario?`,
+              content: `Ya tiene una reunión agendada para ${this.label({ start: meetings[0].startAt.toISOString(), end: meetings[0].endAt.toISOString() }, meetings[0].timezone)} (${meetings[0].timezone}). ¿Desea cambiar ese horario?`,
             };
           }
         }
@@ -436,30 +641,57 @@ export class MeetingsService {
           attemptId: randomUUID(),
           slots: [],
           serviceContext: turn.serviceContext,
+          requestedText: turn.text,
+          requestedAt: turn.now.toISOString(),
+        };
+        const contact = await this.prisma.contact.findUniqueOrThrow({
+          where: { id: turn.contactId },
+          select: { metadata: true },
+        });
+        const metadata =
+          contact.metadata &&
+          typeof contact.metadata === 'object' &&
+          !Array.isArray(contact.metadata)
+            ? contact.metadata
+            : {};
+        const explicit = resolveMeetingLocation(turn.text);
+        const location =
+          explicit ??
+          (mentionsMeetingLocation(turn.text)
+            ? undefined
+            : readMeetingLocation(metadata.schedulingLocation));
+        if (!location) {
+          await this.save(turn, { ...state, phase: 'AWAITING_LOCATION' });
+          return { handled: true, content: LOCATION_QUESTION };
+        }
+        if (explicit) await this.rememberLocation(turn, explicit);
+        state = { ...state, timezone: location.timezone, location };
+        await this.save(turn, state);
+        return await this.beginDate(turn, state, turn.text);
+      }
+      if (
+        state.phase === 'OFFERING' &&
+        /\b(?:ver mas|mas horarios|siguientes|siguiente pagina|horarios anteriores|pagina anterior)\b/.test(
+          text,
+        )
+      ) {
+        const previous = /\b(?:anteriores|anterior)\b/.test(text);
+        const maxOffset = Math.max(
+          0,
+          Math.floor((state.slots.length - 1) / PAGE_SIZE) * PAGE_SIZE,
+        );
+        state = {
+          ...state,
+          pageOffset: Math.max(
+            0,
+            Math.min(
+              maxOffset,
+              (state.pageOffset ?? 0) + (previous ? -PAGE_SIZE : PAGE_SIZE),
+            ),
+          ),
         };
         await this.save(turn, state);
-        const date = parseMeetingDate(
-          turn.text,
-          turn.now,
-          this.google.config.timezone,
-        );
-        if (date.ambiguous) {
-          const day = parseMeetingDate(
-            turn.text.replace(
-              /\b(?:a las?|despues de las?|desde las?)\s+\d{1,2}(?::\d{2})?(?:\s*(?:de la tarde|de la manana|de la noche|am|pm))?/gi,
-              '',
-            ),
-            turn.now,
-            this.google.config.timezone,
-          );
-          if (day.range) await this.save(turn, { ...state, range: day.range });
-          return {
-            handled: true,
-            content:
-              '¿Puede indicar la fecha y hora, aclarando si es por la mañana o por la tarde?',
-          };
-        }
-        return await this.offer(turn, state, date.range);
+        return this.page(state);
       }
       if (state.phase === 'AWAITING_EMAIL') {
         const email = turn.text.match(emailPattern)?.[0];
@@ -479,7 +711,7 @@ export class MeetingsService {
       }
       const ordinal =
         text.match(
-          /^(?:(?:la )?opcion\s*)?([123])(?:[.!]?|\s*(?:por favor|me queda bien))$/,
+          /^(?:(?:la )?opcion\s*)?([1-9]\d{0,3})(?:[.!]?|\s*(?:por favor|me queda bien))$/,
         )?.[1] ??
         (/^(?:si[, ]+)?(?:la |el )?(?:primera|primero)(?: opcion)?[.!]?$/.test(
           text,
@@ -502,7 +734,7 @@ export class MeetingsService {
       const proposalDates = [
         ...new Set(
           state.slots.map((s) =>
-            localParts(new Date(s.start), this.google.config.timezone)
+            localParts(new Date(s.start), state!.timezone!)
               .slice(0, 3)
               .map((n, i) => (i ? String(n).padStart(2, '0') : String(n)))
               .join('-'),
@@ -511,14 +743,14 @@ export class MeetingsService {
       ];
       if (!proposalDates.length && state.range)
         proposalDates.push(
-          localParts(new Date(state.range.from), this.google.config.timezone)
+          localParts(new Date(state.range.from), state.timezone!)
             .slice(0, 3)
             .map((n, i) => (i ? String(n).padStart(2, '0') : String(n)))
             .join('-'),
         );
       const timeOnly =
         !explicitDate &&
-        /\b(?:a las?|despues de las?|desde las?|por la tarde|por la manana)\b/.test(
+        /\b(?:a las?|despues de las?|desde las?|por la tarde|por la manana|\d{1,2}:\d{2})\b/.test(
           text,
         );
       if (timeOnly && proposalDates.length > 1)
@@ -531,7 +763,7 @@ export class MeetingsService {
           ? `${proposalDates[0]} ${turn.text}`
           : turn.text,
         turn.now,
-        this.google.config.timezone,
+        state.timezone!,
       );
       if (!ordinal && parsed.ambiguous)
         return {
