@@ -37,7 +37,11 @@ describe('GoogleDataManagerService', () => {
     const mapping = {
       exportEnabled: true,
       conversionActionId: '123',
-      integration: { conversionSyncEnabled: true, accountId: '456' },
+      integration: {
+        conversionSyncEnabled: true,
+        accountId: '456',
+        conversionCustomerId: '3394423093',
+      },
     };
     const settings = { sync: 'true', send: 'true', include: 'false' };
     const prisma = {
@@ -79,6 +83,69 @@ describe('GoogleDataManagerService', () => {
     const body = post.mock.calls[0][1] as { events: Record<string, unknown>[] };
     expect(body.events[0]).not.toHaveProperty('conversionValue');
     expect(body.events[0]).not.toHaveProperty('currency');
+  });
+
+  it('uses the conversion owner and mapped WON action independently of login and metrics', async () => {
+    const { service, job, mapping, prisma } = readyJob(true);
+    mapping.conversionActionId = '7809713674';
+    mapping.integration.accountId = '7181578237';
+    mapping.integration.conversionCustomerId = '3394423093';
+    Object.assign(mapping.integration, { loginAccountId: '1112223333' });
+    prisma.advertisingSyncJob.findUnique.mockResolvedValue({
+      ...job,
+      conversion: {
+        ...job.conversion,
+        eventType: AdvertisingEventType.CONTRACT_WON,
+        value: new Prisma.Decimal(100),
+        currency: 'USD',
+        commercialReference: 'synthetic-contract',
+      },
+    });
+    Object.defineProperty(service, 'accessToken', {
+      value: jest.fn().mockResolvedValue('token'),
+    });
+    const post = jest.spyOn(axios, 'post').mockResolvedValue({ data: {} });
+    await service.ingest(job.id);
+    expect(post.mock.calls[0][1]).toMatchObject({
+      validateOnly: true,
+      destinations: [
+        {
+          operatingAccount: { accountId: '3394423093' },
+          loginAccount: { accountId: '1112223333' },
+          productDestinationId: '7809713674',
+        },
+      ],
+    });
+  });
+
+  it('fails closed without a configured conversion customer and makes no HTTP call', async () => {
+    const { service, job, mapping } = readyJob(true);
+    mapping.integration.conversionCustomerId = '';
+    const post = jest.spyOn(axios, 'post');
+    await expect(service.ingest(job.id)).rejects.toMatchObject({
+      code: 'NOT_ELIGIBLE',
+      transient: false,
+    });
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('rejects a historical child-account snapshot without rewriting or posting it', async () => {
+    const { service, job, prisma } = readyJob(true);
+    prisma.advertisingSyncJob.findUnique.mockResolvedValue({
+      ...job,
+      destinationSnapshot: {
+        operatingAccountId: '7181578237',
+        loginAccountId: '3394423093',
+        conversionActionId: '7809705049',
+      },
+    });
+    const post = jest.spyOn(axios, 'post');
+    await expect(service.ingest(job.id)).rejects.toMatchObject({
+      code: 'DESTINATION_MISMATCH',
+      transient: false,
+    });
+    expect(prisma.advertisingSyncJob.update).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -462,9 +529,9 @@ describe('GoogleDataManagerService', () => {
           validateOnly: true,
           status: AdvertisingSyncStatus.QUEUED,
           destinationSnapshot: {
-            operatingAccountId: 'snapshot-account',
-            loginAccountId: 'snapshot-login',
-            conversionActionId: 'snapshot-action',
+            operatingAccountId: '3394423093',
+            loginAccountId: '1112223333',
+            conversionActionId: '7809705049',
           },
           conversion: {
             eventType: AdvertisingEventType.LEAD_QUALIFIED,
@@ -493,6 +560,7 @@ describe('GoogleDataManagerService', () => {
             conversionSyncEnabled: true,
             accountId: '1112223333',
             loginAccountId: '9998887777',
+            conversionCustomerId: '3394423093',
           },
         }),
       },
@@ -522,13 +590,13 @@ describe('GoogleDataManagerService', () => {
           {
             operatingAccount: {
               accountType: 'GOOGLE_ADS',
-              accountId: 'snapshot-account',
+              accountId: '3394423093',
             },
             loginAccount: {
               accountType: 'GOOGLE_ADS',
-              accountId: 'snapshot-login',
+              accountId: '1112223333',
             },
-            productDestinationId: 'snapshot-action',
+            productDestinationId: '7809705049',
           },
         ],
         events: [
@@ -578,7 +646,11 @@ describe('GoogleDataManagerService', () => {
     const mapping = {
       exportEnabled: true,
       conversionActionId: '123',
-      integration: { conversionSyncEnabled: true, accountId: '456' },
+      integration: {
+        conversionSyncEnabled: true,
+        accountId: '456',
+        conversionCustomerId: '3394423093',
+      },
     };
     const prisma = {
       advertisingSyncJob: { findUnique: jest.fn().mockResolvedValue(job) },
@@ -634,7 +706,11 @@ describe('GoogleDataManagerService', () => {
         findUnique: jest.fn().mockResolvedValue({
           exportEnabled: true,
           conversionActionId: '123',
-          integration: { conversionSyncEnabled: true, accountId: '456' },
+          integration: {
+            conversionSyncEnabled: true,
+            accountId: '456',
+            conversionCustomerId: '3394423093',
+          },
         }),
       },
     };

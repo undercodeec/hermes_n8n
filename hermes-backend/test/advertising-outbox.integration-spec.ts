@@ -233,7 +233,9 @@ describe('Phase E durable CRM milestones in isolated PostgreSQL', () => {
       const integration = await prisma.advertisingIntegration.create({
         data: {
           provider: AdvertisingProvider.GOOGLE_ADS,
-          accountId: '123456789',
+          accountId: '7181578237',
+          loginAccountId: '1112223333',
+          conversionCustomerId: '3394423093',
           conversionSyncEnabled: true,
         },
       });
@@ -291,8 +293,8 @@ describe('Phase E durable CRM milestones in isolated PostgreSQL', () => {
       });
       expect(queued.status).toBe(AdvertisingSyncStatus.QUEUED);
       expect(queued.destinationSnapshot).toEqual({
-        operatingAccountId: '123456789',
-        loginAccountId: '123456789',
+        operatingAccountId: '3394423093',
+        loginAccountId: '1112223333',
         conversionActionId: '987654321',
       });
       const lostJob = await bullQueue.getJob(queued.id);

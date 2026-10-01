@@ -237,11 +237,16 @@ export class UpdateAdvertisingIntegrationDto {
   metricsSyncEnabled!: boolean;
 
   @IsString()
-  @Matches(/^\d{1,30}$/)
+  @Matches(/^\d{10}$/)
   accountId!: string;
 
   @IsOptional()
   @IsString()
-  @Matches(/^\d{1,30}$/)
+  @Matches(/^\d{10}$/)
   loginAccountId?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{10}$/)
+  conversionCustomerId?: string | null;
 }

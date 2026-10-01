@@ -13,6 +13,11 @@ services:
       - source: nous_hermes_api_key
         target: nous_hermes_api_key
         mode: 0400
+    volumes:
+      - type: bind
+        source: /etc/hermes/secrets/google-adc.json
+        target: /run/secrets/google-adc.json
+        read_only: true
     networks:
       - default
       - hermes_client_api

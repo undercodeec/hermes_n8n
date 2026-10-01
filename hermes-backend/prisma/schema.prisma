@@ -853,6 +853,7 @@ model AdvertisingIntegration {
   metricsSyncEnabled    Boolean             @default(false)
   accountId             String?
   loginAccountId        String?
+  conversionCustomerId  String?
   accountCurrency       String?             @db.VarChar(3)
   accountTimeZone       String?
   lastMetricsSyncAt     DateTime?

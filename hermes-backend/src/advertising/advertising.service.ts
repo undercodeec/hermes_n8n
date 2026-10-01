@@ -559,28 +559,49 @@ export class AdvertisingService {
       !mapping?.exportEnabled ||
       !mapping.integration.conversionSyncEnabled ||
       !mapping.integration.accountId ||
+      !mapping.integration.conversionCustomerId ||
+      !/^\d{10}$/.test(mapping.integration.conversionCustomerId) ||
+      (mapping.integration.loginAccountId &&
+        !/^\d{10}$/.test(mapping.integration.loginAccountId)) ||
       !mapping.conversionActionId
     )
       return;
     if (conversion.touch.adUserData !== AdvertisingConsentChoice.GRANTED)
       return;
 
+    // Existing snapshots are immutable. An old child-account destination must
+    // be reviewed explicitly, never reinterpreted or requeued automatically.
+    const snapshot = syncJob.destinationSnapshot as {
+      operatingAccountId?: string;
+      loginAccountId?: string;
+    } | null;
+    if (
+      snapshot &&
+      (snapshot.operatingAccountId !==
+        mapping.integration.conversionCustomerId ||
+        (snapshot.loginAccountId && !/^\d{10}$/.test(snapshot.loginAccountId)))
+    )
+      return;
+
     if (!syncJob.destinationSnapshot) {
-      await this.prisma.advertisingSyncJob.updateMany({
+      const frozen = await this.prisma.advertisingSyncJob.updateMany({
         where: {
           id: syncJob.id,
           destinationSnapshot: { equals: Prisma.DbNull },
         },
         data: {
           destinationSnapshot: {
-            operatingAccountId: mapping.integration.accountId,
+            operatingAccountId: mapping.integration.conversionCustomerId,
             loginAccountId:
               mapping.integration.loginAccountId ||
-              mapping.integration.accountId,
+              mapping.integration.conversionCustomerId,
             conversionActionId: mapping.conversionActionId,
           },
         },
       });
+      // If another worker froze a different destination first, do not queue
+      // this job until its persisted snapshot has been reviewed.
+      if (frozen.count !== 1) return;
     }
 
     const enabled =
@@ -806,6 +827,7 @@ export class AdvertisingService {
       metricsSyncEnabled: integration?.metricsSyncEnabled ?? false,
       accountId: integration?.accountId ?? null,
       loginAccountId: integration?.loginAccountId ?? null,
+      conversionCustomerId: integration?.conversionCustomerId ?? null,
       credentialsConfigured: Boolean(
         this.config.get('GOOGLE_APPLICATION_CREDENTIALS') ||
         this.config.get('GOOGLE_CLOUD_PROJECT'),
@@ -824,6 +846,9 @@ export class AdvertisingService {
         provider: AdvertisingProvider.GOOGLE_ADS,
         accountId: this.config.get('GOOGLE_ADS_CUSTOMER_ID'),
         loginAccountId: this.config.get('GOOGLE_ADS_LOGIN_CUSTOMER_ID'),
+        conversionCustomerId: this.config.get(
+          'GOOGLE_ADS_CONVERSION_CUSTOMER_ID',
+        ),
         accountCurrency: this.config.get('GOOGLE_ADS_CURRENCY'),
         accountTimeZone: this.config.get('GOOGLE_ADS_TIME_ZONE'),
       },

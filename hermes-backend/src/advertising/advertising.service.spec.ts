@@ -9,7 +9,10 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AdvertisingService } from './advertising.service';
-import { CreateContactIntentDto } from './dto/advertising.dto';
+import {
+  CreateContactIntentDto,
+  UpdateAdvertisingIntegrationDto,
+} from './dto/advertising.dto';
 
 const consent = {
   adStorage: AdvertisingConsentChoice.DENIED,
@@ -323,7 +326,12 @@ describe('AdvertisingService', () => {
         findUnique: jest.fn().mockResolvedValue({
           exportEnabled: true,
           conversionActionId: 'action-1',
-          integration: { conversionSyncEnabled: true, accountId: 'account-1' },
+          integration: {
+            conversionSyncEnabled: true,
+            accountId: '7181578237',
+            loginAccountId: '1112223333',
+            conversionCustomerId: '3394423093',
+          },
         }),
       },
     };
@@ -351,8 +359,8 @@ describe('AdvertisingService', () => {
         where: expect.objectContaining({ id: 'sync-late' }),
         data: {
           destinationSnapshot: {
-            operatingAccountId: 'account-1',
-            loginAccountId: 'account-1',
+            operatingAccountId: '3394423093',
+            loginAccountId: '1112223333',
             conversionActionId: 'action-1',
           },
         },
@@ -361,7 +369,13 @@ describe('AdvertisingService', () => {
     expect(queue.add).toHaveBeenCalledTimes(1);
   });
 
-  it('never enqueues a terminal sync job again', async () => {
+  it.each([
+    AdvertisingSyncStatus.FAILED,
+    AdvertisingSyncStatus.SUBMITTED,
+    AdvertisingSyncStatus.VALIDATED,
+    AdvertisingSyncStatus.ACCEPTED,
+    AdvertisingSyncStatus.CANCELLED,
+  ])('never enqueues a %s sync job again', async (status) => {
     const prisma = {
       advertisingConversion: {
         findUnique: jest.fn().mockResolvedValue({
@@ -376,15 +390,17 @@ describe('AdvertisingService', () => {
         }),
       },
       advertisingSyncJob: {
-        upsert: jest
-          .fn()
-          .mockResolvedValue({ id: 'sync-1', status: 'ACCEPTED' }),
+        upsert: jest.fn().mockResolvedValue({ id: 'sync-1', status }),
       },
       advertisingConversionMapping: {
         findUnique: jest.fn().mockResolvedValue({
           exportEnabled: true,
           conversionActionId: 'action-1',
-          integration: { conversionSyncEnabled: true, accountId: 'account-1' },
+          integration: {
+            conversionSyncEnabled: true,
+            accountId: 'account-1',
+            conversionCustomerId: '3394423093',
+          },
         }),
       },
     };
@@ -397,6 +413,79 @@ describe('AdvertisingService', () => {
     await service.prepareSync('conversion-terminal');
     expect(queue.add).not.toHaveBeenCalled();
   });
+
+  it('does not rewrite or enqueue an old child-account snapshot', async () => {
+    const historicalSnapshot = {
+      operatingAccountId: '7181578237',
+      loginAccountId: '3394423093',
+      conversionActionId: '7809705049',
+    };
+    const prisma = {
+      advertisingConversion: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'conversion-old',
+          leadId: 'lead-1',
+          verified: true,
+          eventType: AdvertisingEventType.LEAD_QUALIFIED,
+          touch: { adUserData: AdvertisingConsentChoice.GRANTED },
+        }),
+      },
+      advertisingSyncJob: {
+        upsert: jest.fn().mockResolvedValue({
+          id: 'sync-old',
+          status: AdvertisingSyncStatus.PENDING,
+          destinationSnapshot: historicalSnapshot,
+        }),
+        updateMany: jest.fn(),
+      },
+      advertisingConversionMapping: {
+        findUnique: jest.fn().mockResolvedValue({
+          exportEnabled: true,
+          conversionActionId: '7809705049',
+          integration: {
+            conversionSyncEnabled: true,
+            accountId: '7181578237',
+            conversionCustomerId: '3394423093',
+          },
+        }),
+      },
+    };
+    const queue = { add: jest.fn() };
+    const service = new AdvertisingService(
+      prisma as unknown as PrismaService,
+      { get: jest.fn(() => 'true') } as unknown as ConfigService,
+      queue as unknown as Queue,
+    );
+    await service.prepareSync('conversion-old');
+    expect(prisma.advertisingSyncJob.updateMany).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(historicalSnapshot.operatingAccountId).toBe('7181578237');
+  });
+
+  it.each(['accountId', 'loginAccountId', 'conversionCustomerId'])(
+    'rejects a non-normalized %s in integration configuration',
+    async (field) => {
+      const pipe = new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      });
+      const payload = {
+        accountId: '7181578237',
+        loginAccountId: '1112223333',
+        conversionCustomerId: '3394423093',
+        conversionSyncEnabled: false,
+        metricsSyncEnabled: true,
+        [field]: '339-442-3093',
+      };
+      await expect(
+        pipe.transform(payload, {
+          type: 'body',
+          metatype: UpdateAdvertisingIntegrationDto,
+        }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    },
+  );
 
   it('claims a queued sync job atomically for one worker and rejects terminal replay', async () => {
     const status = { value: AdvertisingSyncStatus.QUEUED };
@@ -455,13 +544,17 @@ describe('AdvertisingService', () => {
           id: 'sync-1',
           status: AdvertisingSyncStatus.QUEUED,
         }),
-        updateMany: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       advertisingConversionMapping: {
         findUnique: jest.fn().mockResolvedValue({
           exportEnabled: true,
           conversionActionId: 'action-1',
-          integration: { conversionSyncEnabled: true, accountId: 'account-1' },
+          integration: {
+            conversionSyncEnabled: true,
+            accountId: 'account-1',
+            conversionCustomerId: '3394423093',
+          },
         }),
       },
     };
@@ -508,7 +601,11 @@ describe('AdvertisingService', () => {
         findUnique: jest.fn().mockResolvedValue({
           exportEnabled: true,
           conversionActionId: 'action-1',
-          integration: { conversionSyncEnabled: true, accountId: 'account-1' },
+          integration: {
+            conversionSyncEnabled: true,
+            accountId: 'account-1',
+            conversionCustomerId: '3394423093',
+          },
         }),
       },
     };

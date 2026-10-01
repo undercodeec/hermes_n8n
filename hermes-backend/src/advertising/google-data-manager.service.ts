@@ -75,7 +75,15 @@ export class GoogleDataManagerService {
       include: { integration: true },
     });
     const touch = job.conversion.touch;
-    if (!mapping?.exportEnabled || !touch || !mapping.integration.accountId) {
+    if (
+      !mapping?.exportEnabled ||
+      !touch ||
+      !mapping.integration.accountId ||
+      !mapping.integration.conversionCustomerId ||
+      !/^\d{10}$/.test(mapping.integration.conversionCustomerId) ||
+      (mapping.integration.loginAccountId &&
+        !/^\d{10}$/.test(mapping.integration.loginAccountId))
+    ) {
       await this.notEligible(
         job.id,
         'Missing enabled mapping, account or attribution',
@@ -145,6 +153,19 @@ export class GoogleDataManagerService {
       loginAccountId?: string;
       conversionActionId?: string;
     } | null;
+    if (
+      destinationSnapshot &&
+      (destinationSnapshot.operatingAccountId !==
+        mapping.integration.conversionCustomerId ||
+        (destinationSnapshot.loginAccountId &&
+          !/^\d{10}$/.test(destinationSnapshot.loginAccountId)))
+    ) {
+      throw new GoogleSyncError(
+        'Frozen destination differs from configured conversion customer',
+        false,
+        'DESTINATION_MISMATCH',
+      );
+    }
     const body: Record<string, unknown> = {
       destinations: [
         {
@@ -152,14 +173,14 @@ export class GoogleDataManagerService {
             accountType: 'GOOGLE_ADS',
             accountId:
               destinationSnapshot?.operatingAccountId ||
-              mapping.integration.accountId,
+              mapping.integration.conversionCustomerId,
           },
           loginAccount: {
             accountType: 'GOOGLE_ADS',
             accountId:
               destinationSnapshot?.loginAccountId ||
               mapping.integration.loginAccountId ||
-              mapping.integration.accountId,
+              mapping.integration.conversionCustomerId,
           },
           productDestinationId:
             destinationSnapshot?.conversionActionId ||
@@ -194,7 +215,10 @@ export class GoogleDataManagerService {
         },
       );
     } catch (error) {
-      if (error instanceof GoogleSyncError && error.code === 'RUNTIME_STOP') {
+      if (
+        error instanceof GoogleSyncError &&
+        (error.code === 'RUNTIME_STOP' || error.code === 'DESTINATION_MISMATCH')
+      ) {
         throw error;
       }
       throw await this.handleError(job.id, error);
@@ -260,6 +284,21 @@ export class GoogleDataManagerService {
       !mapping?.exportEnabled ||
       !mapping.integration.conversionSyncEnabled ||
       !mapping.integration.accountId ||
+      !mapping.integration.conversionCustomerId ||
+      !/^\d{10}$/.test(mapping.integration.conversionCustomerId) ||
+      (mapping.integration.loginAccountId &&
+        !/^\d{10}$/.test(mapping.integration.loginAccountId)) ||
+      (current.destinationSnapshot &&
+        ((current.destinationSnapshot as { operatingAccountId?: string })
+          .operatingAccountId !== mapping.integration.conversionCustomerId ||
+          Boolean(
+            (current.destinationSnapshot as { loginAccountId?: string })
+              .loginAccountId &&
+            !/^\d{10}$/.test(
+              (current.destinationSnapshot as { loginAccountId: string })
+                .loginAccountId,
+            ),
+          ))) ||
       current.conversion.touch?.adUserData !==
         AdvertisingConsentChoice.GRANTED ||
       this.config.get<string>('ADVERTISING_GOOGLE_SYNC_ENABLED') !== 'true' ||

@@ -448,7 +448,9 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
     const integration = await prisma.advertisingIntegration.create({
       data: {
         provider: AdvertisingProvider.GOOGLE_ADS,
-        accountId: '123456789',
+        accountId: '7181578237',
+        loginAccountId: '1112223333',
+        conversionCustomerId: '3394423093',
         conversionSyncEnabled: true,
       },
     });

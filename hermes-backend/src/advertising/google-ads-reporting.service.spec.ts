@@ -16,6 +16,7 @@ describe('GoogleAdsReportingService', () => {
           id: 'integration-1',
           accountId: '718-157-8237',
           loginAccountId: '339-442-3093',
+          conversionCustomerId: '1112223333',
           metricsSyncEnabled: true,
           accountCurrency: 'EUR',
           accountTimeZone: 'Europe/Madrid',
