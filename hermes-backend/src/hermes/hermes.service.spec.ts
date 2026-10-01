@@ -36,6 +36,75 @@ type HermesProviderResponse = {
 };
 
 describe('HermesService commercial contract', () => {
+  it.each(['USD 360e3', 'USD 360 EUR'])(
+    'rejects malformed money at the model output boundary: %s',
+    async (money) => {
+      const { service, post } = setup(
+        JSON.stringify({
+          response: `Cuesta ${money}.`,
+          detectedIntent: 'consulta_precio',
+          nextAction: 'sin_accion',
+        }),
+      );
+      const policy = new CommercialPolicyService().analyze(
+        '¿Cuánto cuesta una web?',
+        new Date(),
+      );
+      const result = await service.generateResponse({
+        messageContent: '¿Cuánto cuesta una web?',
+        conversationHistory: [],
+        conversationGuidance: { ...policy.guidance, allowPriceAnswer: true },
+        commercialSnapshot: snapshot([offer('Plan A', '360.00', 'WEBSITE')]),
+      });
+      expect(post).toHaveBeenCalledTimes(2);
+      expect(result.response).not.toContain(money);
+      expect(result.detectedIntent).toBe('consulta_precio');
+    },
+  );
+  it('keeps authorized support months when the current topic is timeline', async () => {
+    const response = 'Incluye soporte por 3 meses.';
+    const { service, post } = setup(
+      JSON.stringify({
+        response,
+        detectedIntent: 'consulta_servicio',
+        nextAction: 'sin_accion',
+      }),
+    );
+    const policy = new CommercialPolicyService().analyze(
+      '¿Cuánto tiempo tomaría una web?',
+      new Date(),
+    );
+    const result = await service.generateResponse({
+      messageContent: '¿Cuánto tiempo tomaría una web?',
+      conversationHistory: [],
+      conversationGuidance: policy.guidance,
+      commercialSnapshot: snapshot([
+        { ...offer('Plan A', '360.00', 'WEBSITE'), scope: response },
+      ]),
+    });
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(result.response).toBe(response);
+  });
+  it('drops a stale price intent when policy fallback asks a general discovery question', async () => {
+    const { service } = setup(
+      JSON.stringify({
+        response: 'El proyecto cuesta USD 999.',
+        detectedIntent: 'consulta_precio',
+        nextAction: 'sin_accion',
+      }),
+    );
+    const policy = new CommercialPolicyService().analyze(
+      'Quiero una web',
+      new Date(),
+    );
+    const result = await service.generateResponse({
+      messageContent: 'Quiero una web',
+      conversationHistory: [],
+      conversationGuidance: policy.guidance,
+    });
+    expect(result.response).toContain('resultado principal');
+    expect(result.detectedIntent).toBe('info_general');
+  });
   const offer = (
     name: string,
     amount: string,
@@ -477,6 +546,38 @@ describe('HermesService commercial contract', () => {
     expect(result.response).toMatch(/usted|su solicitud|su proyecto/i);
     expect(result.commercialProfile).toEqual({ service: 'sitio web' });
   });
+
+  it.each([
+    'Puedes contarme qué quieres lograr.',
+    'Plan de Lanzamiento: USD 999.00.',
+  ])(
+    'preserves price intent through style or authorization fallback: %s',
+    async (text) => {
+      const candidate = JSON.stringify({
+        response: text,
+        detectedIntent: 'consulta_precio',
+        suggestedTags: [],
+        nextAction: 'sin_accion',
+      });
+      const { service, post } = setup([candidate, candidate]);
+      const guidance = new CommercialPolicyService().analyze(
+        '¿Cuánto cuesta?',
+        new Date(),
+      ).guidance;
+      const result = await service.generateResponse({
+        messageContent: '¿Cuánto cuesta?',
+        conversationHistory: [],
+        conversationGuidance: { ...guidance, allowPriceAnswer: true },
+        commercialSnapshot: snapshot([
+          offer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+        ]),
+      });
+      expect(post).toHaveBeenCalledTimes(2);
+      expect(result.detectedIntent).toBe('consulta_precio');
+      expect(result.response).toContain('USD $360.00');
+      expect(result.response).not.toContain('999');
+    },
+  );
 
   it('recovers an organization-location answer from authorized context', async () => {
     const invalid = JSON.stringify({
@@ -1267,7 +1368,7 @@ describe('HermesService commercial contract', () => {
     });
 
     expect(post).toHaveBeenCalledTimes(2);
-    expect(result.detectedIntent).toBe('info_general');
+    expect(result.detectedIntent).toBe('consulta_servicio');
     expect(result.nextAction).toBe('continuar_descubrimiento');
     expect(result.response).toContain('resultado principal');
     expect(result.response).not.toContain('inconveniente temporal');

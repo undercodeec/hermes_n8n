@@ -6,10 +6,29 @@ import {
   IsNumber,
   Min,
   Max,
+  Matches,
+  MaxLength,
 } from 'class-validator';
 import { LeadStage } from '@prisma/client';
 
 export class UpdateLeadDto {
+  @ApiPropertyOptional({ description: 'Monto verificado del contrato' })
+  @IsOptional()
+  @IsNumber()
+  @Min(0.01)
+  contractedAmount?: number;
+
+  @ApiPropertyOptional({ description: 'Moneda ISO 4217 del contrato' })
+  @IsOptional()
+  @Matches(/^[A-Z]{3}$/)
+  commercialCurrency?: string;
+
+  @ApiPropertyOptional({ description: 'Referencia verificable del contrato' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(128)
+  contractReference?: string;
+
   @ApiPropertyOptional({ description: 'Etapa del funnel', enum: LeadStage })
   @IsOptional()
   @IsEnum(LeadStage)

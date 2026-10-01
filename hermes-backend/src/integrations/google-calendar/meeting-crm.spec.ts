@@ -35,6 +35,10 @@ describe('Confirmed meeting CRM policy', () => {
           .mockResolvedValue({ name: 'Cliente', waId: 'test' }),
       },
       auditLog: { create: jest.fn() },
+      advertisingConversion: {
+        upsert: jest.fn().mockResolvedValue({ id: 'conversion-meeting' }),
+      },
+      advertisingSyncJob: { upsert: jest.fn() },
     };
     const service = new LeadsService(
       {} as PrismaService,
@@ -53,6 +57,9 @@ describe('Confirmed meeting CRM policy', () => {
       } as Meeting,
     );
     expect(tx.lead.update).toHaveBeenCalledTimes(
+      ['NEW', 'CONTACTED'].includes(stage) ? 1 : 0,
+    );
+    expect(tx.advertisingConversion.upsert).toHaveBeenCalledTimes(
       ['NEW', 'CONTACTED'].includes(stage) ? 1 : 0,
     );
   });

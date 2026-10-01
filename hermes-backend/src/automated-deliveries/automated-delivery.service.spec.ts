@@ -194,6 +194,29 @@ describe('AutomatedDeliveryService', () => {
   let meta: { sendTextMessage: jest.Mock; sendVoiceNote: jest.Mock };
   let service: AutomatedDeliveryService;
 
+  it('reports persisted confirmations by part, including recovery and previously confirmed sends', async () => {
+    const input = batch('Presentación general.', 'Precio autorizado.');
+    input.parts[0].metadata = {
+      commercialResolution: { pendingQuestions: ['price'] },
+    };
+    await service.prepareBatch(input);
+    expect(await service.getBatchProgress('inbound-1')).toEqual({
+      metadata: input.parts[0].metadata,
+      confirmedPartIndexes: [],
+    });
+    store.rows[0].status = 'CONFIRMED';
+    store.rows[0].wamid = 'wamid.first';
+    expect(
+      (await service.getBatchProgress('inbound-1'))?.confirmedPartIndexes,
+    ).toEqual([0]);
+    await service.recoverBatch('inbound-1');
+    expect(
+      (await service.getBatchProgress('inbound-1'))?.confirmedPartIndexes,
+    ).toEqual([0, 1]);
+    await service.recoverBatch('inbound-1');
+    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
   beforeEach(() => {
     store = new DeliveryStore();
     meta = {

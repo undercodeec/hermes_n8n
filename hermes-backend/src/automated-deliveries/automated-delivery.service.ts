@@ -92,6 +92,22 @@ export class AutomatedDeliveryService
     return { ...result, handled: true };
   }
 
+  /** Only CONFIRMED rows have a persisted Meta wamid; read receipts are irrelevant. */
+  async getBatchProgress(sourceMessageId: string) {
+    const rows = await this.prisma.automatedDelivery.findMany({
+      where: { sourceMessageId, deliveryKind: 'HERMES_REPLY' },
+      orderBy: { partIndex: 'asc' },
+      select: { partIndex: true, status: true, metadata: true },
+    });
+    if (!rows.length) return undefined;
+    return {
+      metadata: rows[0].metadata,
+      confirmedPartIndexes: rows
+        .filter((row) => row.status === AutomatedDeliveryStatus.CONFIRMED)
+        .map((row) => row.partIndex),
+    };
+  }
+
   async deliverPreparedBatch(
     sourceMessageId: string,
   ): Promise<AutomatedDeliveryBatchResult> {

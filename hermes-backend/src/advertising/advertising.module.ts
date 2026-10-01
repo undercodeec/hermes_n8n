@@ -8,6 +8,7 @@ import {
 import { AdvertisingListener } from './advertising.listener';
 import { AdvertisingProcessor } from './advertising.processor';
 import { AdvertisingService } from './advertising.service';
+import { AdvertisingReconciliationService } from './advertising-reconciliation.service';
 import { AttributionRegistrationGuard } from './attribution-registration.guard';
 import { GoogleAdsReportingService } from './google-ads-reporting.service';
 import { GoogleDataManagerService } from './google-data-manager.service';
@@ -27,6 +28,7 @@ import { GoogleDataManagerService } from './google-data-manager.service';
   controllers: [AttributionIntentsController, AdvertisingController],
   providers: [
     AdvertisingService,
+    AdvertisingReconciliationService,
     AttributionRegistrationGuard,
     AdvertisingListener,
     AdvertisingProcessor,

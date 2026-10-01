@@ -6,6 +6,194 @@ import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 
 describe('CommercialPolicyService', () => {
   it.each([
+    ['¿Cuánto cuesta una web con soporte por 3 meses?', ['price']],
+    ['¿Cuánto cuesta con hosting por 12 meses?', ['price']],
+    ['¿Cuánto cuesta una web con mantenimiento durante 6 meses?', ['price']],
+    ['¿Cuánto tiempo demora?', ['timeline']],
+    ['¿Cuántos meses demora el desarrollo?', ['timeline']],
+    ['¿Cuánto cuesta y cuánto demora?', ['price', 'timeline']],
+  ])(
+    'keeps monetary and development questions distinct: %s',
+    (text, pending) => {
+      const result = new CommercialPolicyService().analyze(text, new Date());
+      expect(result.pendingQuestions).toEqual(pending);
+      if (pending.includes('price'))
+        expect(result.intent).toBe('consulta_precio');
+    },
+  );
+  it.each(['productos', 'usuarios', 'páginas', 'unidades'])(
+    'recognizes explicit price despite quantities of %s',
+    (unit) => {
+      const decision = new CommercialPolicyService().analyze(
+        `¿Cuánto cuesta un sitio web para 20 ${unit}?`,
+        new Date(),
+      );
+      expect(decision.pendingQuestions).toEqual(['price']);
+    },
+  );
+  it.each([
+    '¿Cuál es el valor agregado?',
+    '¿Qué valor tendría para mi negocio?',
+  ])('does not treat business value as price: %s', (message) => {
+    expect(
+      new CommercialPolicyService().analyze(message, new Date())
+        .pendingQuestions,
+    ).toEqual([]);
+  });
+  it('recognizes time needed to build a website', () => {
+    const decision = new CommercialPolicyService().analyze(
+      '¿Cuánto tiempo tomaría hacer una web?',
+      new Date(),
+    );
+    expect(decision.pendingQuestions).toEqual(['timeline']);
+    expect(decision.guidance.currentTopic).toBe('timeline');
+  });
+  it.each([
+    [
+      'El comprador paga sin anticipo y el proyecto se paga en cuotas.',
+      'El comprador paga sin anticipo',
+      'el proyecto se paga en cuotas',
+    ],
+    [
+      'Sus compradores pagan con tarjeta; usted puede pagar el proyecto en cuotas.',
+      'Sus compradores pagan con tarjeta',
+      'usted puede pagar',
+    ],
+    [
+      'El comprador paga contra entrega y usted puede pagarnos en cuotas.',
+      'El comprador paga contra entrega',
+      'usted puede pagarnos',
+    ],
+  ])('separates buyer and provider clauses: %s', (message, valid, invalid) => {
+    const policy = new CommercialPolicyService();
+    expect(policy.analyze(message, new Date()).guidance.paymentContext).toBe(
+      'PROJECT_PAYMENT',
+    );
+    const result = policy.repairNousCommercialClaims(message, []);
+    expect(result.response).toContain(valid);
+    expect(result.response).not.toContain(invalid);
+    expect(result.reasons).toContain('UNAUTHORIZED_PAYMENT_TERMS');
+  });
+  it.each([
+    'Con nosotros no necesita pagar por adelantado.',
+    'Puede pagarnos cuando terminemos.',
+    'El proyecto se paga contra entrega.',
+    'Undercodeec no cobra anticipo.',
+  ])('blocks implicit provider conditions: %s', (message) => {
+    expect(
+      new CommercialPolicyService().repairNousCommercialClaims(message, [])
+        .reasons,
+    ).toContain('UNAUTHORIZED_PAYMENT_TERMS');
+  });
+  it.each([
+    'Incluye soporte por 3 meses.',
+    'Incluye 12 meses de hosting.',
+    'Incluye 6 meses de mantenimiento.',
+  ])(
+    'preserves authorized benefits and leaves timeline pending: %s',
+    (message) => {
+      const policy = new CommercialPolicyService();
+      expect(
+        policy.repairNousCommercialClaims(message, [message]).response,
+      ).toBe(message);
+      expect(policy.remainingPendingQuestions(['timeline'], message)).toEqual([
+        'timeline',
+      ]);
+    },
+  );
+  it('does not resolve timeline with a valuation promise without a task', () => {
+    expect(
+      new CommercialPolicyService().remainingPendingQuestions(
+        ['timeline'],
+        'El plazo requiere valoración del alcance.',
+      ),
+    ).toEqual(['timeline']);
+  });
+  it.each([
+    '¿Cuánto cuesta?',
+    '¿Cuánto costaría?',
+    '¿Cuánto costaría esto?',
+    '¿Y cuánto costaría?',
+    '¿Cuánto sale?',
+    '¿Cuánto saldría?',
+    '¿En cuánto me saldría?',
+    '¿Qué precio tendría?',
+    '¿Cuál sería el precio?',
+    '¿Algún precio aproximado?',
+    '¿Más o menos cuánto?',
+    '¿Y más o menos cuánto?',
+    '¿Cuál sería un aproximado?',
+    '¿De cuánto estaríamos hablando?',
+    '¿Qué valor tendría?',
+    '¿Qué presupuesto tendría algo así?',
+  ])('recognizes natural price questions: %s', (message) => {
+    const result = new CommercialPolicyService().analyze(message, new Date());
+    expect(result.guidance.currentTopic).toBe('price');
+    expect(result.pendingQuestions).toContain('price');
+    expect(result.intent).toBe('consulta_precio');
+  });
+
+  it.each([
+    '¿Cuánto tiempo costaría aprender?',
+    '¿Más o menos cuántos productos?',
+    '¿Cuál sería el tiempo aproximado?',
+    '¿Qué valor tendría esta variable?',
+    '¿A qué hora saldría?',
+    '¿Cuánto cuesta entender esto?',
+    '¿Cuánto pagarían mis compradores por sus productos?',
+  ])(
+    'does not mistake other quantities or buyer payments for project price: %s',
+    (message) => {
+      expect(
+        new CommercialPolicyService().analyze(message, new Date())
+          .pendingQuestions,
+      ).not.toContain('price');
+    },
+  );
+
+  it('keeps both obligations in the audited price and timeline question', () => {
+    const result = new CommercialPolicyService().analyze(
+      '¿Cuánto costaría esto y cuánto tiempo demoraría?',
+      new Date(),
+    );
+    expect(result.guidance.currentTopic).toBe('price');
+    expect(result.pendingQuestions).toEqual(['price', 'timeline']);
+  });
+
+  it('does not resolve a price with a deferral alone', () => {
+    expect(
+      new CommercialPolicyService().remainingPendingQuestions(
+        ['price'],
+        'El precio requiere valoración.',
+      ),
+    ).toEqual(['price']);
+  });
+
+  it.each([
+    'Contra entrega significa que el cliente paga al recibir el servicio, sin anticipo.',
+    'Contra entrega significa que el cliente final paga cuando recibe el servicio, sin pagar por adelantado.',
+    'Sus compradores podrían pagar sin anticipo al recibir sus pedidos.',
+  ])('preserves conceptual and buyer payment explanations: %s', (response) => {
+    expect(
+      new CommercialPolicyService().repairNousCommercialClaims(response, [])
+        .response,
+    ).toBe(response);
+  });
+
+  it.each([
+    'Undercodeec trabaja sin anticipo.',
+    'Puede pagarnos sin pagar por adelantado.',
+    'Contra entrega significa pagar al recibir; Undercodeec trabaja sin anticipo.',
+  ])(
+    'still blocks unauthorized provider payment conditions: %s',
+    (response) => {
+      expect(
+        new CommercialPolicyService().repairNousCommercialClaims(response, [])
+          .reasons,
+      ).toContain('UNAUTHORIZED_PAYMENT_TERMS');
+    },
+  );
+  it.each([
     '¿Me puede hacer contactar con algún asesor?',
     'Quiero hablar con ventas',
     'Pásame con un asesor',
@@ -427,13 +615,13 @@ describe('CommercialPolicyService', () => {
     expect(decision.pendingQuestions).toContain('price');
   });
 
-  it('marks price as addressed when the answer transparently requires a quote', () => {
+  it('keeps price pending when the answer only says a quote is required', () => {
     expect(
       service.remainingPendingQuestions(
         ['price', 'timeline'],
         'No tenemos una cifra autorizada para este alcance; el precio requiere una cotización del equipo.',
       ),
-    ).toEqual(['timeline']);
+    ).toEqual(['price', 'timeline']);
   });
 
   it('distinguishes project installments from checkout payments', () => {

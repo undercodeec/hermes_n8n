@@ -1,6 +1,13 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { MetaService } from '../meta/meta.service';
 import { HermesService } from '../hermes/hermes.service';
@@ -18,6 +25,7 @@ import {
   MetaWebhookDto,
   MetaWebhookMessage,
   MetaWebhookContact,
+  MetaWebhookStatus,
 } from './dto/meta-webhook.dto';
 import {
   ConversationStatus,
@@ -26,12 +34,15 @@ import {
   MessageDirection,
   MessageSender,
   MessageType,
+  MetaWebhookInboxStatus,
   Prisma,
 } from '@prisma/client';
 
 @Injectable()
-export class WebhookService {
+export class WebhookService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(WebhookService.name);
+  private recoveryTimer?: NodeJS.Timeout;
+  private scanning = false;
 
   constructor(
     private readonly configService: ConfigService,
@@ -48,6 +59,160 @@ export class WebhookService {
     private readonly deliveries: AutomatedDeliveryService,
   ) {}
 
+  onModuleInit(): void {
+    this.recoveryTimer = setInterval(() => void this.scan(), 5000);
+    this.recoveryTimer.unref();
+    void this.scan();
+  }
+
+  onModuleDestroy(): void {
+    if (this.recoveryTimer) clearInterval(this.recoveryTimer);
+  }
+
+  /** A signed callback is acknowledged only after every actionable event is durable. */
+  async acceptWebhook(dto: MetaWebhookDto): Promise<void> {
+    if (dto.object !== 'whatsapp_business_account') return;
+    const events: Prisma.MetaWebhookInboxCreateManyInput[] = [];
+    for (const entry of dto.entry || []) {
+      for (const change of entry.changes || []) {
+        if (change.field !== 'messages') continue;
+        const { messages, contacts, statuses } = change.value;
+        for (const message of messages || []) {
+          const contact = contacts?.find(
+            (candidate) => candidate.wa_id === message.from,
+          ) || { wa_id: message.from, profile: { name: '' } };
+          events.push({
+            eventKey: `message:${message.id}`,
+            eventType: 'MESSAGE',
+            payload: {
+              message,
+              contact,
+            } as unknown as Prisma.InputJsonValue,
+          });
+        }
+        for (const status of statuses || []) {
+          const hash = crypto
+            .createHash('sha256')
+            .update(JSON.stringify(status))
+            .digest('hex');
+          events.push({
+            eventKey: `status:${hash}`,
+            eventType: 'STATUS',
+            payload: { status } as unknown as Prisma.InputJsonValue,
+          });
+        }
+      }
+    }
+    if (events.length) {
+      await this.prisma.metaWebhookInbox.createMany({
+        data: events,
+        skipDuplicates: true,
+      });
+    }
+  }
+
+  /** Reclaims abandoned leases after restart; the conditional update serializes workers. */
+  async scan(): Promise<void> {
+    if (this.scanning) return;
+    this.scanning = true;
+    try {
+      const now = new Date();
+      const pending = await this.prisma.metaWebhookInbox.findMany({
+        where: {
+          OR: [
+            { status: MetaWebhookInboxStatus.PENDING },
+            { status: MetaWebhookInboxStatus.FAILED, leaseUntil: { lte: now } },
+            {
+              status: MetaWebhookInboxStatus.PROCESSING,
+              leaseUntil: { lte: now },
+            },
+          ],
+        },
+        orderBy: { createdAt: 'asc' },
+        take: 50,
+      });
+      for (const event of pending) {
+        const claimToken = randomUUID();
+        const claimed = await this.prisma.metaWebhookInbox.updateMany({
+          where: {
+            id: event.id,
+            status: event.status,
+            ...(event.status === MetaWebhookInboxStatus.PENDING
+              ? {}
+              : { leaseUntil: { lte: now } }),
+          },
+          data: {
+            status: MetaWebhookInboxStatus.PROCESSING,
+            claimToken,
+            leaseUntil: new Date(Date.now() + 5 * 60_000),
+            attempts: { increment: 1 },
+          },
+        });
+        if (!claimed.count) continue;
+        try {
+          const payload = event.payload as {
+            message?: MetaWebhookMessage;
+            contact?: MetaWebhookContact | null;
+            status?: MetaWebhookStatus;
+          };
+          let outcome = 'processed';
+          if (event.eventType === 'MESSAGE') {
+            outcome =
+              payload.message && payload.contact
+                ? await this.processIncomingMessage(
+                    payload.message,
+                    payload.contact,
+                    event.outcome === 'processing_error' ||
+                      event.status === MetaWebhookInboxStatus.PROCESSING,
+                  )
+                : 'missing_contact';
+          } else if (event.eventType === 'STATUS' && payload.status) {
+            await this.processStatuses([payload.status]);
+          }
+          await this.prisma.metaWebhookInbox.updateMany({
+            where: { id: event.id, claimToken },
+            data:
+              outcome === 'retry'
+                ? {
+                    status: MetaWebhookInboxStatus.FAILED,
+                    outcome: 'attribution_retry',
+                    claimToken: null,
+                    leaseUntil: new Date(Date.now() + 5000),
+                  }
+                : {
+                    status: MetaWebhookInboxStatus.COMPLETED,
+                    outcome,
+                    claimToken: null,
+                    leaseUntil: null,
+                  },
+          });
+        } catch (error) {
+          this.logger.warn(
+            `Webhook inbox processing failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          await this.prisma.metaWebhookInbox.updateMany({
+            where: { id: event.id, claimToken },
+            data: {
+              status: MetaWebhookInboxStatus.FAILED,
+              outcome: 'processing_error',
+              claimToken: null,
+              leaseUntil: new Date(
+                Date.now() +
+                  Math.min(60_000, 5000 * Math.max(1, event.attempts + 1)),
+              ),
+            },
+          });
+        }
+      }
+    } catch (error) {
+      this.logger.warn(
+        `Webhook inbox recovery failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    } finally {
+      this.scanning = false;
+    }
+  }
+
   /**
    * Verifica el webhook de Meta (GET request)
    * Meta envía un challenge que debemos devolver
@@ -57,7 +222,7 @@ export class WebhookService {
       'META_WEBHOOK_VERIFY_TOKEN',
     );
 
-    if (mode === 'subscribe' && token === verifyToken) {
+    if (mode === 'subscribe' && verifyToken && token === verifyToken) {
       this.logger.log('Webhook verificado exitosamente');
       return challenge;
     }
@@ -81,7 +246,8 @@ export class WebhookService {
       .update(payload)
       .digest('hex');
 
-    const receivedSignature = signature?.replace('sha256=', '') || '';
+    if (!signature?.startsWith('sha256=')) return false;
+    const receivedSignature = signature.slice(7);
     if (!/^[a-f0-9]{64}$/i.test(receivedSignature)) return false;
     return crypto.timingSafeEqual(
       Buffer.from(expectedSignature, 'hex'),
@@ -147,15 +313,51 @@ export class WebhookService {
   private async processIncomingMessage(
     message: MetaWebhookMessage,
     metaContact: MetaWebhookContact,
-  ): Promise<void> {
+    resumeCommercial = false,
+  ): Promise<string> {
     try {
       const alreadyProcessed = await this.prisma.message.findUnique({
         where: { wamid: message.id },
-        select: { id: true },
+        select: {
+          id: true,
+          contactId: true,
+          conversationId: true,
+          content: true,
+        },
       });
       if (alreadyProcessed) {
-        this.logger.debug(`Webhook duplicado ignorado: ${message.id}`);
-        return;
+        let attributionStatus = 'retry';
+        try {
+          const result = await this.advertisingService.claimReference({
+            messageContent: alreadyProcessed.content,
+            contactId: alreadyProcessed.contactId,
+            conversationId: alreadyProcessed.conversationId,
+            inboundMessageId: alreadyProcessed.id,
+          });
+          attributionStatus = result.status;
+        } catch (error) {
+          this.logger.warn(
+            `Attribution retry failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+        if (!resumeCommercial) return attributionStatus;
+        const contact = await this.prisma.contact.findUniqueOrThrow({
+          where: { id: alreadyProcessed.contactId },
+        });
+        const conversation = await this.prisma.conversation.findUniqueOrThrow({
+          where: { id: alreadyProcessed.conversationId },
+        });
+        const campaignRecipient =
+          await this.campaignsService.findHumanManagedRecipient(contact.id);
+        return this.routeInbound(
+          message,
+          contact,
+          conversation,
+          campaignRecipient,
+          alreadyProcessed,
+          alreadyProcessed.content,
+          attributionStatus,
+        );
       }
 
       // Paso 4: Identificar o crear contacto
@@ -216,13 +418,15 @@ export class WebhookService {
 
       // Best-effort: an attribution outage must not interrupt the existing
       // WhatsApp, AI or human-handoff flow.
+      let attributionStatus = 'retry';
       try {
-        await this.advertisingService.claimReference({
+        const claim = await this.advertisingService.claimReference({
           messageContent,
           contactId: contact.id,
           conversationId: conversation.id,
           inboundMessageId: inboundMessage.id,
         });
+        attributionStatus = claim.status;
       } catch (attributionError) {
         this.logger.warn(
           `Attribution failed for message ${message.id}: ${
@@ -233,101 +437,14 @@ export class WebhookService {
         );
       }
 
-      if (this.isCampaignOptOut(message)) {
-        await this.campaignsService.optOut(contact.id);
-        this.logger.log(`Contacto marcó baja de campañas`);
-        return;
-      }
-
-      // Campaign replies are never handled by Hermes. They remain visible in
-      // Inbox, but an explicit handoff gives the CRM operator sole control.
-      if (campaignRecipient) {
-        await this.handoffService.create({
-          conversationId: conversation.id,
-          reason: HandoffReason.CUSTOM,
-          reasonDetail: `Respuesta a campaña ${campaignRecipient.campaignId}; requiere atención humana desde CRM.`,
-        });
-        this.logger.log(
-          `Respuesta a campaña ${campaignRecipient.campaignId}; conversación ${conversation.id} derivada a humano sin respuesta de Hermes`,
-        );
-        return;
-      }
-
-      this.logger.log(
-        `Mensaje recibido de ${contact.waId}: ${messageContent?.substring(0, 50)}...`,
-      );
-
-      // Verificar si la conversación está en handoff (derivada a humano)
-      if (conversation.status === ConversationStatus.HANDED_OFF) {
-        this.logger.log(
-          `Conversación ${conversation.id} en handoff, no se genera respuesta automática`,
-        );
-        return;
-      }
-
-      const recentInbound = await this.prisma.message.findMany({
-        where: {
-          conversationId: conversation.id,
-          direction: MessageDirection.INBOUND,
-          sender: MessageSender.CONTACT,
-        },
-        orderBy: { createdAt: 'desc' },
-        take: 3,
-        select: { content: true },
-      });
-      const supportContext = recentInbound
-        .reverse()
-        .map((item) => item.content || '')
-        .join(' ');
-      const guardDecision = await this.conversationGuard.inspect(
-        contact.id,
-        messageContent || '',
-        supportContext,
-        requestsCommercialContact(messageContent || ''),
-      );
-      if (guardDecision.action === 'SUPPORT') {
-        await this.handoffService.create({
-          conversationId: conversation.id,
-          reason: HandoffReason.SUPPORT,
-          reasonDetail:
-            'Solicitud de soporte: problema técnico reportado en un proyecto que el cliente atribuye explícitamente a la marca.',
-        });
-        await this.sendSystemMessage(
-          conversation.id,
-          contact.id,
-          inboundMessage.id,
-          guardDecision.notice,
-          'SUPPORT_ROUTING',
-          true,
-        );
-        return;
-      }
-      if (guardDecision.action === 'BLOCK') {
-        if (guardDecision.notice) {
-          await this.sendSystemMessage(
-            conversation.id,
-            contact.id,
-            inboundMessage.id,
-            guardDecision.notice,
-            `GUARD_${guardDecision.category}`,
-            false,
-          );
-        }
-        this.logger.warn(
-          `Mensaje bloqueado antes de Gemini (${guardDecision.category}) para contacto ${contact.id}`,
-        );
-        return;
-      }
-
-      // La generación y el contexto completo se resuelven en el worker para
-      // que Meta reciba el webhook sin esperar al motor conversacional.
-      await this.autoReplies.enqueue(
-        {
-          conversationId: conversation.id,
-          contactId: contact.id,
-          inboundMessageId: inboundMessage.id,
-        },
-        (messageContent || '').length,
+      return this.routeInbound(
+        message,
+        contact,
+        conversation,
+        campaignRecipient,
+        inboundMessage,
+        messageContent,
+        attributionStatus,
       );
     } catch (error: unknown) {
       const errorMessage =
@@ -336,7 +453,116 @@ export class WebhookService {
         `Error procesando mensaje de ${metaContact.wa_id}: ${errorMessage}`,
         error instanceof Error ? error.stack : undefined,
       );
+      throw error;
     }
+  }
+
+  private async routeInbound(
+    message: MetaWebhookMessage,
+    contact: { id: string; waId: string },
+    conversation: { id: string; status: ConversationStatus },
+    campaignRecipient: { campaignId: string } | null,
+    inboundMessage: { id: string },
+    messageContent: string | null,
+    attributionStatus: string,
+  ): Promise<string> {
+    if (this.isCampaignOptOut(message)) {
+      await this.campaignsService.optOut(contact.id);
+      this.logger.log(`Contacto marcó baja de campañas`);
+      return attributionStatus;
+    }
+
+    // Campaign replies are never handled by Hermes. They remain visible in
+    // Inbox, but an explicit handoff gives the CRM operator sole control.
+    if (campaignRecipient) {
+      await this.handoffService.create({
+        conversationId: conversation.id,
+        reason: HandoffReason.CUSTOM,
+        reasonDetail: `Respuesta a campaña ${campaignRecipient.campaignId}; requiere atención humana desde CRM.`,
+      });
+      this.logger.log(
+        `Respuesta a campaña ${campaignRecipient.campaignId}; conversación ${conversation.id} derivada a humano sin respuesta de Hermes`,
+      );
+      return attributionStatus;
+    }
+
+    this.logger.log(
+      `Mensaje recibido de ${contact.waId}: ${messageContent?.substring(0, 50)}...`,
+    );
+
+    // Verificar si la conversación está en handoff (derivada a humano)
+    if (conversation.status === ConversationStatus.HANDED_OFF) {
+      this.logger.log(
+        `Conversación ${conversation.id} en handoff, no se genera respuesta automática`,
+      );
+      return attributionStatus;
+    }
+
+    const recentInbound = await this.prisma.message.findMany({
+      where: {
+        conversationId: conversation.id,
+        direction: MessageDirection.INBOUND,
+        sender: MessageSender.CONTACT,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 3,
+      select: { content: true },
+    });
+    const supportContext = recentInbound
+      .reverse()
+      .map((item) => item.content || '')
+      .join(' ');
+    const guardDecision = await this.conversationGuard.inspect(
+      contact.id,
+      messageContent || '',
+      supportContext,
+      requestsCommercialContact(messageContent || ''),
+    );
+    if (guardDecision.action === 'SUPPORT') {
+      await this.handoffService.create({
+        conversationId: conversation.id,
+        reason: HandoffReason.SUPPORT,
+        reasonDetail:
+          'Solicitud de soporte: problema técnico reportado en un proyecto que el cliente atribuye explícitamente a la marca.',
+      });
+      await this.sendSystemMessage(
+        conversation.id,
+        contact.id,
+        inboundMessage.id,
+        guardDecision.notice,
+        'SUPPORT_ROUTING',
+        true,
+      );
+      return attributionStatus;
+    }
+    if (guardDecision.action === 'BLOCK') {
+      if (guardDecision.notice) {
+        await this.sendSystemMessage(
+          conversation.id,
+          contact.id,
+          inboundMessage.id,
+          guardDecision.notice,
+          `GUARD_${guardDecision.category}`,
+          false,
+        );
+      }
+      this.logger.warn(
+        `Mensaje bloqueado antes de Gemini (${guardDecision.category}) para contacto ${contact.id}`,
+      );
+      return attributionStatus;
+    }
+
+    // La generación y el contexto completo se resuelven en el worker para
+    // que Meta reciba el webhook sin esperar al motor conversacional.
+    await this.autoReplies.enqueue(
+      {
+        conversationId: conversation.id,
+        contactId: contact.id,
+        inboundMessageId: inboundMessage.id,
+      },
+      (messageContent || '').length,
+    );
+    return attributionStatus;
   }
 
   private async sendSystemMessage(

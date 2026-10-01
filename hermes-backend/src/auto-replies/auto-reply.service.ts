@@ -24,15 +24,27 @@ import {
   CommercialProfile,
   HermesResponseDto,
 } from '../hermes/dto/hermes-request.dto';
-import { CommercialPolicyService } from '../hermes/commercial-policy.service';
+import {
+  CommercialPolicyService,
+  PendingQuestion,
+} from '../hermes/commercial-policy.service';
+import {
+  commercialClauses,
+  joinReviewedClauses,
+  deliveryQuantitiesIn,
+} from '../hermes/commercial-language';
 import {
   CommercialAuthorityService,
+  CommercialSnapshot,
   commercialSnapshotKnowledge,
 } from '../hermes/commercial-authority.service';
 import {
   answerExplicitPriceIfMissing,
+  hasAuthorizedMonetaryValue,
   reviewCommercialClaims,
+  reconcileCommercialIntent,
 } from '../hermes/commercial-claims';
+import { monetaryValuesIn } from '../hermes/monetary-values';
 import { TasksService } from '../tasks/tasks.service';
 import { splitWhatsAppMessage } from './whatsapp-message-splitter';
 import {
@@ -266,7 +278,14 @@ export class AutoReplyService {
           .join('\n')
       : inbound.content || '';
 
-    const recovered = await this.deliveries.recoverBatch(inbound.id);
+    let recovered: Awaited<
+      ReturnType<AutomatedDeliveryService['recoverBatch']>
+    >;
+    try {
+      recovered = await this.deliveries.recoverBatch(inbound.id);
+    } finally {
+      await this.reconcileDeliveryProfile(data, inbound.id, inbound);
+    }
     if (recovered?.handled) {
       this.logSkip(data, 'EXISTING_DELIVERY_BATCH', {
         confirmed: recovered.confirmed,
@@ -320,9 +339,10 @@ export class AutoReplyService {
       priceRequested: policy.guidance.priceAnswerRequired,
     });
     policy.guidance.allowPriceAnswer =
-      policy.guidance.priceAnswerRequired &&
+      !commercialSnapshot.needsMarketClarification &&
       commercialSnapshot.offers.some(
-        (offer) => offer.priceType !== 'QUOTE_REQUIRED',
+        (offer) =>
+          offer.priceType !== 'QUOTE_REQUIRED' && Boolean(offer.amount),
       );
     const selectedEngine = policy.requestsCall
       ? this.conversationEngine.selectedEngine(data.conversationId)
@@ -561,10 +581,7 @@ export class AutoReplyService {
       commercialSnapshot.market
         ? { market: commercialSnapshot.market }
         : {}),
-      pendingQuestions: this.commercialPolicy.remainingPendingQuestions(
-        policy.pendingQuestions,
-        response.response,
-      ),
+      pendingQuestions: policy.pendingQuestions,
     };
     if (!isNous) {
       Object.assign(
@@ -579,12 +596,12 @@ export class AutoReplyService {
     response.response = answerExplicitPriceIfMissing(
       commercialReview.response,
       commercialSnapshot,
-      policy.guidance.currentTopic === 'price',
+      policy.guidance.priceAnswerRequired,
     );
     if (
       !policy.guidance.priceAnswerRequired &&
       !commercialSnapshot.renewalRequested &&
-      /\b(?:USD|EUR)\s*\$?\s*\d|[$€]\s*\d/iu.test(response.response)
+      monetaryValuesIn(response.response).length > 0
     ) {
       const recommended = commercialSnapshot.offers.find(
         (offer) => offer.id === commercialSnapshot.recommendedOfferId,
@@ -631,17 +648,14 @@ export class AutoReplyService {
         response.response,
       )
     ) {
-      const terms = `El primer año de dominio y hosting está incluido según el alcance de ${recommended.name}. Desde el segundo año, la renovación conjunta cuesta USD ${recommended.renewalUsdPerYear} anuales.`;
+      const terms = `El primer año de dominio y hosting está incluido según el alcance de ${recommended.name}. Desde el segundo año, la renovación conjunta de dominio y hosting cuesta USD ${recommended.renewalUsdPerYear} anuales.`;
       response.response =
         policy.guidance.currentTopic === 'renewal' ||
         policy.guidance.currentTopic === 'infrastructure'
           ? terms
           : `${response.response} ${terms}`.trim();
     }
-    if (
-      policy.pendingQuestions.includes('timeline') &&
-      commercialSnapshot.policies?.length
-    ) {
+    if (policy.pendingQuestions.includes('timeline')) {
       const customScope = [
         customerMessage,
         context.commercialProfile?.service,
@@ -654,35 +668,34 @@ export class AutoReplyService {
         .replace(/[\u0300-\u036f]/g, '');
       const days =
         recommended?.estimatedBusinessDays ??
-        (/\b(?:software a medida|aplicacion movil|app movil|aplicacion web|web app|moodle)\b/.test(
+        (commercialSnapshot.policies?.length &&
+        /\b(?:software a medida|aplicacion movil|app movil|aplicacion web|web app|moodle)\b/.test(
           customScope,
         )
           ? 30
           : undefined);
-      if (days)
-        response.response = response.response
-          .split(/(?<=[.!?])\s+/u)
-          .filter((sentence) => {
-            const quantities = [...sentence.matchAll(/\b(\d+)\s+d[ií]as\b/giu)];
-            return (
-              !quantities.length ||
-              (quantities.every((match) => Number(match[1]) === days) &&
-                /\b(?:estimad[oa]|aproximad[oa]|alrededor|sujeto|depende)\b/iu.test(
-                  sentence,
-                ))
-            );
-          })
-          .join(' ')
-          .trim();
+      const clauses = commercialClauses(response.response);
+      const kept = clauses.filter((sentence) => {
+        const quantities = deliveryQuantitiesIn(sentence);
+        return (
+          !quantities.length ||
+          (Boolean(days) &&
+            quantities.every(
+              (match) =>
+                Number(match[1]) === days && /^d[ií]a/iu.test(match[2]),
+            ) &&
+            /\b(?:estimad[oa]|aproximad[oa]|alrededor|sujeto|depende)\b/iu.test(
+              sentence,
+            ))
+        );
+      });
+      response.response = joinReviewedClauses(response.response, clauses, kept);
       if (
         days &&
         !new RegExp(`\\b${days}\\s+d[ií]as`).test(response.response)
       ) {
-        const terms = `El plazo estimado es de aproximadamente ${days} días laborables, sujeto a que entregue a tiempo textos, imágenes, accesos y demás material necesario; si se retrasa la entrega, el plazo se desplaza.`;
-        response.response =
-          policy.guidance.currentTopic === 'timeline'
-            ? terms
-            : `${response.response} ${terms}`.trim();
+        const terms = `El plazo estimado${commercialSnapshot.additionalScope?.length ? ' del plan base' : ''} es de aproximadamente ${days} días laborables, sujeto a que entregue a tiempo textos, imágenes, accesos y demás material necesario; si se retrasa la entrega, el plazo se desplaza.`;
+        response.response = `${response.response} ${terms}`.trim();
       }
     }
     response.response = this.polishInitialGreeting({
@@ -695,7 +708,30 @@ export class AutoReplyService {
             : inbound.content || '',
       contactName: conversation.contact.name || '',
     });
+    // Recheck after commercial substitutions, then repair any still-required price.
+    const finalCommercialReview = reviewCommercialClaims(
+      response.response,
+      commercialSnapshot,
+    );
+    response.response = answerExplicitPriceIfMissing(
+      finalCommercialReview.response,
+      commercialSnapshot,
+      policy.guidance.priceAnswerRequired,
+    );
+    if (
+      policy.pendingQuestions.includes('timeline') &&
+      this.commercialPolicy.remainingPendingQuestions(
+        ['timeline'],
+        response.response,
+      ).length &&
+      !/\b(?:plazo|tiempo de entrega)\b[^.!?]*\b(?:valoraci[oó]n|confirmarse|confirmaci[oó]n)\b/iu.test(
+        response.response,
+      )
+    ) {
+      response.response = `${response.response} El plazo requiere valoración del alcance antes de confirmar una fecha.`;
+    }
     reviewedProposal?.rejections.push(...commercialReview.reasons);
+    reviewedProposal?.rejections.push(...finalCommercialReview.reasons);
 
     const outputDecision = this.conversationGuard.inspectGeneratedResponse(
       response.response,
@@ -736,7 +772,10 @@ export class AutoReplyService {
     }
 
     if (response.diagnostic?.category === 'POLICY_VIOLATION') {
-      response.detectedIntent = 'info_general';
+      response.detectedIntent =
+        policy.intent === 'consulta_precio'
+          ? 'consulta_precio'
+          : 'info_general';
       response.nextAction = 'sin_accion';
       response.suggestedTags = undefined;
     }
@@ -800,15 +839,13 @@ export class AutoReplyService {
       return;
     }
 
-    const pendingQuestions = response.commercialProfile?.pendingQuestions || [];
+    let quoteCreated = false;
     const requestedPriceWithoutAuthorizedValue =
       policy.pendingQuestions.includes('price') &&
-      !/\b\d[\d.,]*\s*(?:EUR|euros?|USD|dólares?)\b|[€$]\s*\d/i.test(
-        response.response,
-      );
+      !hasAuthorizedMonetaryValue(response.response, commercialSnapshot);
     const requestedTimelineWithoutAuthorizedValue =
       policy.pendingQuestions.includes('timeline') &&
-      !/\b\d+\s*(?:días?|semanas?|meses?)\b/i.test(response.response);
+      deliveryQuantitiesIn(response.response).length === 0;
     if (
       !response.diagnostic &&
       !isNous &&
@@ -831,16 +868,12 @@ export class AutoReplyService {
           .filter(Boolean)
           .join('; '),
       });
-      response.response = requestedTimelineWithoutAuthorizedValue
-        ? 'Con el alcance que ya ha descrito, no tengo una cifra ni un plazo autorizados para confirmarle por este canal. He registrado una solicitud de cotización para que el equipo prepare la valoración; queda pendiente de revisión.'
-        : 'Con el alcance que ya ha descrito, no tengo una cifra autorizada para confirmarle por este canal. He registrado una solicitud de cotización para que el equipo prepare la valoración; queda pendiente de revisión.';
+      quoteCreated = true;
+      response.response = `${response.response} He registrado una solicitud de cotización para que el equipo prepare la valoración de ${requestedPriceWithoutAuthorizedValue && requestedTimelineWithoutAuthorizedValue ? 'precio y plazo' : requestedPriceWithoutAuthorizedValue ? 'precio' : 'plazo'}; queda pendiente de revisión.`;
       response.detectedIntent = 'cotizacion';
       response.nextAction = 'solicitar_cotizacion_humana';
       response.commercialProfile = {
         ...response.commercialProfile,
-        pendingQuestions: pendingQuestions.filter(
-          (question) => question !== 'price' && question !== 'timeline',
-        ),
         nextStep: `Cotización ${quote.id} pendiente de revisión`,
       };
     }
@@ -886,6 +919,8 @@ export class AutoReplyService {
           .slice(0, 500),
       });
       actionResult = `QUOTE_TASK_PENDING:${quote.id}`;
+      quoteCreated = true;
+      response.detectedIntent = 'cotizacion';
       response.nextAction = 'solicitar_cotizacion_humana';
     }
     if (shouldHandoff) {
@@ -924,6 +959,36 @@ export class AutoReplyService {
       this.logSkip(data, 'CONVERSATION_STATUS_REJECTED_BEFORE_SEND');
       return;
     }
+    response.detectedIntent = reconcileCommercialIntent(
+      response.detectedIntent,
+      response.response,
+      policy.guidance.priceAnswerRequired,
+      quoteCreated,
+    );
+    response.commercialProfile = {
+      ...response.commercialProfile,
+      pendingQuestions: policy.pendingQuestions,
+    };
+    this.logger.log(
+      JSON.stringify({
+        event: 'commercial_response_finalized',
+        correlationId: inbound.id,
+        conversationId: data.conversationId,
+        engine: engineResult.engine,
+        currentTopic: policy.guidance.currentTopic,
+        preliminaryIntent: policy.intent,
+        finalIntent: response.detectedIntent,
+        priceAnswerRequired: policy.guidance.priceAnswerRequired,
+        allowPriceAnswer: policy.guidance.allowPriceAnswer,
+        recommendedOfferId: commercialSnapshot.recommendedOfferId,
+        fallback: response.diagnostic?.code,
+        claimRemoved:
+          commercialReview.reasons.length > 0 ||
+          finalCommercialReview.reasons.length > 0 ||
+          Boolean(reviewedProposal?.rejections.length),
+        quoteCreated,
+      }),
+    );
     const conversationalParts =
       isNous &&
       !response.diagnostic &&
@@ -1006,6 +1071,11 @@ export class AutoReplyService {
         }
       }
     }
+    const resolutionProofs = this.commercialResolutionSpans(
+      messageParts,
+      policy.pendingQuestions,
+      commercialSnapshot,
+    );
     await this.deliveries.prepareBatch({
       deliveryKind: 'HERMES_REPLY',
       conversationId: data.conversationId,
@@ -1029,6 +1099,31 @@ export class AutoReplyService {
         ...(partIndex === 0
           ? {
               metadata: {
+                commercialResolution: {
+                  version: 2,
+                  sourceMessageId: inbound.id,
+                  pendingQuestions: policy.pendingQuestions,
+                  resolvedByOperation: quoteCreated
+                    ? policy.pendingQuestions.filter(
+                        (question) =>
+                          question === 'price' || question === 'timeline',
+                      )
+                    : [],
+                  resolvedByPart: messageParts.map((_, index) => [
+                    ...new Set(
+                      resolutionProofs
+                        .filter(
+                          (proof) =>
+                            proof.partIndexes.length === 1 &&
+                            proof.partIndexes[0] === index,
+                        )
+                        .flatMap((proof) => proof.questions),
+                    ),
+                  ]),
+                  resolvedBySpan: resolutionProofs.filter(
+                    (proof) => proof.partIndexes.length > 1,
+                  ),
+                },
                 conversationEngine: engineResult.engine,
                 ...(data.inboundTurnId
                   ? {
@@ -1049,10 +1144,6 @@ export class AutoReplyService {
                       proposedReplySha256: createHash('sha256')
                         .update(engineResult.replyText)
                         .digest('hex'),
-                      ...(engineResult.replyText !== response.response &&
-                      !response.diagnostic
-                        ? { proposedReply: engineResult.replyText }
-                        : {}),
                       proposalRejections: reviewedProposal?.rejections,
                       proposedAction:
                         engineResult.proposedActions[0]?.type ?? 'none',
@@ -1074,10 +1165,30 @@ export class AutoReplyService {
         Number.isSafeInteger(configured) && configured >= 0 ? configured : 3000;
       if (delayMs > 0) await delay(delayMs);
     }
-    const delivery = await this.deliveries.deliverPreparedBatch(inbound.id);
+    let delivery: Awaited<
+      ReturnType<AutomatedDeliveryService['deliverPreparedBatch']>
+    >;
+    let persistedLead: Awaited<
+      ReturnType<LeadsService['recordCommercialProfileFromConversation']>
+    >;
+    try {
+      delivery = await this.deliveries.deliverPreparedBatch(inbound.id);
+    } finally {
+      // Also reconcile a confirmed first part when a later dispatch throws.
+      persistedLead = await this.reconcileDeliveryProfile(
+        data,
+        inbound.id,
+        inbound,
+        response.commercialProfile,
+      );
+    }
     const sentParts = delivery.confirmed;
     if (sentParts === 0) {
       this.logSkip(data, delivery.reasonCode || 'DELIVERY_NOT_CONFIRMED');
+      return;
+    }
+    if (await this.hasNewerInbound(data.conversationId, inbound)) {
+      this.logSkip(data, 'NEWER_INBOUND_AFTER_DELIVERY');
       return;
     }
     if (incident) {
@@ -1089,15 +1200,8 @@ export class AutoReplyService {
       data: { updatedAt: new Date() },
     });
 
-    const persistedLead =
-      await this.leads.recordCommercialProfileFromConversation({
-        contactId: data.contactId,
-        conversationId: data.conversationId,
-        profile: response.commercialProfile,
-        sourceMessageId: inbound.id,
-      });
-
     if (response.suggestedTags || response.detectedIntent) {
+      if (await this.hasNewerInbound(data.conversationId, inbound)) return;
       await this.persistConversationState(data.conversationId, response);
     }
 
@@ -1105,6 +1209,7 @@ export class AutoReplyService {
       !response.diagnostic &&
       this.shouldQualifyLead(response.detectedIntent)
     ) {
+      if (await this.hasNewerInbound(data.conversationId, inbound)) return;
       await this.leads.qualifyFromConversation({
         contactId: data.contactId,
         conversationId: data.conversationId,
@@ -1141,6 +1246,128 @@ export class AutoReplyService {
         latencyMs,
       }),
     );
+  }
+
+  private async reconcileDeliveryProfile(
+    data: AutoReplyJobData,
+    sourceMessageId: string,
+    recoveredInbound: {
+      id: string;
+      createdAt: Date;
+      rawPayload: Prisma.JsonValue | null;
+    },
+    turnProfile?: CommercialProfile,
+  ) {
+    const progress = await this.deliveries.getBatchProgress(sourceMessageId);
+    const metadata = progress?.metadata;
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata))
+      return undefined;
+    const stored = metadata.commercialResolution;
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored))
+      return undefined;
+    if (await this.hasNewerInbound(data.conversationId, recoveredInbound))
+      return undefined;
+    // This record is written by this worker before dispatch, using the reviewed snapshot.
+    // Recovery only applies persisted resolutions; it never calls the model or creates tasks.
+    const resolution = stored as unknown as {
+      pendingQuestions: PendingQuestion[];
+      resolvedByOperation: PendingQuestion[];
+      resolvedByPart: PendingQuestion[][];
+      resolvedBySpan?: {
+        partIndexes: number[];
+        questions: PendingQuestion[];
+      }[];
+    };
+    if (
+      !progress.confirmedPartIndexes.length &&
+      !resolution.pendingQuestions.length
+    )
+      return undefined;
+    const resolved = new Set(resolution.resolvedByOperation);
+    for (const index of progress.confirmedPartIndexes) {
+      for (const question of resolution.resolvedByPart[index] ?? [])
+        resolved.add(question);
+    }
+    for (const span of resolution.resolvedBySpan ?? []) {
+      if (
+        span.partIndexes.every((index) =>
+          progress.confirmedPartIndexes.includes(index),
+        )
+      ) {
+        for (const question of span.questions) resolved.add(question);
+      }
+    }
+    const lead = await this.prisma.lead.findFirst({
+      where: { contactId: data.contactId },
+      orderBy: { createdAt: 'desc' },
+    });
+    const canonical = this.commercialProfileFromMetadata(lead?.metadata);
+    const profile: CommercialProfile = {
+      ...(progress.confirmedPartIndexes.length ? turnProfile : {}),
+      pendingQuestions: [
+        ...new Set([
+          ...(canonical?.pendingQuestions ?? []),
+          ...resolution.pendingQuestions,
+        ]),
+      ].filter((question) => !resolved.has(question)),
+    };
+    // Recovery does not replay free-text profile data or append identical history.
+    if (
+      canonical &&
+      Object.entries(profile).every(
+        ([key, value]) =>
+          JSON.stringify(canonical[key as keyof CommercialProfile]) ===
+          JSON.stringify(value),
+      )
+    )
+      return lead ?? undefined;
+    if (await this.hasNewerInbound(data.conversationId, recoveredInbound))
+      return undefined;
+    return this.leads.recordCommercialProfileFromConversation({
+      contactId: data.contactId,
+      conversationId: data.conversationId,
+      sourceMessageId,
+      profile,
+    });
+  }
+
+  /** Persist only the indexes needed to prove a claim spanning physical parts. */
+  private commercialResolutionSpans(
+    parts: string[],
+    pending: PendingQuestion[],
+    snapshot: CommercialSnapshot,
+  ) {
+    const text = parts.join(' ');
+    let offset = 0;
+    const boundaries = parts.map((part) => {
+      const start = offset;
+      offset += part.length + 1;
+      return { start, end: offset - 1 };
+    });
+    offset = 0;
+    const proofs: { partIndexes: number[]; questions: PendingQuestion[] }[] =
+      [];
+    // Classify complete clauses, then require every physical part containing them.
+    // A fragment such as "3 meses" must not turn support coverage into a deadline.
+    for (const clause of commercialClauses(text)) {
+      const start = text.indexOf(clause, offset);
+      const end = start + clause.length;
+      offset = end;
+      const remaining = this.commercialPolicy.remainingPendingQuestions(
+        pending,
+        clause,
+        { snapshot },
+      );
+      const questions = pending.filter(
+        (question) => !remaining.includes(question),
+      );
+      const partIndexes = boundaries.flatMap((boundary, index) =>
+        boundary.start < end && boundary.end > start ? [index] : [],
+      );
+      if (questions.length && partIndexes.length)
+        proofs.push({ partIndexes, questions });
+    }
+    return proofs;
   }
 
   private replyDelay(messageLength: number, isInitialReply: boolean): number {
@@ -1185,7 +1412,11 @@ export class AutoReplyService {
       if (candidate.id === inbound.id) return false;
       const candidateTime =
         this.providerTimestamp(candidate.rawPayload) ?? candidate.createdAt;
-      return candidateTime.getTime() > inboundTime.getTime();
+      return (
+        candidateTime.getTime() > inboundTime.getTime() ||
+        (candidateTime.getTime() === inboundTime.getTime() &&
+          candidate.createdAt.getTime() > inbound.createdAt.getTime())
+      );
     });
   }
 

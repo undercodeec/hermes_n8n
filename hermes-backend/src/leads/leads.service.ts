@@ -7,6 +7,8 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import {
+  AdvertisingEventType,
+  AdvertisingSyncStatus,
   HandoffStatus,
   Lead,
   Meeting,
@@ -88,6 +90,7 @@ export class LeadsService {
         },
       },
     });
+    await this.recordQualifiedMilestone(tx, updated, 'CONFIRMED_MEETING');
     const contact = await tx.contact.findUniqueOrThrow({
       where: { id: meeting.contactId },
       select: { name: true, waId: true },
@@ -137,7 +140,132 @@ export class LeadsService {
     );
   }
 
+  private async recordQualifiedMilestone(
+    tx: Prisma.TransactionClient,
+    lead: Pick<Lead, 'id' | 'contactId' | 'updatedAt'>,
+    source: string,
+  ): Promise<void> {
+    const conversion = await tx.advertisingConversion.upsert({
+      where: {
+        leadId_eventType: {
+          leadId: lead.id,
+          eventType: AdvertisingEventType.LEAD_QUALIFIED,
+        },
+      },
+      create: {
+        idempotencyKey: `lead:${lead.id}:LEAD_QUALIFIED`,
+        eventType: AdvertisingEventType.LEAD_QUALIFIED,
+        leadId: lead.id,
+        contactId: lead.contactId,
+        occurredAt: lead.updatedAt || new Date(),
+        source,
+        verified: true,
+      },
+      update: {},
+    });
+    await tx.advertisingSyncJob.upsert({
+      where: { conversionId: conversion.id },
+      create: {
+        conversionId: conversion.id,
+        status: AdvertisingSyncStatus.PENDING,
+        validateOnly:
+          this.config.get<string>('ADVERTISING_GOOGLE_SEND_ENABLED') !== 'true',
+      },
+      update: {},
+    });
+  }
+
+  private async recordLostMilestone(
+    tx: Prisma.TransactionClient,
+    lead: Lead,
+    userId: string,
+  ): Promise<void> {
+    const conversion = await tx.advertisingConversion.upsert({
+      where: {
+        leadId_eventType: {
+          leadId: lead.id,
+          eventType: AdvertisingEventType.CONTRACT_LOST,
+        },
+      },
+      create: {
+        idempotencyKey: `lead:${lead.id}:CONTRACT_LOST`,
+        eventType: AdvertisingEventType.CONTRACT_LOST,
+        leadId: lead.id,
+        contactId: lead.contactId,
+        occurredAt: lead.lostAt || new Date(),
+        source: 'CRM_STAGE_CHANGE',
+        verified: true,
+        verifiedByUserId: userId,
+        commercialReference: lead.lostReason,
+      },
+      update: {},
+    });
+    await tx.advertisingSyncJob.upsert({
+      where: { conversionId: conversion.id },
+      create: {
+        conversionId: conversion.id,
+        status: AdvertisingSyncStatus.PENDING,
+        validateOnly:
+          this.config.get<string>('ADVERTISING_GOOGLE_SEND_ENABLED') !== 'true',
+      },
+      update: {},
+    });
+  }
+
+  private async recordWonMilestone(
+    tx: Prisma.TransactionClient,
+    lead: Lead,
+    userId: string,
+  ): Promise<void> {
+    const conversion = await tx.advertisingConversion.upsert({
+      where: {
+        leadId_eventType: {
+          leadId: lead.id,
+          eventType: AdvertisingEventType.CONTRACT_WON,
+        },
+      },
+      create: {
+        idempotencyKey: `lead:${lead.id}:CONTRACT_WON`,
+        eventType: AdvertisingEventType.CONTRACT_WON,
+        leadId: lead.id,
+        contactId: lead.contactId,
+        occurredAt: lead.wonAt || new Date(),
+        source: 'CRM_STAGE_CHANGE',
+        verified: true,
+        verifiedByUserId: userId,
+        value: lead.contractedAmount,
+        currency: lead.commercialCurrency,
+        commercialReference: lead.contractReference,
+      },
+      update: {},
+    });
+    if (
+      Number(conversion.value) !== Number(lead.contractedAmount) ||
+      conversion.currency !== lead.commercialCurrency ||
+      conversion.commercialReference !== lead.contractReference
+    ) {
+      throw new ConflictException(
+        'Recorded WON milestone is immutable; explicit correction required',
+      );
+    }
+    await tx.advertisingSyncJob.upsert({
+      where: { conversionId: conversion.id },
+      create: {
+        conversionId: conversion.id,
+        status: AdvertisingSyncStatus.PENDING,
+        validateOnly:
+          this.config.get<string>('ADVERTISING_GOOGLE_SEND_ENABLED') !== 'true',
+      },
+      update: {},
+    });
+  }
+
   async create(dto: CreateLeadDto) {
+    if (dto.stage === LeadStage.WON) {
+      throw new BadRequestException(
+        'WON requires a verified contract milestone',
+      );
+    }
     const result = await this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${dto.contactId}))`;
 
@@ -155,16 +283,24 @@ export class LeadsService {
         );
       }
 
-      return tx.lead.create({
+      const lead = await tx.lead.create({
         data: dto,
         include: { contact: true, campaignSource: true },
       });
+      if (lead.stage === LeadStage.QUALIFIED) {
+        await this.recordQualifiedMilestone(tx, lead, 'CRM_LEAD_CREATE');
+      }
+      return lead;
     });
 
     this.events.emit(
       'lead.created',
       new LeadCreatedEvent(result.id, result.contactId, this.traceId()),
     );
+
+    if (result.stage === LeadStage.QUALIFIED) {
+      this.emitQualified(result, result.conversationId, result.contact);
+    }
 
     return result;
   }
@@ -382,6 +518,23 @@ export class LeadsService {
         const lead = await tx.lead.findUnique({ where: { id } });
         if (!lead) throw new NotFoundException('Lead no encontrado');
 
+        if (
+          (lead.stage === LeadStage.WON &&
+            ((dto.contractedAmount !== undefined &&
+              dto.contractedAmount !== Number(lead.contractedAmount)) ||
+              (dto.commercialCurrency !== undefined &&
+                dto.commercialCurrency !== lead.commercialCurrency) ||
+              (dto.contractReference !== undefined &&
+                dto.contractReference !== lead.contractReference))) ||
+          (lead.stage === LeadStage.LOST &&
+            dto.lostReason !== undefined &&
+            dto.lostReason !== lead.lostReason)
+        ) {
+          throw new ConflictException(
+            'Recorded commercial milestone is immutable; explicit correction required',
+          );
+        }
+
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lead.contactId}))`;
         if (
           dto.stage &&
@@ -412,6 +565,23 @@ export class LeadsService {
           }
         }
 
+        if (dto.stage === LeadStage.WON && lead.stage !== LeadStage.WON) {
+          const amount = dto.contractedAmount ?? Number(lead.contractedAmount);
+          const currency = dto.commercialCurrency ?? lead.commercialCurrency;
+          const reference = dto.contractReference ?? lead.contractReference;
+          if (
+            !Number.isFinite(amount) ||
+            amount <= 0 ||
+            !currency ||
+            !/^[A-Z]{3}$/.test(currency) ||
+            !reference?.trim()
+          ) {
+            throw new BadRequestException(
+              'WON requires amount, currency and contract reference',
+            );
+          }
+        }
+
         const data: Prisma.LeadUpdateInput = { ...dto };
         if (dto.stage === LeadStage.WON && lead.stage !== LeadStage.WON) {
           data.wonAt = new Date();
@@ -425,6 +595,19 @@ export class LeadsService {
           data,
           include: { contact: true },
         });
+
+        if (
+          dto.stage === LeadStage.QUALIFIED &&
+          lead.stage !== LeadStage.QUALIFIED
+        ) {
+          await this.recordQualifiedMilestone(tx, nextLead, 'CRM_STAGE_CHANGE');
+        }
+        if (dto.stage === LeadStage.WON && lead.stage !== LeadStage.WON) {
+          await this.recordWonMilestone(tx, nextLead, userId);
+        }
+        if (dto.stage === LeadStage.LOST && lead.stage !== LeadStage.LOST) {
+          await this.recordLostMilestone(tx, nextLead, userId);
+        }
 
         await tx.auditLog.create({
           data: {
@@ -510,6 +693,7 @@ export class LeadsService {
             params.productOfInterest ?? existing.productOfInterest,
         },
       });
+      await this.recordQualifiedMilestone(tx, lead, 'CRM_QUALIFICATION_RULES');
       const contact = await tx.contact.findUniqueOrThrow({
         where: { id: params.contactId },
         select: { name: true, waId: true },

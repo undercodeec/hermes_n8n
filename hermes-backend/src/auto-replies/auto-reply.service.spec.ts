@@ -101,11 +101,19 @@ describe('AutoReplyService', () => {
       .mockResolvedValue({ id: 'outbound-1' }),
   ): AutomatedDeliveryService {
     let prepared: PrepareAutomatedDeliveryBatch | undefined;
+    const confirmedPartIndexes: number[] = [];
     const sendTextMessage = (
       metaService as unknown as { sendTextMessage: jest.Mock }
     ).sendTextMessage;
     return {
       recoverBatch: jest.fn().mockResolvedValue(null),
+      getBatchProgress: jest
+        .fn()
+        .mockImplementation(async () =>
+          prepared
+            ? { metadata: prepared.parts[0].metadata, confirmedPartIndexes }
+            : undefined,
+        ),
       prepareBatch: jest.fn().mockImplementation(async (input) => {
         prepared = input;
       }),
@@ -127,6 +135,7 @@ describe('AutoReplyService', () => {
               metadata: part.metadata,
             },
           });
+          confirmedPartIndexes.push(part.partIndex);
         }
         return {
           handled: true,
@@ -166,11 +175,14 @@ describe('AutoReplyService', () => {
     engine: { respond: jest.Mock; selectedEngine: jest.Mock };
     deliveries: {
       recoverBatch: jest.Mock;
+      getBatchProgress: jest.Mock;
       prepareBatch: jest.Mock;
       deliverPreparedBatch: jest.Mock;
     };
     messageCreate: jest.Mock;
     conversationUpdate: jest.Mock;
+    conversationStateUpsert: jest.Mock;
+    prisma: PrismaService;
   } {
     const inbound = {
       id: 'inbound-recovery',
@@ -183,6 +195,7 @@ describe('AutoReplyService', () => {
     };
     const messageCreate = jest.fn().mockResolvedValue({ id: 'outbound-1' });
     const conversationUpdate = jest.fn().mockResolvedValue({});
+    const conversationStateUpsert = jest.fn().mockResolvedValue({});
     const prisma = {
       message: {
         findUnique: jest.fn().mockResolvedValue(inbound),
@@ -204,7 +217,7 @@ describe('AutoReplyService', () => {
       },
       conversationState: {
         findUnique: jest.fn().mockResolvedValue(null),
-        upsert: jest.fn().mockResolvedValue({}),
+        upsert: conversationStateUpsert,
       },
       lead: {
         findFirst: jest.fn().mockResolvedValue(
@@ -255,7 +268,14 @@ describe('AutoReplyService', () => {
         .fn()
         .mockResolvedValue(toEngineResult(options.hermesResponse)),
     };
+    const confirmedPartIndexes: number[] = [];
     const deliveries = {
+      getBatchProgress: jest.fn().mockImplementation(async () => {
+        const prepared = deliveries.prepareBatch.mock.calls.at(-1)?.[0];
+        return prepared
+          ? { metadata: prepared.parts[0].metadata, confirmedPartIndexes }
+          : undefined;
+      }),
       recoverBatch: jest.fn().mockResolvedValue(null),
       prepareBatch: jest.fn().mockResolvedValue(undefined),
       deliverPreparedBatch: jest.fn().mockImplementation(async () => {
@@ -278,6 +298,7 @@ describe('AutoReplyService', () => {
               metadata: part.metadata,
             },
           });
+          confirmedPartIndexes.push(part.partIndex);
         }
         return {
           handled: true,
@@ -309,6 +330,7 @@ describe('AutoReplyService', () => {
     );
     return {
       service,
+      prisma,
       meta,
       tasks,
       leads,
@@ -318,8 +340,545 @@ describe('AutoReplyService', () => {
       deliveries,
       messageCreate,
       conversationUpdate,
+      conversationStateUpsert,
     };
   }
+
+  it.each([false, true])(
+    'preserves a newer profile and intent when an older normal delivery finishes (equal provider timestamp: %s)',
+    async (equalTimestamp) => {
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        marketSource: 'PROFILE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers: [testOffer('Plan A', '360.00', 'WEBSITE')],
+        needsMarketClarification: false,
+      });
+      const harness = setupProcessHarness({
+        inboundContent: '¿Cuánto cuesta?',
+        persistedProfile: { service: 'sitio web', need: 'old need' },
+        hermesResponse: {
+          response: 'Plan A: USD 360 IVA incluido.',
+          detectedIntent: 'consulta_precio',
+        },
+      });
+      const latestProfile = {
+        service: 'software a medida',
+        need: 'new need',
+        pendingQuestions: ['timeline'],
+      };
+      const deliver =
+        harness.deliveries.deliverPreparedBatch.getMockImplementation()!;
+      harness.deliveries.deliverPreparedBatch.mockImplementation(async () => {
+        const result = await deliver(); // Meta already confirmed the outbound.
+        (harness.prisma.message.findMany as jest.Mock).mockResolvedValue([
+          {
+            id: 'newer-inbound',
+            createdAt: new Date('2026-09-20T18:01:00Z'),
+            rawPayload: equalTimestamp
+              ? {
+                  timestamp: String(
+                    new Date('2026-09-20T18:00:00Z').getTime() / 1000,
+                  ),
+                }
+              : null,
+          },
+        ]);
+        (harness.prisma.lead.findFirst as jest.Mock).mockResolvedValue({
+          id: 'lead-1',
+          metadata: { commercialProfile: latestProfile },
+        });
+        return result as {
+          handled: boolean;
+          confirmed: number;
+          terminal: boolean;
+        };
+      });
+      const job = {
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      };
+      await harness.service.process(job);
+      expect(harness.messageCreate).toHaveBeenCalledTimes(1);
+      expect(
+        harness.leads.recordCommercialProfileFromConversation,
+      ).not.toHaveBeenCalled();
+      expect(harness.conversationStateUpsert).not.toHaveBeenCalled();
+      expect(harness.leads.qualifyFromConversation).not.toHaveBeenCalled();
+      expect(latestProfile).toEqual({
+        service: 'software a medida',
+        need: 'new need',
+        pendingQuestions: ['timeline'],
+      });
+      harness.deliveries.recoverBatch.mockResolvedValue({
+        handled: true,
+        confirmed: 1,
+        terminal: true,
+      });
+      await harness.service.process(job);
+      expect(
+        harness.leads.recordCommercialProfileFromConversation,
+      ).not.toHaveBeenCalled();
+      expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+      expect(harness.tasks.requestQuote).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    { indexes: [] },
+    { indexes: [0] },
+    { indexes: [1] },
+    { indexes: [0, 1] },
+  ])(
+    'resolves a physically split price only with every required confirmation: %j',
+    async ({ indexes }) => {
+      const confirmed = [...indexes];
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        marketSource: 'PROFILE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers: [testOffer('Plan A', '360.00', 'WEBSITE')],
+        needsMarketClarification: false,
+      });
+      const harness = setupProcessHarness({
+        inboundContent: '¿Cuánto cuesta?',
+        hermesResponse: {
+          response:
+            'Plan A: ' + 'detalle '.repeat(63) + 'el USD 360 IVA incluido.',
+          detectedIntent: 'consulta_precio',
+        },
+      });
+      let currentProfile: CommercialProfile = { pendingQuestions: ['price'] };
+      (harness.prisma.lead.findFirst as jest.Mock).mockImplementation(
+        async () => ({
+          id: 'lead-1',
+          metadata: { commercialProfile: currentProfile },
+        }),
+      );
+      harness.leads.recordCommercialProfileFromConversation.mockImplementation(
+        async ({ profile }) => {
+          currentProfile = { ...currentProfile, ...profile };
+          return { metadata: { commercialProfile: currentProfile } };
+        },
+      );
+      harness.deliveries.getBatchProgress.mockImplementation(async () => {
+        const batch = harness.deliveries.prepareBatch.mock.calls.at(-1)?.[0];
+        return batch
+          ? {
+              metadata: batch.parts[0].metadata,
+              confirmedPartIndexes: confirmed,
+            }
+          : undefined;
+      });
+      harness.deliveries.deliverPreparedBatch.mockImplementation(async () => ({
+        handled: true,
+        confirmed: confirmed.length,
+        terminal: true,
+      }));
+      const job = {
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      };
+      await harness.service.process(job);
+      const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+      expect(parts).toHaveLength(2);
+      expect(parts[0].content).toHaveLength(518);
+      expect(parts[0].content).toMatch(/USD$/);
+      expect(parts[1].content).toBe('360 IVA incluido.');
+      expect(currentProfile.pendingQuestions).toEqual(
+        confirmed.length === 2 ? [] : ['price'],
+      );
+      confirmed.splice(0, confirmed.length, 0, 1);
+      harness.deliveries.recoverBatch.mockResolvedValue({
+        handled: true,
+        confirmed: 2,
+        terminal: true,
+      });
+      await harness.service.process(job);
+      expect(currentProfile.pendingQuestions).toEqual([]);
+      const writes =
+        harness.leads.recordCommercialProfileFromConversation.mock.calls.length;
+      await harness.service.process(job);
+      expect(
+        harness.leads.recordCommercialProfileFromConversation,
+      ).toHaveBeenCalledTimes(writes);
+      expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+      expect(harness.tasks.requestQuote).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps synthetic PII in the canonical profile and out of delivery metadata', async () => {
+    const pii = {
+      need: 'Escribir a fixture@example.test o al 0000000000',
+      company: 'Synthetic Company',
+      location: 'Synthetic Address',
+    };
+    const harness = setupProcessHarness({
+      persistedProfile: pii,
+      hermesResponse: {
+        response: 'Podemos continuar con la consulta.',
+        detectedIntent: 'info_general',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const metadata =
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].metadata;
+    const serialized = JSON.stringify(metadata);
+    for (const value of [
+      ...Object.values(pii),
+      'fixture@example.test',
+      '0000000000',
+    ])
+      expect(serialized).not.toContain(value);
+    expect(metadata.commercialResolution).toMatchObject({
+      version: 2,
+      sourceMessageId: 'inbound-recovery',
+    });
+    expect(metadata.commercialResolution).not.toHaveProperty('profile');
+    expect(
+      harness.leads.recordCommercialProfileFromConversation,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({ profile: expect.objectContaining(pii) }),
+    );
+  });
+
+  it('does not turn a split support duration into a resolved development deadline', async () => {
+    const benefit = 'Detalle '.repeat(63) + 'Incluye soporte por 3 meses.';
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'PROFILE',
+      relevantServiceCodes: ['WEBSITE'],
+      offers: [{ ...testOffer('Plan A', '360.00', 'WEBSITE'), scope: benefit }],
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: '¿Cuánto demora?',
+      hermesResponse: {
+        response: benefit,
+        detectedIntent: 'consulta_servicio',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts.length).toBeGreaterThan(1);
+    expect(parts[0].content).not.toContain('3 meses');
+    expect(parts[1].content).toContain('3 meses');
+    expect(
+      harness.leads.recordCommercialProfileFromConversation,
+    ).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({ pendingQuestions: ['timeline'] }),
+      }),
+    );
+    expect(harness.tasks.requestQuote).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [0, false, ['price']],
+    [1, false, ['price']],
+    [1, true, []],
+    [2, false, []],
+  ])(
+    'persists obligations for %s confirmed parts (price first: %s)',
+    async (confirmed, priceFirst, pending) => {
+      const offer = testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE');
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        marketSource: 'PROFILE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers: [offer],
+        needsMarketClarification: false,
+      });
+      const parts = [
+        'Presentación general.',
+        'Plan de Lanzamiento: USD 360 IVA incluido.',
+      ];
+      if (priceFirst) parts.reverse();
+      const harness = setupProcessHarness({
+        inboundContent: '¿Cuánto cuesta?',
+        hermesResponse: {
+          response: parts.join(' '),
+          detectedIntent: 'consulta_precio',
+        },
+      });
+      harness.engine.respond.mockResolvedValue({
+        ...toEngineResult({
+          response: parts.join(' '),
+          detectedIntent: 'consulta_precio',
+        }),
+        engine: 'nous_hermes',
+        replyParts: parts,
+      });
+      const indexes = Array.from(
+        { length: Number(confirmed) },
+        (_, index) => index,
+      );
+      harness.deliveries.getBatchProgress.mockImplementation(async () => {
+        const batch = harness.deliveries.prepareBatch.mock.calls.at(-1)?.[0];
+        return batch
+          ? { metadata: batch.parts[0].metadata, confirmedPartIndexes: indexes }
+          : undefined;
+      });
+      harness.deliveries.deliverPreparedBatch.mockResolvedValue({
+        handled: true,
+        confirmed,
+        terminal: true,
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      expect(
+        harness.deliveries.prepareBatch.mock.calls[0][0].parts.map(
+          (part: { content: string }) => part.content,
+        ),
+      ).toEqual(parts);
+      expect(
+        harness.leads.recordCommercialProfileFromConversation,
+      ).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          profile: expect.objectContaining({ pendingQuestions: pending }),
+        }),
+      );
+    },
+  );
+
+  it('recovers a later price confirmation and never regenerates the response or tasks', async () => {
+    const offer = testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE');
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'PROFILE',
+      relevantServiceCodes: ['WEBSITE'],
+      offers: [offer],
+      needsMarketClarification: false,
+    });
+    const parts = [
+      'Presentación general.',
+      'Plan de Lanzamiento: USD 360 IVA incluido.',
+    ];
+    const harness = setupProcessHarness({
+      inboundContent: '¿Cuánto cuesta?',
+      hermesResponse: {
+        response: parts.join(' '),
+        detectedIntent: 'consulta_precio',
+      },
+    });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({
+        response: parts.join(' '),
+        detectedIntent: 'consulta_precio',
+      }),
+      engine: 'nous_hermes',
+      replyParts: parts,
+    });
+    harness.meta.sendTextMessage
+      .mockResolvedValueOnce({ messages: [{ id: 'wamid.first' }] })
+      .mockRejectedValueOnce(new Error('later dispatch failed'));
+    const job = {
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    };
+    await expect(harness.service.process(job)).rejects.toThrow(
+      'later dispatch failed',
+    );
+    expect(
+      harness.leads.recordCommercialProfileFromConversation,
+    ).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({ pendingQuestions: ['price'] }),
+      }),
+    );
+    const metadata =
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].metadata;
+    harness.deliveries.getBatchProgress.mockResolvedValue({
+      metadata,
+      confirmedPartIndexes: [0, 1],
+    });
+    harness.deliveries.recoverBatch.mockResolvedValue({
+      handled: true,
+      confirmed: 2,
+      terminal: true,
+    });
+    await harness.service.process(job);
+    await harness.service.process(job); // Already confirmed, no second send or new operation.
+    expect(
+      harness.leads.recordCommercialProfileFromConversation,
+    ).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({ pendingQuestions: [] }),
+      }),
+    );
+    expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+    expect(harness.tasks.requestQuote).not.toHaveBeenCalled();
+    expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a real quote resolution through zero confirmations and recovery', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: '¿Cuánto cuesta?',
+      persistedProfile: {
+        service: 'software a medida',
+        need: 'Gestionar pedidos',
+        sector: 'comercio',
+      },
+      hermesResponse: {
+        response: 'El precio requiere valoración.',
+        detectedIntent: 'consulta_precio',
+      },
+    });
+    harness.deliveries.deliverPreparedBatch.mockResolvedValue({
+      handled: true,
+      confirmed: 0,
+      terminal: true,
+    });
+    const job = {
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    };
+    await harness.service.process(job);
+    expect(harness.tasks.requestQuote).toHaveBeenCalledTimes(1);
+    expect(
+      harness.leads.recordCommercialProfileFromConversation,
+    ).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({ pendingQuestions: [] }),
+      }),
+    );
+    harness.deliveries.recoverBatch.mockResolvedValue({
+      handled: true,
+      confirmed: 0,
+      terminal: true,
+    });
+    await harness.service.process(job);
+    expect(harness.tasks.requestQuote).toHaveBeenCalledTimes(1);
+    expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the Nous timeline pending when price is answered and action is none', async () => {
+    const offer = testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE');
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'PROFILE',
+      relevantServiceCodes: ['WEBSITE'],
+      offers: [offer],
+      needsMarketClarification: false,
+    });
+    const reply = {
+      response: 'Plan de Lanzamiento: USD 360 IVA incluido.',
+      detectedIntent: 'consulta_precio',
+    };
+    const harness = setupProcessHarness({
+      inboundContent: '¿Cuánto cuesta y cuánto tiempo demoraría?',
+      persistedProfile: {
+        service: 'sitio web',
+        need: 'Mostrar lavandería',
+        sector: 'lavandería',
+      },
+      hermesResponse: reply,
+    });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult(reply),
+      engine: 'nous_hermes',
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.tasks.requestQuote).not.toHaveBeenCalled();
+    expect(
+      harness.leads.recordCommercialProfileFromConversation,
+    ).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({ pendingQuestions: ['timeline'] }),
+      }),
+    );
+    expect(
+      harness.meta.sendTextMessage.mock.calls
+        .map((call) => call[1] as string)
+        .join(' '),
+    ).toContain('El plazo requiere valoración');
+  });
+
+  it.each(['gemini_direct', 'nous_hermes'])(
+    'preserves authorized benefit durations during timeline repair for %s',
+    async (engine) => {
+      const benefits =
+        'Incluye soporte por 3 meses. Incluye 12 meses de hosting. Incluye 6 meses de mantenimiento.';
+      const offer = {
+        ...testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+        scope: benefits,
+        estimatedBusinessDays: 10,
+      };
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        marketSource: 'PROFILE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers: [offer],
+        recommendedOfferId: offer.id,
+        needsMarketClarification: false,
+      });
+      const reply = {
+        response: `${benefits} El desarrollo demora 3 meses.`,
+        detectedIntent: 'consulta_servicio',
+      };
+      const harness = setupProcessHarness({
+        inboundContent: '¿Cuánto tiempo tomaría hacer una web?',
+        hermesResponse: reply,
+      });
+      harness.engine.respond.mockResolvedValue({
+        ...toEngineResult(reply),
+        engine,
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      const answer = harness.meta.sendTextMessage.mock.calls
+        .map((call) => call[1] as string)
+        .join(' ');
+      expect(answer).toContain(benefits);
+      expect(answer).not.toContain('El desarrollo demora 3 meses');
+      expect(answer).toContain('10 días laborables');
+    },
+  );
+
+  it('reconciles intent after a diagnostic replaces the price with a discovery question', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: '¿Cuánto cuesta?',
+      hermesResponse: {
+        response: '¿Qué resultado desea obtener?',
+        detectedIntent: 'consulta_precio',
+        diagnostic: {
+          category: 'POLICY_VIOLATION',
+          code: 'UNAUTHORIZED_PRICE',
+          summary: 'Precio retirado',
+          attempts: 1,
+          recovered: true,
+          requiresHumanReview: false,
+        },
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.tasks.requestQuote).not.toHaveBeenCalled();
+    expect(harness.leads.qualifyFromConversation).not.toHaveBeenCalled();
+    expect(harness.conversationStateUpsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        update: expect.objectContaining({ detectedIntent: 'info_general' }),
+      }),
+    );
+  });
 
   it.each(['gemini_direct', 'nous_hermes'])(
     'routes meeting requests through durable calendar flow for %s',
@@ -484,6 +1043,54 @@ describe('AutoReplyService', () => {
     expect(harness.tasks.requestQuote).not.toHaveBeenCalled();
   });
 
+  it.each(['USD 360.00', 'USD 360.00,', '360 USD', '$360', '360,00 USD'])(
+    'does not create a false quote for an authorized %s',
+    async (money) => {
+      const launch = testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE');
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        marketSource: 'PROFILE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers: [launch],
+        recommendedOfferId: launch.id,
+        needsMarketClarification: false,
+      });
+      const harness = setupProcessHarness({
+        inboundContent: '¿Cuánto cuesta?',
+        persistedProfile: {
+          service: 'sitio web',
+          need: 'Mostrar lavandería',
+          sector: 'lavandería',
+        },
+        hermesResponse: {
+          response: `Plan de Lanzamiento: ${money} IVA incluido.`,
+          detectedIntent: 'consulta_precio',
+        },
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      const answer = harness.deliveries.prepareBatch.mock.calls
+        .at(-1)?.[0]
+        .parts.map((part: { content: string }) => part.content)
+        .join(' ');
+      expect(harness.tasks.requestQuote).not.toHaveBeenCalled();
+      expect(answer).toContain(money);
+      expect(answer).not.toContain('no tengo una cifra');
+      expect(
+        harness.leads.recordCommercialProfileFromConversation,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: expect.objectContaining({ pendingQuestions: [] }),
+        }),
+      );
+      expect(harness.leads.qualifyFromConversation).toHaveBeenCalledWith(
+        expect.objectContaining({ detectedIntent: 'consulta_precio' }),
+      );
+    },
+  );
+
   it('answers the authorized custom timeline with material dependency', async () => {
     (authority.snapshot as jest.Mock).mockResolvedValueOnce({
       marketSource: 'UNKNOWN',
@@ -511,6 +1118,188 @@ describe('AutoReplyService', () => {
       harness.deliveries.prepareBatch.mock.calls.at(-1)?.[0].parts[0].content;
     expect(answer).toContain('30 días laborables');
     expect(answer).toContain('sujeto a que entregue a tiempo');
+  });
+
+  it.each(['gemini_direct', 'nous_hermes'])(
+    'resolves an earlier price obligation after scope clarification for %s',
+    async (engine) => {
+      const launch = testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE');
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        marketSource: 'PROFILE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers: [launch],
+        recommendedOfferId: launch.id,
+        additionalScope: ['Agendamiento personalizado'],
+        needsMarketClarification: false,
+      });
+      const harness = setupProcessHarness({
+        inboundContent: 'Para un sitio web sencillo.',
+        persistedProfile: {
+          service: 'sitio web',
+          need: 'Mostrar lavandería',
+          pendingQuestions: ['price'],
+        },
+        hermesResponse: {
+          response: 'Podemos presentar sus servicios.',
+          detectedIntent: 'consulta_precio',
+        },
+      });
+      harness.engine.respond.mockResolvedValue({
+        ...toEngineResult({
+          response: 'Podemos presentar sus servicios.',
+          detectedIntent: 'consulta_precio',
+        }),
+        engine,
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      const guidance =
+        harness.engine.respond.mock.calls[0][0].approvedContext
+          .conversationGuidance;
+      expect(guidance).toMatchObject({
+        currentTopic: 'general',
+        priceAnswerRequired: true,
+        allowPriceAnswer: true,
+      });
+      const answer = harness.meta.sendTextMessage.mock.calls
+        .map((call) => call[1] as string)
+        .join(' ');
+      expect(answer).toContain('USD $360.00');
+      expect(answer).toContain(
+        'Agendamiento personalizado requiere valoración aparte',
+      );
+      expect(harness.tasks.requestQuote).not.toHaveBeenCalled();
+      expect(
+        harness.leads.recordCommercialProfileFromConversation,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: expect.objectContaining({ pendingQuestions: [] }),
+        }),
+      );
+    },
+  );
+
+  it.each([
+    'Plan de Lanzamiento: USD 999.00.',
+    'El precio requiere valoración.',
+  ])(
+    'keeps price pending after final validation without an operational escalation: %s',
+    async (reply) => {
+      const harness = setupProcessHarness({
+        inboundContent: '¿Algún precio aproximado?',
+        hermesResponse: { response: reply, detectedIntent: 'consulta_precio' },
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      expect(harness.tasks.requestQuote).not.toHaveBeenCalled();
+      expect(
+        harness.meta.sendTextMessage.mock.calls
+          .map((call) => call[1] as string)
+          .join(' '),
+      ).not.toContain('999');
+      expect(
+        harness.leads.recordCommercialProfileFromConversation,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: expect.objectContaining({ pendingQuestions: ['price'] }),
+        }),
+      );
+    },
+  );
+
+  it.each([true, false])(
+    'answers price and timeline together (authorized timeline: %s)',
+    async (hasTimeline) => {
+      const launch = {
+        ...testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+        ...(hasTimeline ? { estimatedBusinessDays: 10 } : {}),
+      };
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        marketSource: 'PROFILE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers: [launch],
+        recommendedOfferId: launch.id,
+        needsMarketClarification: false,
+        policies: hasTimeline ? ['Plazo estimado de 10 días laborables.'] : [],
+      });
+      const harness = setupProcessHarness({
+        inboundContent: '¿Cuánto costaría esto y cuánto tiempo demoraría?',
+        persistedProfile: {
+          service: 'sitio web',
+          need: 'Mostrar lavandería',
+          sector: 'lavandería',
+        },
+        hermesResponse: {
+          response:
+            'Plan de Lanzamiento: USD 360.00 IVA incluido. Entrega en 2 días garantizados.',
+          detectedIntent: 'consulta_precio',
+        },
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      expect(
+        harness.engine.respond.mock.calls[0][0].approvedContext
+          .pendingQuestions,
+      ).toEqual(['price', 'timeline']);
+      const answer = harness.meta.sendTextMessage.mock.calls
+        .map((call) => call[1] as string)
+        .join(' ');
+      expect(answer).toContain('USD 360.00');
+      expect(answer).toContain(
+        hasTimeline ? '10 días laborables' : 'El plazo requiere valoración',
+      );
+      expect(answer).not.toContain('no tengo una cifra');
+      expect(answer).not.toContain('2 días');
+      expect(harness.tasks.requestQuote).toHaveBeenCalledTimes(
+        hasTimeline ? 0 : 1,
+      );
+      expect(
+        harness.leads.recordCommercialProfileFromConversation,
+      ).toHaveBeenCalledWith(
+        expect.objectContaining({
+          profile: expect.objectContaining({ pendingQuestions: [] }),
+        }),
+      );
+    },
+  );
+
+  it('does not close price when a later diagnostic replaces an authorized reply', async () => {
+    const launch = testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE');
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'PROFILE',
+      relevantServiceCodes: ['WEBSITE'],
+      offers: [launch],
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: '¿Cuánto cuesta?',
+      outputDecision: { action: 'BLOCK', reason: 'STRUCTURED_PAYLOAD' },
+      hermesResponse: {
+        response: 'Plan de Lanzamiento: USD 360.00 IVA incluido.',
+        detectedIntent: 'consulta_precio',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(
+      harness.leads.recordCommercialProfileFromConversation,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: expect.objectContaining({ pendingQuestions: ['price'] }),
+      }),
+    );
   });
 
   it('uses one inference for all messages in a claimed conversation turn', async () => {
@@ -2224,7 +3013,7 @@ describe('AutoReplyService', () => {
           .fn()
           .mockResolvedValueOnce([inbound])
           .mockResolvedValueOnce([])
-          .mockResolvedValueOnce([inbound]),
+          .mockResolvedValue([inbound]),
         create: jest.fn().mockResolvedValue({ id: 'outbound-1' }),
       },
       conversation: {
@@ -2424,7 +3213,7 @@ describe('AutoReplyService', () => {
               rawPayload: { timestamp: '1789761300' },
             },
           ])
-          .mockResolvedValueOnce([inbound]),
+          .mockResolvedValue([inbound]),
         create: jest.fn().mockResolvedValue({ id: 'outbound-1' }),
       },
       conversation: {

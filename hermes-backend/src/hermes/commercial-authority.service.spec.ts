@@ -62,6 +62,92 @@ describe('CommercialAuthorityService', () => {
   }
 
   it.each([
+    'agendar retiros',
+    'Necesito agendar retiros.',
+    'Quiero programar recogidas.',
+    'Debe permitir solicitar recolección.',
+    'programar recogidas',
+    'coordinar recogida a domicilio',
+    'solicitar recolección',
+    'reservar retiro a domicilio',
+  ])('detects collection scope: %s', async (scope) => {
+    const snapshot = await service([base]).authority.snapshot({
+      customerMessage: `Quiero un sitio web en Ecuador para ${scope}`,
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.additionalScope).toContain(
+      'Agendamiento personalizado de retiros o recogidas',
+    );
+  });
+  it.each([
+    'agenda de contactos',
+    'No necesito agendar retiros.',
+    'No quiero recogidas.',
+    'Sin servicio de recolección.',
+    'agenda de empresa',
+    'agendamiento de noticias',
+    'agendar retiro de efectivo',
+    'retirar una sección',
+    'recoger datos',
+  ])('does not infer collection scope: %s', async (scope) => {
+    const snapshot = await service([base]).authority.snapshot({
+      customerMessage: `Quiero un sitio web en Ecuador para ${scope}`,
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.additionalScope).not.toContain(
+      'Agendamiento personalizado de retiros o recogidas',
+    );
+  });
+  it('keeps laundry scheduling outside the base website price authority', async () => {
+    const { authority } = service([base]);
+    const snapshot = await authority.snapshot({
+      customerMessage:
+        'Quiero un sitio web para mi lavandería y agendar retiros en Ecuador',
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.offers[0].amount).toBe('360.00');
+    expect(snapshot.additionalScope).toContain(
+      'Agendamiento personalizado de retiros o recogidas',
+    );
+  });
+  it('deduplicates collection reservations but preserves a separate calendar capability', async () => {
+    const authority = service([base]).authority;
+    const input = {
+      customerMessage:
+        'Quiero un sitio web en Ecuador para reservar retiro a domicilio',
+      priceRequested: true,
+      now,
+    };
+    expect((await authority.snapshot(input)).additionalScope).toEqual([
+      'Agendamiento personalizado de retiros o recogidas',
+    ]);
+    expect(
+      (
+        await authority.snapshot({
+          ...input,
+          customerMessage: `${input.customerMessage} y reservas con calendario para consultas`,
+        })
+      ).additionalScope,
+    ).toEqual([
+      'Agendamiento personalizado de retiros o recogidas',
+      'Reservas con calendario o disponibilidad automática',
+    ]);
+    expect(
+      (
+        await authority.snapshot({
+          ...input,
+          recentCustomerMessages: [input.customerMessage],
+          customerMessage:
+            'Quiero un sitio web en Ecuador. No necesito agendar retiros.',
+        })
+      ).additionalScope,
+    ).toEqual([]);
+  });
+
+  it.each([
     {
       message: 'Quiero promocionar mi negocio. ¿Qué opciones y precios tienen?',
       codes: ['LANDING_PAGE', 'WEBSITE'],

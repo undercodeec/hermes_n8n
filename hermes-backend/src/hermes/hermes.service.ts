@@ -1,3 +1,4 @@
+import { deliveryQuantitiesIn } from './commercial-language';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
@@ -8,16 +9,15 @@ import {
   HermesRequestDto,
   HermesResponseDto,
 } from './dto/hermes-request.dto';
-import {
-  monetaryAmountsIn,
-  organizationLocationContext,
-} from './commercial-catalog';
+import { organizationLocationContext } from './commercial-catalog';
+import { monetaryValuesIn } from './monetary-values';
 import { sanitizeDiagnosticSummary } from './hermes-diagnostics';
 import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 import { commercialSnapshotKnowledge } from './commercial-authority.service';
 import {
   answerExplicitPriceIfMissing,
   reviewCommercialClaims,
+  reconcileCommercialIntent,
 } from './commercial-claims';
 
 type ParsedHermesResponse = Pick<
@@ -973,7 +973,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         reason: 'recomienda un plan antes de contar con criterios suficientes',
       };
     }
-    const hasMonetaryValue = monetaryAmountsIn(response.response).length > 0;
+    const hasMonetaryValue = monetaryValuesIn(response.response).length > 0;
     if (hasMonetaryValue) {
       const pricesAreAuthorized =
         request.commercialSnapshot !== undefined &&
@@ -997,7 +997,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     }
     if (
       request.conversationGuidance?.currentTopic === 'timeline' &&
-      /\b\d+\s*(?:dias?|semanas?|meses?)\b/.test(normalized) &&
+      deliveryQuantitiesIn(response.response).length > 0 &&
       !/\b(?:depende|estimad[oa]|aproximad[oa]|requiere|necesita|sujeto a|por confirmar|sin confirmar)\b/.test(
         normalized,
       )
@@ -1245,7 +1245,10 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     if (topic === 'business_location') {
       content = this.organizationLocationAnswer(request);
       requiresHumanReview = this.requestsExactLocation(request);
-    } else if (topic === 'price') {
+    } else if (
+      topic === 'price' ||
+      request.conversationGuidance?.priceAnswerRequired
+    ) {
       const published = request.commercialSnapshot
         ? answerExplicitPriceIfMissing('', request.commercialSnapshot, true)
         : undefined;
@@ -1315,7 +1318,14 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     return {
       ...response,
       response: content,
-      detectedIntent: 'info_general',
+      detectedIntent: reconcileCommercialIntent(
+        response.detectedIntent,
+        content,
+        Boolean(
+          request.conversationGuidance?.priceAnswerRequired ||
+          topic === 'price',
+        ),
+      ),
       nextAction,
       ...(commercialProfile ? { commercialProfile } : {}),
       ...(!commercialProfile ? { commercialProfile: undefined } : {}),
@@ -1339,7 +1349,10 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     let nextAction = 'sin_accion';
     if (topic === 'business_location') {
       content = this.organizationLocationAnswer(request);
-    } else if (topic === 'price') {
+    } else if (
+      topic === 'price' ||
+      request.conversationGuidance?.priceAnswerRequired
+    ) {
       content = request.commercialSnapshot
         ? answerExplicitPriceIfMissing('', request.commercialSnapshot, true) ||
           'El valor depende del alcance específico de su solicitud.'
@@ -1354,7 +1367,10 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     return {
       ...response,
       response: content,
-      detectedIntent: 'info_general',
+      detectedIntent:
+        request.conversationGuidance?.priceAnswerRequired || topic === 'price'
+          ? 'consulta_precio'
+          : response.detectedIntent,
       nextAction,
       ...(request.commercialProfile
         ? { commercialProfile: { ...request.commercialProfile } }

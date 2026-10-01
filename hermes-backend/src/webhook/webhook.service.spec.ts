@@ -8,7 +8,11 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
-import { ConversationStatus, HandoffReason } from '@prisma/client';
+import {
+  ConversationStatus,
+  HandoffReason,
+  MetaWebhookInboxStatus,
+} from '@prisma/client';
 import { CampaignsService } from '../campaigns/campaigns.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { HermesService } from '../hermes/hermes.service';
@@ -21,6 +25,277 @@ import { ConversationGuardService } from '../conversation-guard/conversation-gua
 import { AdvertisingService } from '../advertising/advertising.service';
 import { ConversationEventsService } from '../conversations/conversation-events.service';
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
+
+function webhookWithDoubles(
+  prisma: PrismaService,
+  advertising = {} as AdvertisingService,
+) {
+  return new WebhookService(
+    { get: jest.fn() } as unknown as ConfigService,
+    prisma,
+    {} as MetaService,
+    {} as HermesService,
+    {} as HandoffService,
+    {} as LeadsService,
+    {} as CampaignsService,
+    {} as AutoReplyService,
+    {} as ConversationGuardService,
+    advertising,
+    {} as ConversationEventsService,
+    {} as AutomatedDeliveryService,
+  );
+}
+
+describe('WebhookService durable inbox', () => {
+  const message = {
+    id: 'wamid.synthetic',
+    from: '593990000001',
+    timestamp: '1',
+    type: 'text',
+    text: { body: 'hola' },
+  };
+  const contact = { wa_id: message.from, profile: { name: 'Prueba' } };
+  const dto = {
+    object: 'whatsapp_business_account',
+    entry: [
+      {
+        id: 'account',
+        changes: [
+          {
+            field: 'messages',
+            value: {
+              messaging_product: 'whatsapp',
+              metadata: { display_phone_number: '', phone_number_id: '' },
+              messages: [message],
+              contacts: [contact],
+            },
+          },
+        ],
+      },
+    ],
+  };
+
+  it('stores each inbound event with a stable wamid key before processing', async () => {
+    const createMany = jest.fn().mockResolvedValue({ count: 1 });
+    const service = webhookWithDoubles({
+      metaWebhookInbox: { createMany },
+    } as unknown as PrismaService);
+    await service.acceptWebhook(dto);
+    expect(createMany).toHaveBeenCalledWith({
+      data: [
+        {
+          eventKey: 'message:wamid.synthetic',
+          eventType: 'MESSAGE',
+          payload: { message, contact },
+        },
+      ],
+      skipDuplicates: true,
+    });
+  });
+
+  it('recovers a failed attribution after restart without processing the message twice', async () => {
+    const row = {
+      id: 'inbox-1',
+      eventKey: 'message:wamid.synthetic',
+      eventType: 'MESSAGE',
+      payload: { message, contact },
+      status: MetaWebhookInboxStatus.PENDING,
+      attempts: 0,
+      claimToken: null as string | null,
+      leaseUntil: null as Date | null,
+    };
+    const inbox = {
+      findMany: jest.fn().mockImplementation(() => Promise.resolve([row])),
+      updateMany: jest.fn().mockImplementation(({ where, data }) => {
+        if (where.status && row.status !== where.status) return { count: 0 };
+        if (where.claimToken && row.claimToken !== where.claimToken)
+          return { count: 0 };
+        if (
+          where.leaseUntil &&
+          row.leaseUntil &&
+          row.leaseUntil > where.leaseUntil.lte
+        )
+          return { count: 0 };
+        const attempts = row.attempts;
+        Object.assign(row, data);
+        if (typeof data.attempts === 'object') row.attempts = attempts + 1;
+        return { count: 1 };
+      }),
+    };
+    const prisma = { metaWebhookInbox: inbox } as unknown as PrismaService;
+    const first = webhookWithDoubles(prisma);
+    const second = webhookWithDoubles(prisma);
+    const process = jest
+      .fn()
+      .mockResolvedValueOnce('retry')
+      .mockResolvedValueOnce('confirmed');
+    jest
+      .spyOn(first as any, 'processIncomingMessage')
+      .mockImplementation(process);
+    jest
+      .spyOn(second as any, 'processIncomingMessage')
+      .mockImplementation(process);
+
+    await first.scan();
+    expect(row.status).toBe(MetaWebhookInboxStatus.FAILED);
+    row.leaseUntil = new Date(0);
+    await second.scan();
+    expect(row.status).toBe(MetaWebhookInboxStatus.COMPLETED);
+    expect(row.attempts).toBe(2);
+    expect(process).toHaveBeenCalledTimes(2);
+  });
+
+  it('claims one inbox row only once across five concurrent workers', async () => {
+    const row = {
+      id: 'inbox-concurrent',
+      eventType: 'MESSAGE',
+      payload: { message, contact },
+      status: MetaWebhookInboxStatus.PENDING,
+      attempts: 0,
+      claimToken: null as string | null,
+    };
+    const process = jest.fn().mockResolvedValue('missing');
+    const prisma = {
+      metaWebhookInbox: {
+        findMany: jest
+          .fn()
+          .mockImplementation(() => Promise.resolve([{ ...row }])),
+        updateMany: jest.fn().mockImplementation(({ where, data }) => {
+          if (where.status && row.status !== where.status) return { count: 0 };
+          if (where.claimToken && row.claimToken !== where.claimToken)
+            return { count: 0 };
+          Object.assign(row, data);
+          return { count: 1 };
+        }),
+      },
+    } as unknown as PrismaService;
+    const workers = Array.from({ length: 5 }, () => webhookWithDoubles(prisma));
+    for (const worker of workers) {
+      jest
+        .spyOn(worker as any, 'processIncomingMessage')
+        .mockImplementation(process);
+    }
+    await Promise.all(workers.map((worker) => worker.scan()));
+    expect(process).toHaveBeenCalledTimes(1);
+    expect(row.status).toBe(MetaWebhookInboxStatus.COMPLETED);
+  });
+
+  it('resumes commercial routing when a worker died after persisting the message', async () => {
+    const row = {
+      id: 'inbox-abandoned',
+      eventType: 'MESSAGE',
+      payload: { message, contact },
+      status: MetaWebhookInboxStatus.PROCESSING,
+      outcome: null,
+      attempts: 1,
+      leaseUntil: new Date(0),
+    };
+    const inbox = {
+      findMany: jest.fn().mockResolvedValue([row]),
+      updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+    };
+    const service = webhookWithDoubles({
+      metaWebhookInbox: inbox,
+    } as unknown as PrismaService);
+    const process = jest
+      .spyOn(service as any, 'processIncomingMessage')
+      .mockResolvedValue('confirmed');
+    await service.scan();
+    expect(process).toHaveBeenCalledWith(message, contact, true);
+  });
+
+  it('retries only the claim when the inbound message already exists', async () => {
+    const existing = {
+      id: 'message-1',
+      contactId: 'contact-1',
+      conversationId: 'conversation-1',
+      content: 'Referencia: UC-AAAAAAAAAAAAAAAAAAAAAA',
+    };
+    const advertising = {
+      claimReference: jest.fn().mockResolvedValue({ status: 'confirmed' }),
+    };
+    const prisma = {
+      message: {
+        findUnique: jest.fn().mockResolvedValue(existing),
+        create: jest.fn(),
+      },
+    };
+    const service = webhookWithDoubles(
+      prisma as unknown as PrismaService,
+      advertising as unknown as AdvertisingService,
+    );
+    await expect(
+      (service as any).processIncomingMessage(message, contact),
+    ).resolves.toBe('confirmed');
+    expect(advertising.claimReference).toHaveBeenCalledWith({
+      messageContent: existing.content,
+      contactId: existing.contactId,
+      conversationId: existing.conversationId,
+      inboundMessageId: existing.id,
+    });
+    expect(prisma.message.create).not.toHaveBeenCalled();
+  });
+
+  it('resumes an interrupted commercial route without recreating its inbound message', async () => {
+    const existing = {
+      id: 'message-1',
+      contactId: 'contact-1',
+      conversationId: 'conversation-1',
+      content: 'hola',
+    };
+    const prisma = {
+      message: {
+        findUnique: jest.fn().mockResolvedValue(existing),
+        findMany: jest.fn().mockResolvedValue([{ content: 'hola' }]),
+        create: jest.fn(),
+      },
+      contact: {
+        findUniqueOrThrow: jest
+          .fn()
+          .mockResolvedValue({ id: 'contact-1', waId: message.from }),
+      },
+      conversation: {
+        findUniqueOrThrow: jest.fn().mockResolvedValue({
+          id: 'conversation-1',
+          status: ConversationStatus.ACTIVE,
+        }),
+      },
+    };
+    const autoReplies = { enqueue: jest.fn().mockResolvedValue(undefined) };
+    const service = new WebhookService(
+      { get: jest.fn() } as unknown as ConfigService,
+      prisma as unknown as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      {
+        findHumanManagedRecipient: jest.fn().mockResolvedValue(null),
+      } as unknown as CampaignsService,
+      autoReplies as unknown as AutoReplyService,
+      {
+        inspect: jest.fn().mockResolvedValue({ action: 'ALLOW' }),
+      } as unknown as ConversationGuardService,
+      {
+        claimReference: jest.fn().mockResolvedValue({ status: 'missing' }),
+      } as unknown as AdvertisingService,
+      {} as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+    );
+    await expect(
+      (service as any).processIncomingMessage(message, contact, true),
+    ).resolves.toBe('missing');
+    expect(prisma.message.create).not.toHaveBeenCalled();
+    expect(autoReplies.enqueue).toHaveBeenCalledWith(
+      {
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'message-1',
+      },
+      4,
+    );
+  });
+});
 
 describe('WebhookService campaign replies', () => {
   it('records every accepted Meta webhook before processing its entries', async () => {
@@ -84,6 +359,50 @@ describe('WebhookService campaign replies', () => {
 
     expect(service.validateSignature(payload, signature)).toBe(true);
     expect(service.validateSignature(payload, 'sha256=bad')).toBe(false);
+    expect(service.validateSignature(payload, signature.slice(7))).toBe(false);
+    expect(
+      service.validateSignature(
+        Buffer.from(`${payload.toString()} `),
+        signature,
+      ),
+    ).toBe(false);
+  });
+
+  it('returns the challenge only for the configured verification token', () => {
+    const service = new WebhookService(
+      {
+        get: jest.fn(() => 'synthetic-verify-token'),
+      } as unknown as ConfigService,
+      {} as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      {} as CampaignsService,
+      {} as AutoReplyService,
+      {} as ConversationGuardService,
+      {} as AdvertisingService,
+      {} as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+    );
+    expect(
+      service.verifyWebhook(
+        'subscribe',
+        'synthetic-verify-token',
+        'challenge-1',
+      ),
+    ).toBe('challenge-1');
+    expect(() =>
+      service.verifyWebhook('subscribe', 'wrong', 'challenge-1'),
+    ).toThrow();
+    const missingConfig = webhookWithDoubles({} as PrismaService);
+    expect(() =>
+      missingConfig.verifyWebhook(
+        'subscribe',
+        undefined as unknown as string,
+        'challenge-1',
+      ),
+    ).toThrow();
   });
 
   it('sends a campaign reply to human handoff without invoking Hermes', async () => {

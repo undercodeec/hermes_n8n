@@ -6,6 +6,17 @@ import {
   PaymentContext,
 } from './dto/hermes-request.dto';
 import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
+import { monetaryValuesIn } from './monetary-values';
+import {
+  commercialClauses,
+  joinReviewedClauses,
+  deliveryQuantitiesIn,
+  withoutBenefitDurations,
+  describesBuyerPayment,
+  hasUnauthorizedPaymentTerms,
+} from './commercial-language';
+import { hasAuthorizedMonetaryValue } from './commercial-claims';
+import type { CommercialSnapshot } from './commercial-authority.service';
 
 export type PendingQuestion =
   | 'price'
@@ -84,7 +95,7 @@ export class CommercialPolicyService {
       'servicios',
     ]);
     const reasons: string[] = [];
-    const sentences = response.split(/(?<=[.!?])\s+/u).filter(Boolean);
+    const sentences = commercialClauses(response);
     const kept = sentences.filter((sentence) => {
       const normalized = this.normalize(sentence);
       const unsupportedOffer =
@@ -97,12 +108,13 @@ export class CommercialPolicyService {
         reasons.push('UNAUTHORIZED_DISCOUNT');
         return false;
       }
+      const deliveryText = withoutBenefitDurations(normalized);
       if (
         /\b(?:entrega|entregado|listo|terminado|implementado|plazo)\b.{0,70}\b\d+\s*(?:dias?|semanas?|meses?)\b|\b\d+\s*(?:dias?|semanas?|meses?)\b.{0,70}\b(?:entrega|listo|terminado|implementado)\b/.test(
-          normalized,
+          deliveryText,
         ) ||
         /\b(?:entrega(?:mos|remos)?|entregado|lista|listo|terminado|implementado|plazo|tarda|demora)\b.{0,70}\b(?:\d+|un|una|dos|tres|cuatro|cinco|seis|siete|ocho|diez|quince|treinta)(?:\s*(?:a|y|-)\s*\d+)?\s*(?:horas?|dias?|semanas?|meses?)\b|\b(?:entrega(?:mos|remos)?|lista|listo)\b.{0,40}\b(?:manana|proxima semana)\b/.test(
-          normalized,
+          deliveryText,
         )
       ) {
         const days = [...normalized.matchAll(/\b(\d+)\s+dias?\b/g)].map(
@@ -126,11 +138,7 @@ export class CommercialPolicyService {
           return false;
         }
       }
-      if (
-        /\b(?:cuotas?|anticipo|abono|financiacion|50\s*\/\s*50|pago[s]?\s+(?:a|en)\s+plazos?)\b/.test(
-          normalized,
-        )
-      ) {
+      if (hasUnauthorizedPaymentTerms(normalized)) {
         reasons.push('UNAUTHORIZED_PAYMENT_TERMS');
         return false;
       }
@@ -150,7 +158,7 @@ export class CommercialPolicyService {
     });
     return {
       response:
-        kept.join(' ').trim() ||
+        joinReviewedClauses(response, sentences, kept) ||
         'Este punto requiere una valoración del equipo antes de confirmar condiciones.',
       reasons,
     };
@@ -169,18 +177,10 @@ export class CommercialPolicyService {
       ),
     );
 
-    if (
-      /\b(cuanto (cuesta|vale)|precio|coste|costo|cotiz|que valores|cuanto tendria que pagar|que tendria que pagar)/.test(
-        normalized,
-      )
-    ) {
+    if (this.isPriceQuestion(normalized)) {
       pending.add('price');
     }
-    if (
-      /\b(cuanto (tarda|demora)|plazo|tiempo de entrega|para cuando)/.test(
-        normalized,
-      )
-    ) {
+    if (this.isTimelineQuestion(normalized)) {
       pending.add('timeline');
     }
     if (/\b(propuesta|presupuesto formal)/.test(normalized)) {
@@ -423,26 +423,17 @@ export class CommercialPolicyService {
   remainingPendingQuestions(
     pending: PendingQuestion[],
     response: string,
+    resolution: { snapshot?: CommercialSnapshot; quoteCreated?: boolean } = {},
   ): PendingQuestion[] {
-    const normalized = this.normalize(response);
-    const hasAuthorizedValue =
-      /\b\d[\d.,]*\s*(?:eur|euros?|usd|dolares?)\b|[€$]\s*\d/.test(normalized);
-    const explainsPriceEscalation =
-      /\b(?:no (?:dispongo|tenemos)|sin)\b.{0,60}\b(?:precio|tarifa|cifra)\b.{0,80}\b(?:confirm\w*|autoriz\w*|cotiz\w*|valoracion)\b/.test(
-        normalized,
-      ) ||
-      /\b(?:precio|tarifa|cifra)\b.{0,80}\b(?:requiere|necesita|sujeto a)\b.{0,40}\b(?:cotiz\w*|valoracion|revision)\b/.test(
-        normalized,
-      );
-    const hasTimeline =
-      /\b\d+\s*(?:dias?|semanas?|meses?)\b/.test(normalized) ||
-      /\b(?:plazo|tiempo de entrega)\b.{0,80}\b(?:requiere|necesita|sujeto a|sin)\b.{0,40}\b(?:valoracion|revision|confirmacion)\b/.test(
-        normalized,
-      );
+    const hasAuthorizedValue = resolution.snapshot
+      ? hasAuthorizedMonetaryValue(response, resolution.snapshot)
+      : monetaryValuesIn(response).some((value) => value.amount !== undefined);
+    const hasTimeline = deliveryQuantitiesIn(response).length > 0;
     return pending.filter((question) => {
       if (question === 'price')
-        return !(hasAuthorizedValue || explainsPriceEscalation);
-      if (question === 'timeline') return !hasTimeline;
+        return !(hasAuthorizedValue || resolution.quoteCreated);
+      if (question === 'timeline')
+        return !(hasTimeline || resolution.quoteCreated);
       return true;
     });
   }
@@ -466,13 +457,21 @@ export class CommercialPolicyService {
   }
 
   private paymentContext(value: string): PaymentContext | undefined {
-    const projectPayment = this.matches(value, [
-      /\b(?:50\s*\/\s*50|50\s*%[^.]{0,35}50\s*%)\b/,
-      /\b(?:anticipo|abono inicial|entrada|cuotas?|saldo)\b.{0,70}\b(?:proyecto|plan|servicio|desarrollo|entrega|contrato)\b/,
-      /\b(?:pagar|pago|financiar)\b.{0,45}\b(?:proyecto|plan|servicio|desarrollo|ustedes|undercode)\b/,
-      /\b(?:proyecto|plan|servicio|desarrollo)\b.{0,45}\b(?:pagar|pago|anticipo|cuotas?|saldo)\b/,
-    ]);
+    const clauses = commercialClauses(value);
+    const projectPayment = clauses.some(
+      (clause) =>
+        !describesBuyerPayment(clause) &&
+        this.matches(clause, [
+          /\b(?:con nosotros|pagarnos|undercodeec)\b.{0,60}\b(?:paga\w*|cobra\w*|anticipo|cuotas?|cuando)\b/,
+          /\bpagarnos\b/,
+          /\b(?:50\s*\/\s*50|50\s*%[^.]{0,35}50\s*%)\b/,
+          /\b(?:anticipo|abono inicial|entrada|cuotas?|saldo)\b.{0,70}\b(?:proyecto|plan|servicio|desarrollo|entrega|contrato)\b/,
+          /\b(?:paga\w*|pago|financiar)\b.{0,45}\b(?:proyecto|plan|servicio|desarrollo|ustedes|undercode)\b/,
+          /\b(?:proyecto|plan|servicio|desarrollo)\b.{0,45}\b(?:paga\w*|pago|anticipo|cuotas?|saldo)\b/,
+        ]),
+    );
     if (projectPayment) return 'PROJECT_PAYMENT';
+    if (clauses.some(describesBuyerPayment)) return 'STORE_CHECKOUT';
 
     const storePayment = this.matches(value, [
       /\b(?:mis clientes|compradores?|usuarios?)\b.{0,65}\b(?:pagar|pagos?|tarjeta|transferencia|paypal|stripe|pasarela)\b/,
@@ -527,7 +526,8 @@ export class CommercialPolicyService {
     response: string,
     decision: CommercialPolicyDecision,
   ): string {
-    const parts = response.match(/[^.!?¿]+(?:[.!?]|$)/gu) || [response];
+    // Sentence boundaries must not split decimal amounts (USD 360.00).
+    const parts = response.split(/(?<=[.!?])\s+/u);
     const filtered = parts.filter((part) => {
       const normalized = this.normalize(part);
       if (/^(?:no\b|sin necesidad de\b|no hace falta\b)/.test(normalized)) {
@@ -613,14 +613,16 @@ export class CommercialPolicyService {
       .reverse()
       .find((message) => message.role === 'assistant');
     if (lastAssistant) {
-      const selectedAmount = current.match(
-        /(?:[$€]\s*|\b(?:usd|eur)\s*)(\d[\d.,]*)/,
-      );
-      if (selectedAmount) {
+      const selectedAmount = monetaryValuesIn(current)[0];
+      if (selectedAmount?.amount !== undefined) {
         const prior = this.normalize(lastAssistant.content);
-        const selectedPrice = selectedAmount[0].replace(/[.,]+$/, '');
-        const priceAt = prior.indexOf(selectedPrice);
-        if (priceAt >= 0) {
+        const priorAmount = monetaryValuesIn(prior).find(
+          (amount) =>
+            amount.amount === selectedAmount.amount &&
+            amount.currency === selectedAmount.currency,
+        );
+        if (priorAmount) {
+          const priceAt = priorAmount.index;
           const nearby = prior.slice(Math.max(0, priceAt - 60), priceAt);
           const plan = this.singlePlanInText(nearby);
           if (plan) return plan;
@@ -662,18 +664,8 @@ export class CommercialPolicyService {
       return 'renewal';
     if (/\b(?:hosting|dominio|ssl|https|correo corporativo)\b/.test(value))
       return 'infrastructure';
-    if (
-      /\b(?:cuanto (?:cuesta|vale)|precio|coste|costo|cotiz|que valores|cuanto tendria que pagar|que tendria que pagar)\b/.test(
-        value,
-      )
-    )
-      return 'price';
-    if (
-      /\b(?:cuanto (?:tarda|demora)|plazo|tiempo de entrega|para cuando)\b/.test(
-        value,
-      )
-    )
-      return 'timeline';
+    if (this.isPriceQuestion(value)) return 'price';
+    if (this.isTimelineQuestion(value)) return 'timeline';
     if (/\b(?:que es|como funciona|que significa|para que sirve)\b/.test(value))
       return 'technical_explanation';
     if (
@@ -685,6 +677,51 @@ export class CommercialPolicyService {
     if (/\b(?:catalogo|ver|mostrar)\b.{0,35}\bproductos?\b/.test(value))
       return 'store_goal';
     return 'general';
+  }
+
+  private isPriceQuestion(value: string): boolean {
+    // Evaluate clauses separately so a duration question does not hide a price question.
+    return withoutBenefitDurations(value)
+      .split(/[;!?¿]|\by\s+(?=cuanto|que|cual|como)/u)
+      .some((clause) => {
+        if (describesBuyerPayment(clause)) return false;
+        if (
+          /\b(?:variable|sentimental|aprender|entender|valor agregado|valor.{0,30}para mi negocio)\b/.test(
+            clause,
+          )
+        )
+          return false;
+        if (
+          /\b(?:tiempo|horas?|dias?|semanas?|meses?|variable|sentimental|aprender|entender|valor agregado|valor.{0,30}para mi negocio)\b/.test(
+            clause,
+          ) &&
+          !/\b(?:precio|costo|coste|presupuesto|tarifa)\b|\bcuanto\s+(?:cuesta|costaria|sale|saldria)\b/.test(
+            clause,
+          )
+        )
+          return false;
+        return (
+          /\b(?:precios?|costos?|costes?|tarifas?|cotiza\w*|presupuesto)\b/.test(
+            clause,
+          ) ||
+          /\bvalor (?:monetario|en (?:dolares|euros|usd|eur))\b|\b(?:que|cual) (?:es |seria |tendria |el )?valor(?: tendria| seria)?\s*$/.test(
+            clause.trim(),
+          ) ||
+          /\bcuanto\b.{0,30}\b(?:cuesta|costaria|costara|costar|vale|sale|saldria|saldra|pagar)\b/.test(
+            clause,
+          ) ||
+          /\bque tendria que pagar\b|\bque valores\b/.test(clause) ||
+          /\bmas o menos cuanto\b|\bcuanto mas o menos\b/.test(clause) ||
+          /\b(?:cual|cuanto)\b.{0,25}\baproximado\b/.test(clause) ||
+          /\bde cuanto\b.{0,25}\b(?:estariamos|estamos) hablando\b/.test(clause)
+        );
+      });
+  }
+
+  private isTimelineQuestion(value: string): boolean {
+    return /\b(?:cuant[oa]s?\s+(?:(?:tiempo|horas?|dias?|semanas?|meses?)\s+)?(?:tarda\w*|demora\w*|lleva\w*|toma\w*)|plazos?|tiempo de entrega|para cuando)\b/.test(
+      value,
+    );
   }
 
   private isClarificationRequest(value: string): boolean {

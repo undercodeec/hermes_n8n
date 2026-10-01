@@ -1,3 +1,5 @@
+import { monetaryValuesIn } from './monetary-values';
+
 export type CommercialSolutionKind =
   | 'LANDING_PAGE'
   | 'WEBSITE'
@@ -245,16 +247,13 @@ export function responseContainsOnlyAuthorizedPrices(
   query: string,
   response: string,
 ): boolean {
-  if (
-    /(?:€\s*\d|\d[\d.,]*\s*(?:€|EUR\b|euros?\b)|\bEUR\s*\d)/iu.test(response)
-  ) {
+  if (monetaryValuesIn(response).some((value) => value.currency !== 'USD')) {
     return false;
   }
   const authorized = new Set(authorizedPricesFor(query));
-  const pattern =
-    /(?:\b(?:USD|dólares?)\s*\$?\s*([0-9]+(?:[.,][0-9]+)*)|\$\s*([0-9]+(?:[.,][0-9]+)*)|([0-9]+(?:[.,][0-9]+)*)\s*(?:USD|dólares?))/giu;
-  for (const match of response.matchAll(pattern)) {
-    const amount = parseMoneyAmount(match[1] || match[2] || match[3]);
+  for (const match of monetaryValuesIn(response)) {
+    const amount =
+      match.amount === undefined ? undefined : Number(match.amount);
     if (amount === undefined || !authorized.has(amount)) return false;
     if (
       amount === BASIC_HOSTING_RENEWAL_PRICE &&
@@ -307,34 +306,9 @@ export function responseContainsOnlyAuthorizedPrices(
 }
 
 export function monetaryAmountsIn(value: string): number[] {
-  const pattern =
-    /(?:\b(?:USD|dólares?)\s*\$?\s*([0-9]+(?:[.,][0-9]+)*)|\$\s*([0-9]+(?:[.,][0-9]+)*)|([0-9]+(?:[.,][0-9]+)*)\s*(?:USD|dólares?))/giu;
-  return [...value.matchAll(pattern)]
-    .map((match) => parseMoneyAmount(match[1] || match[2] || match[3]))
-    .filter((amount): amount is number => amount !== undefined);
-}
-
-function parseMoneyAmount(value: string): number | undefined {
-  const lastDot = value.lastIndexOf('.');
-  const lastComma = value.lastIndexOf(',');
-  let normalized = value;
-  if (lastDot >= 0 && lastComma >= 0) {
-    const decimalSeparator = lastDot > lastComma ? '.' : ',';
-    const thousandsSeparator = decimalSeparator === '.' ? ',' : '.';
-    normalized = normalized.split(thousandsSeparator).join('');
-    normalized = normalized.replace(decimalSeparator, '.');
-  } else {
-    const separator = lastDot >= 0 ? '.' : lastComma >= 0 ? ',' : undefined;
-    if (separator) {
-      const fractionLength = value.length - value.lastIndexOf(separator) - 1;
-      normalized =
-        fractionLength === 2
-          ? value.replace(separator, '.')
-          : value.split(separator).join('');
-    }
-  }
-  const amount = Number(normalized);
-  return Number.isFinite(amount) ? amount : undefined;
+  return monetaryValuesIn(value)
+    .filter((money) => money.amount !== undefined)
+    .map((money) => Number(money.amount));
 }
 
 export function commercialCatalogContext(query: string): string[] {

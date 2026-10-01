@@ -3,6 +3,7 @@ import {
   IsBoolean,
   IsDateString,
   IsEnum,
+  IsIn,
   IsNumber,
   IsOptional,
   IsString,
@@ -38,7 +39,73 @@ export class AdvertisingConsentDto {
   recordedAt!: string;
 }
 
+export class ContactIntentTouchDto {
+  @IsOptional()
+  @Matches(CLICK_ID)
+  gclid?: string;
+
+  @IsOptional()
+  @Matches(CLICK_ID)
+  gbraid?: string;
+
+  @IsOptional()
+  @Matches(CLICK_ID)
+  wbraid?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  utmId?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  utmSource?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  utmMedium?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  utmCampaign?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  utmContent?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  utmTerm?: string;
+
+  @IsOptional()
+  @IsUrl({ protocols: ['https'], require_protocol: true })
+  @MaxLength(2048)
+  landingPage?: string;
+
+  @IsDateString()
+  visitedAt!: string;
+}
+
 export class CreateContactIntentDto {
+  @IsOptional()
+  @IsIn([2])
+  schemaVersion?: 2;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ContactIntentTouchDto)
+  firstTouch?: ContactIntentTouchDto | null;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => ContactIntentTouchDto)
+  lastTouch?: ContactIntentTouchDto | null;
+
   @IsOptional()
   @Matches(CLICK_ID)
   gclid?: string;

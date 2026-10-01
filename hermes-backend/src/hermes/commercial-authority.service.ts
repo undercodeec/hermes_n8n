@@ -263,7 +263,7 @@ export class CommercialAuthorityService {
           input.customerMessage,
         ]
           .filter(Boolean)
-          .join(' '),
+          .join('. '),
       );
       const advanced =
         /\b(?:automatizacion|ia|facturacion electronica|internacional|sistemas empresariales|animaciones inmersivas)\b/.test(
@@ -286,12 +286,38 @@ export class CommercialAuthorityService {
       result.recommendedOfferId = (
         named ?? ordered[advanced ? 2 : growth ? 1 : 0]
       )?.id;
+      const collectionRequest =
+        /\b(?:agendar|agendamiento de|programar|coordinar|reservar|solicitar)\s+(?:(?:un|una|el|la|los|las)\s+)?(?:retiros?|recogidas?|recoleccion(?:es)?)\b(?!\s+de\s+efectivo)/;
+      const scopeClauses = scopeText.split(
+        /[.;!?]|\bpero\b|\by (?=no\b|sin\b|necesito\b|quiero\b)/,
+      );
+      const latestCollection = scopeClauses
+        .filter((clause) =>
+          /\b(?:retiros?|recogidas?|recoleccion(?:es)?)\b(?!\s+de\s+efectivo)/.test(
+            clause,
+          ),
+        )
+        .at(-1);
+      const collectionRequired = Boolean(
+        latestCollection &&
+        collectionRequest.test(latestCollection) &&
+        !/\b(?:no (?:necesito|quiero|requiere|necesita|debe)|sin (?:servicio de )?)\b/.test(
+          latestCollection,
+        ),
+      );
+      const independentReservations = scopeClauses
+        .filter((clause) => !/\bno (?:necesito|quiero)\b/.test(clause))
+        .map((clause) => clause.replace(collectionRequest, ''))
+        .join(' ');
       result.additionalScope = [
+        collectionRequired
+          ? 'Agendamiento personalizado de retiros o recogidas'
+          : '',
         /\b(?:reservas? (?:con|en) calendario|disponibilidad automatica|calendario (?:de )?reservas?)\b/.test(
           scopeText,
         )
           ? 'Reservas con calendario o disponibilidad automática'
-          : /\breserv(?:a|ar|as)\b/.test(scopeText)
+          : /\breserv(?:a|ar|as)\b/.test(independentReservations)
             ? 'Reservas automatizadas si necesita calendario y disponibilidad'
             : '',
         /\b(?:sistema de pedidos|pedidos automatizados|gestion de pedidos)\b/.test(

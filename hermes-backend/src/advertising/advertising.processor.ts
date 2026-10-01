@@ -12,6 +12,7 @@ import {
   GoogleSyncError,
 } from './google-data-manager.service';
 import { GoogleAdsReportingService } from './google-ads-reporting.service';
+import { AdvertisingService } from './advertising.service';
 
 @Processor(ADVERTISING_QUEUE)
 export class AdvertisingProcessor extends WorkerHost {
@@ -22,6 +23,7 @@ export class AdvertisingProcessor extends WorkerHost {
     private readonly reporting: GoogleAdsReportingService,
     @InjectQueue(ADVERTISING_QUEUE)
     private readonly queue: Queue<AdvertisingSyncJobData>,
+    private readonly advertising: AdvertisingService,
   ) {
     super();
   }
@@ -42,6 +44,7 @@ export class AdvertisingProcessor extends WorkerHost {
         }
         return;
       }
+      if (!(await this.advertising.claimSyncJob(job.data.syncJobId))) return;
       const result = await this.dataManager.ingest(job.data.syncJobId);
       if (!result.validateOnly) {
         await this.queue.add(
