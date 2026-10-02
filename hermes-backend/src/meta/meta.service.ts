@@ -332,6 +332,58 @@ export class MetaService {
     return { bytes, mimeType };
   }
 
+  /** Fetch only for an authenticated Inbox view; never persists the bytes. */
+  async fetchInboxMedia(
+    mediaId: string,
+  ): Promise<{ bytes: Buffer; mimeType: string }> {
+    const maxBytes = 10 * 1024 * 1024;
+    const metadata = await this.graphClient.get<MetaMediaMetadata>(
+      `/${encodeURIComponent(mediaId)}`,
+      {
+        params: { fields: 'id,mime_type,file_size,url' },
+      },
+    );
+    const { url, mime_type: mimeType, file_size: size } = metadata.data;
+    if (
+      !url ||
+      !mimeType ||
+      !['image/jpeg', 'image/png', 'application/pdf'].includes(mimeType) ||
+      (size && size > maxBytes)
+    )
+      throw new BadRequestException('Adjunto no disponible o no admitido');
+    const parsed = new URL(url);
+    if (
+      parsed.protocol !== 'https:' ||
+      parsed.hostname !== 'lookaside.fbsbx.com' ||
+      parsed.username ||
+      parsed.password
+    )
+      throw new BadRequestException('Host de Meta no permitido');
+    const response = await axios.get<ArrayBuffer>(url, {
+      headers: {
+        Authorization: `Bearer ${this.config.get<string>('META_ACCESS_TOKEN', '')}`,
+      },
+      responseType: 'arraybuffer',
+      timeout: 15000,
+      maxContentLength: maxBytes,
+      maxRedirects: 0,
+    });
+    const bytes = Buffer.from(response.data);
+    if (!bytes.length || bytes.length > maxBytes)
+      throw new BadRequestException('Adjunto vacío o demasiado grande');
+    const valid =
+      mimeType === 'application/pdf'
+        ? bytes.subarray(0, 5).toString() === '%PDF-'
+        : mimeType === 'image/png'
+          ? bytes
+              .subarray(0, 8)
+              .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))
+          : bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+    if (!valid)
+      throw new BadRequestException('El adjunto no coincide con su formato');
+    return { bytes, mimeType };
+  }
+
   async uploadVoiceNote(oggOpus: Buffer): Promise<string> {
     if (!oggOpus.length || oggOpus.length > 16 * 1024 * 1024)
       throw new BadRequestException('Nota de voz inválida o demasiado grande');

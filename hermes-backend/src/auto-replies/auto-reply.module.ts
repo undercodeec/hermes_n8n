@@ -15,10 +15,12 @@ import { InboundTurnService } from './inbound-turn.service';
 import { InboundTurnRecoveryService } from './inbound-turn-recovery.service';
 import { VoiceService } from '../voice/voice.service';
 import { GoogleCalendarModule } from '../integrations/google-calendar/google-calendar.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
   imports: [
     GoogleCalendarModule,
+    PaymentsModule,
     ConversationEngineModule,
     MetaModule,
     HandoffModule,

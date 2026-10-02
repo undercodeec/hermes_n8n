@@ -98,11 +98,15 @@ model User {
   updatedAt DateTime @updatedAt
 
   // Relaciones
-  assignedHandoffs HumanHandoff[] @relation("AssignedAgent")
-  assignedTasks    Task[]         @relation("AssignedUser")
-  sentMessages     Message[]      @relation("HumanSender")
-  auditLogs        AuditLog[]
-  createdCampaigns Campaign[]     @relation("CampaignCreator")
+  assignedHandoffs    HumanHandoff[]    @relation("AssignedAgent")
+  assignedTasks       Task[]            @relation("AssignedUser")
+  sentMessages        Message[]         @relation("HumanSender")
+  auditLogs           AuditLog[]
+  createdCampaigns    Campaign[]        @relation("CampaignCreator")
+  createdBankAccounts BankAccount[]     @relation("BankAccountCreator")
+  updatedBankAccounts BankAccount[]     @relation("BankAccountUpdater")
+  approvedTransfers   TransferPayment[] @relation("TransferApprover")
+  rejectedTransfers   TransferPayment[] @relation("TransferRejecter")
 
   @@map("users")
 }
@@ -137,6 +141,7 @@ model Contact {
   advertisingConversions  AdvertisingConversion[]
   automatedDeliveries     AutomatedDelivery[]
   meetings                Meeting[]
+  transferPayments        TransferPayment[]
 
   @@map("contacts")
 }
@@ -242,6 +247,8 @@ enum LeadStage {
   QUALIFIED
   PROPOSAL
   NEGOTIATION
+  PAYMENT_PENDING
+  PAYMENT_REVIEW
   WON
   LOST
 }
@@ -280,6 +287,7 @@ model Lead {
   campaignSourceId        String?
   advertisingAttributions AdvertisingAttribution[]
   advertisingConversions  AdvertisingConversion[]
+  transferPayments        TransferPayment[]
 
   @@index([contactId, createdAt])
   @@index([stage, updatedAt])
@@ -318,6 +326,7 @@ model Conversation {
   automatedDeliveries     AutomatedDelivery[]
   inboundTurns            InboundTurn[]
   meetings                Meeting[]
+  transferPayments        TransferPayment[]
 
   @@index([contactId, updatedAt])
   @@index([status, updatedAt])
@@ -431,13 +440,14 @@ model Message {
   createdAt           DateTime         @default(now())
 
   // Relaciones
-  conversation              Conversation            @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  contact                   Contact                 @relation(fields: [contactId], references: [id], onDelete: Cascade)
-  sentByUser                User?                   @relation("HumanSender", fields: [sentByUserId], references: [id], onDelete: SetNull)
+  conversation              Conversation                 @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  contact                   Contact                      @relation(fields: [contactId], references: [id], onDelete: Cascade)
+  sentByUser                User?                        @relation("HumanSender", fields: [sentByUserId], references: [id], onDelete: SetNull)
   advertisingAttribution    AdvertisingAttribution?
-  sourceAutomatedDeliveries AutomatedDelivery[]     @relation("AutomatedDeliverySource")
-  outboundAutomatedDelivery AutomatedDelivery?      @relation("AutomatedDeliveryOutbound")
-  inboundTurn               InboundTurn?            @relation(fields: [inboundTurnId], references: [id], onDelete: SetNull)
+  sourceAutomatedDeliveries AutomatedDelivery[]          @relation("AutomatedDeliverySource")
+  outboundAutomatedDelivery AutomatedDelivery?           @relation("AutomatedDeliveryOutbound")
+  inboundTurn               InboundTurn?                 @relation(fields: [inboundTurnId], references: [id], onDelete: SetNull)
+  transferProof             TransferPaymentProofMessage?
 
   @@unique([inboundTurnId, inboundTurnPosition])
   @@index([conversationId, createdAt])
@@ -455,17 +465,17 @@ enum MetaWebhookInboxStatus {
 }
 
 model MetaWebhookInbox {
-  id           String                 @id @default(uuid())
-  eventKey     String                 @unique
-  eventType    String
-  payload      Json
-  status       MetaWebhookInboxStatus @default(PENDING)
-  outcome      String?
-  attempts     Int                    @default(0)
-  claimToken   String?
-  leaseUntil   DateTime?
-  createdAt    DateTime               @default(now())
-  updatedAt    DateTime               @updatedAt
+  id         String                 @id @default(uuid())
+  eventKey   String                 @unique
+  eventType  String
+  payload    Json
+  status     MetaWebhookInboxStatus @default(PENDING)
+  outcome    String?
+  attempts   Int                    @default(0)
+  claimToken String?
+  leaseUntil DateTime?
+  createdAt  DateTime               @default(now())
+  updatedAt  DateTime               @updatedAt
 
   @@index([status, leaseUntil, createdAt])
   @@map("meta_webhook_inbox")
@@ -645,6 +655,7 @@ enum TaskType {
   QUOTE
   DEMO
   GENERAL
+  PAYMENT_VERIFICATION
 }
 
 enum TaskStatus {
@@ -700,30 +711,30 @@ enum MeetingOperationStatus {
 }
 
 model Meeting {
-  id                String        @id @default(uuid())
-  conversationId    String
-  contactId         String
-  leadId            String?
-  taskId            String?       @unique
-  provider          String        @default("GOOGLE")
-  googleEventId     String
-  calendarId        String
-  meetUrl           String?
-  attendeeEmail     String
-  startAt           DateTime
-  endAt             DateTime
-  timezone          String
-  status            MeetingStatus @default(PENDING)
-  idempotencyKey    String        @unique
-  serviceContext    String?
-  cancelledAt       DateTime?
-  createdAt         DateTime      @default(now())
-  updatedAt         DateTime      @updatedAt
-  conversation      Conversation  @relation(fields: [conversationId], references: [id], onDelete: Restrict)
-  contact           Contact       @relation(fields: [contactId], references: [id], onDelete: Restrict)
-  lead              Lead?         @relation(fields: [leadId], references: [id], onDelete: SetNull)
-  task              Task?         @relation(fields: [taskId], references: [id], onDelete: SetNull)
-  operations        MeetingOperation[]
+  id             String             @id @default(uuid())
+  conversationId String
+  contactId      String
+  leadId         String?
+  taskId         String?            @unique
+  provider       String             @default("GOOGLE")
+  googleEventId  String
+  calendarId     String
+  meetUrl        String?
+  attendeeEmail  String
+  startAt        DateTime
+  endAt          DateTime
+  timezone       String
+  status         MeetingStatus      @default(PENDING)
+  idempotencyKey String             @unique
+  serviceContext String?
+  cancelledAt    DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  conversation   Conversation       @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  contact        Contact            @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  lead           Lead?              @relation(fields: [leadId], references: [id], onDelete: SetNull)
+  task           Task?              @relation(fields: [taskId], references: [id], onDelete: SetNull)
+  operations     MeetingOperation[]
 
   @@unique([calendarId, googleEventId])
   @@index([conversationId, status, startAt])
@@ -984,21 +995,21 @@ model AdvertisingConversionMapping {
 }
 
 model AdvertisingSyncJob {
-  id              String                @id @default(uuid())
-  conversionId    String                @unique
-  status          AdvertisingSyncStatus @default(PENDING)
-  attempts        Int                   @default(0)
-  validateOnly    Boolean               @default(true)
+  id                  String                @id @default(uuid())
+  conversionId        String                @unique
+  status              AdvertisingSyncStatus @default(PENDING)
+  attempts            Int                   @default(0)
+  validateOnly        Boolean               @default(true)
   destinationSnapshot Json?
-  googleRequestId String?
-  warnings        Json?
-  errorCode       String?
-  errorMessage    String?
-  nextAttemptAt   DateTime?
-  submittedAt     DateTime?
-  diagnosedAt     DateTime?
-  createdAt       DateTime              @default(now())
-  updatedAt       DateTime              @updatedAt
+  googleRequestId     String?
+  warnings            Json?
+  errorCode           String?
+  errorMessage        String?
+  nextAttemptAt       DateTime?
+  submittedAt         DateTime?
+  diagnosedAt         DateTime?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
 
   conversion AdvertisingConversion @relation(fields: [conversionId], references: [id], onDelete: Cascade)
 
@@ -1045,4 +1056,96 @@ model AuditLog {
   @@index([userId])
   @@index([createdAt])
   @@map("audit_logs")
+}
+
+enum BankAccountType {
+  SAVINGS
+  CHECKING
+  OTHER
+}
+
+model BankAccount {
+  id                     String          @id @default(uuid())
+  label                  String
+  bankName               String
+  accountHolder          String
+  holderIdentification   String?
+  accountType            BankAccountType
+  accountNumberEncrypted String
+  accountNumberLast4     String
+  currency               String          @default("USD") @db.VarChar(3)
+  instructions           String?
+  priority               Int             @default(0)
+  isActive               Boolean         @default(true)
+  createdByUserId        String?
+  updatedByUserId        String?
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+
+  createdBy User?             @relation("BankAccountCreator", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  updatedBy User?             @relation("BankAccountUpdater", fields: [updatedByUserId], references: [id], onDelete: SetNull)
+  transfers TransferPayment[]
+
+  @@index([currency, isActive, priority])
+  @@map("bank_accounts")
+}
+
+enum TransferPaymentStatus {
+  INSTRUCTIONS_PREPARED
+  INSTRUCTIONS_SENT
+  PROOF_RECEIVED
+  UNDER_REVIEW
+  APPROVED
+  REJECTED
+  CANCELLED
+  EXPIRED
+}
+
+model TransferPayment {
+  id                     String                @id @default(uuid())
+  leadId                 String
+  conversationId         String
+  contactId              String
+  bankAccountId          String
+  bankAccountSnapshot    Json
+  amountExpected         Decimal               @db.Decimal(18, 2)
+  currency               String                @db.VarChar(3)
+  status                 TransferPaymentStatus @default(INSTRUCTIONS_PREPARED)
+  sourceMessageId        String                @unique
+  instructionsMessageId  String?
+  reviewedProofMessageId String?
+  proofReceivedAt        DateTime?
+  reviewStartedAt        DateTime?
+  approvedAt             DateTime?
+  rejectedAt             DateTime?
+  approvedByUserId       String?
+  rejectedByUserId       String?
+  reviewNote             String?
+  createdAt              DateTime              @default(now())
+  updatedAt              DateTime              @updatedAt
+
+  lead          Lead                          @relation(fields: [leadId], references: [id], onDelete: Restrict)
+  conversation  Conversation                  @relation(fields: [conversationId], references: [id], onDelete: Restrict)
+  contact       Contact                       @relation(fields: [contactId], references: [id], onDelete: Restrict)
+  bankAccount   BankAccount                   @relation(fields: [bankAccountId], references: [id], onDelete: Restrict)
+  approvedBy    User?                         @relation("TransferApprover", fields: [approvedByUserId], references: [id], onDelete: SetNull)
+  rejectedBy    User?                         @relation("TransferRejecter", fields: [rejectedByUserId], references: [id], onDelete: SetNull)
+  proofMessages TransferPaymentProofMessage[]
+
+  @@index([status, createdAt])
+  @@index([leadId, createdAt])
+  @@index([conversationId, createdAt])
+  @@map("transfer_payments")
+}
+
+model TransferPaymentProofMessage {
+  messageId         String   @id
+  transferPaymentId String
+  receivedAt        DateTime @default(now())
+
+  message         Message         @relation(fields: [messageId], references: [id], onDelete: Restrict)
+  transferPayment TransferPayment @relation(fields: [transferPaymentId], references: [id], onDelete: Restrict)
+
+  @@index([transferPaymentId, receivedAt])
+  @@map("transfer_payment_proof_messages")
 }

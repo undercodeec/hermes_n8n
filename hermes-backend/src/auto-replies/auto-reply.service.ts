@@ -56,6 +56,8 @@ import { reviewAgentProposal } from '../conversation-engine/agent-proposal-polic
 import { AGENT_DEFAULT_INTENTS } from '../conversation-engine/agent-output.contract';
 import { InboundTurnService } from './inbound-turn.service';
 import { MeetingsService } from '../integrations/google-calendar/meetings.service';
+import { PaymentsService } from '../payments/payments.service';
+import { redactPaymentMessageForAi } from '../payments/payment-message-redaction';
 import {
   VoiceProcessingError,
   VoiceService,
@@ -83,6 +85,7 @@ export class AutoReplyService {
     @Optional() private readonly inboundTurns?: InboundTurnService,
     @Optional() private readonly voice?: VoiceService,
     @Optional() private readonly meetings?: MeetingsService,
+    @Optional() private readonly payments?: PaymentsService,
   ) {}
 
   async enqueue(data: AutoReplyJobData, messageLength: number): Promise<void> {
@@ -269,7 +272,7 @@ export class AutoReplyService {
       this.logSkip(data, 'INBOUND_NOT_FOUND_OR_MISMATCH');
       return;
     }
-    const customerMessage = turnMessages?.length
+    const rawCustomerMessage = turnMessages?.length
       ? turnMessages
           .map(
             (message, index) =>
@@ -277,6 +280,7 @@ export class AutoReplyService {
           )
           .join('\n')
       : inbound.content || '';
+    const customerMessage = redactPaymentMessageForAi(rawCustomerMessage);
 
     let recovered: Awaited<
       ReturnType<AutomatedDeliveryService['recoverBatch']>
@@ -287,6 +291,7 @@ export class AutoReplyService {
       await this.reconcileDeliveryProfile(data, inbound.id, inbound);
     }
     if (recovered?.handled) {
+      await this.payments?.reconcileInstruction(inbound.id);
       this.logSkip(data, 'EXISTING_DELIVERY_BATCH', {
         confirmed: recovered.confirmed,
         terminal: recovered.terminal,
@@ -312,6 +317,27 @@ export class AutoReplyService {
       this.logSkip(data, 'NEWER_INBOUND');
       return;
     }
+
+    if (
+      this.payments &&
+      (await this.payments.maybeSendInstructions({
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        sourceMessageId: inbound.id,
+        text: rawCustomerMessage,
+      }))
+    )
+      return;
+    if (
+      this.payments &&
+      (await this.payments.maybeReplyWithStatus({
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        sourceMessageId: inbound.id,
+        text: customerMessage,
+      }))
+    )
+      return;
 
     const context = await this.buildConversationContext(
       data.contactId,
@@ -1436,6 +1462,7 @@ export class AutoReplyService {
             content: true,
             createdAt: true,
             rawPayload: true,
+            metadata: true,
           },
         }),
         this.prisma.conversationState.findUnique({ where: { conversationId } }),
@@ -1471,7 +1498,10 @@ export class AutoReplyService {
     >((history, message) => {
       const role =
         message.direction === MessageDirection.INBOUND ? 'user' : 'assistant';
-      const content = message.content || '';
+      const content = redactPaymentMessageForAi(
+        message.content || '',
+        message.metadata,
+      );
       const previous = history.at(-1);
       if (previous?.role === role) {
         previous.content = `${previous.content}\n\n${content}`.trim();

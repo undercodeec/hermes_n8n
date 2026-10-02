@@ -9,6 +9,8 @@ import {
   Sse,
   UseGuards,
   MessageEvent,
+  StreamableFile,
+  Header,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
@@ -59,6 +61,19 @@ export class ConversationsController {
   @ApiOperation({ summary: 'Historial paginado de una conversación' })
   findMessages(@Param('id') id: string, @Query() query: QueryMessagesDto) {
     return this.conversationsService.findMessages(id, query);
+  }
+
+  @Get(':id/messages/:messageId/media')
+  @Header('Cache-Control', 'private, no-store')
+  async inboxMedia(
+    @Param('id') id: string,
+    @Param('messageId') messageId: string,
+  ) {
+    const media = await this.conversationsService.inboxMedia(id, messageId);
+    return new StreamableFile(media.bytes, {
+      type: media.mimeType,
+      disposition: 'inline',
+    });
   }
 
   @Get(':id')

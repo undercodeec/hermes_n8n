@@ -45,10 +45,22 @@ const ALLOWED_STAGE_TRANSITIONS: Partial<Record<LeadStage, LeadStage[]>> = {
   [LeadStage.QUALIFIED]: [
     LeadStage.PROPOSAL,
     LeadStage.NEGOTIATION,
+    LeadStage.PAYMENT_PENDING,
     LeadStage.LOST,
   ],
-  [LeadStage.PROPOSAL]: [LeadStage.NEGOTIATION, LeadStage.WON, LeadStage.LOST],
-  [LeadStage.NEGOTIATION]: [LeadStage.PROPOSAL, LeadStage.WON, LeadStage.LOST],
+  [LeadStage.PROPOSAL]: [
+    LeadStage.NEGOTIATION,
+    LeadStage.PAYMENT_PENDING,
+    LeadStage.WON,
+    LeadStage.LOST,
+  ],
+  [LeadStage.NEGOTIATION]: [
+    LeadStage.PROPOSAL,
+    LeadStage.PAYMENT_PENDING,
+    LeadStage.WON,
+    LeadStage.LOST,
+  ],
+  [LeadStage.PAYMENT_PENDING]: [LeadStage.NEGOTIATION, LeadStage.LOST],
 };
 
 @Injectable()
@@ -212,10 +224,11 @@ export class LeadsService {
     });
   }
 
-  private async recordWonMilestone(
+  async recordWonMilestone(
     tx: Prisma.TransactionClient,
     lead: Lead,
     userId: string,
+    source = 'CRM_STAGE_CHANGE',
   ): Promise<void> {
     const conversion = await tx.advertisingConversion.upsert({
       where: {
@@ -230,7 +243,7 @@ export class LeadsService {
         leadId: lead.id,
         contactId: lead.contactId,
         occurredAt: lead.wonAt || new Date(),
-        source: 'CRM_STAGE_CHANGE',
+        source,
         verified: true,
         verifiedByUserId: userId,
         value: lead.contractedAmount,
@@ -451,7 +464,7 @@ export class LeadsService {
         where,
         skip,
         take: query.limit,
-        orderBy: { updatedAt: 'desc' },
+        orderBy: [{ score: 'desc' }, { updatedAt: 'desc' }],
         include: {
           contact: true,
           campaignSource: true,
@@ -517,6 +530,57 @@ export class LeadsService {
       async (tx) => {
         const lead = await tx.lead.findUnique({ where: { id } });
         if (!lead) throw new NotFoundException('Lead no encontrado');
+        if (
+          lead.stage === LeadStage.PAYMENT_REVIEW &&
+          dto.stage &&
+          dto.stage !== lead.stage
+        )
+          throw new ConflictException(
+            'La validación del pago debe resolverse desde Inbox',
+          );
+        if (dto.stage === LeadStage.WON && lead.stage !== LeadStage.WON) {
+          const transfer = await tx.transferPayment.findFirst({
+            where: {
+              leadId: id,
+              status: {
+                in: [
+                  'INSTRUCTIONS_PREPARED',
+                  'INSTRUCTIONS_SENT',
+                  'PROOF_RECEIVED',
+                  'UNDER_REVIEW',
+                ],
+              },
+            },
+            select: { id: true },
+          });
+          if (transfer)
+            throw new ConflictException(
+              'La transferencia debe aprobarse desde Inbox',
+            );
+        }
+        if (
+          dto.stage === LeadStage.PAYMENT_PENDING &&
+          lead.stage !== LeadStage.PAYMENT_PENDING
+        ) {
+          const transfer = await tx.transferPayment.findFirst({
+            where: {
+              leadId: id,
+              status: {
+                in: [
+                  'INSTRUCTIONS_PREPARED',
+                  'INSTRUCTIONS_SENT',
+                  'PROOF_RECEIVED',
+                  'UNDER_REVIEW',
+                ],
+              },
+            },
+            select: { id: true },
+          });
+          if (!transfer)
+            throw new ConflictException(
+              'La solicitud de transferencia debe iniciarse desde WhatsApp',
+            );
+        }
 
         if (
           (lead.stage === LeadStage.WON &&

@@ -20,6 +20,8 @@ import { AdvertisingService } from '../advertising/advertising.service';
 import { normalizeWhatsAppId } from '../campaigns/phone-normalizer';
 import { ConversationEventsService } from '../conversations/conversation-events.service';
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
+import { PaymentsService } from '../payments/payments.service';
+import { redactPaymentMessageForAi } from '../payments/payment-message-redaction';
 import { requestsCommercialContact } from '../hermes/commercial-policy.service';
 import {
   MetaWebhookDto,
@@ -57,6 +59,7 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     private readonly advertisingService: AdvertisingService,
     private readonly conversationEvents: ConversationEventsService,
     private readonly deliveries: AutomatedDeliveryService,
+    private readonly payments: PaymentsService,
   ) {}
 
   onModuleInit(): void {
@@ -326,6 +329,10 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
         },
       });
       if (alreadyProcessed) {
+        if (message.type === 'image' || message.type === 'document') {
+          const handled = await this.payments.detectProof(alreadyProcessed.id);
+          if (handled) return 'payment_proof';
+        }
         let attributionStatus = 'retry';
         try {
           const result = await this.advertisingService.claimReference({
@@ -416,6 +423,14 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
         createdAt: (inboundMessage.createdAt || new Date()).toISOString(),
       });
 
+      if (
+        messageType === MessageType.IMAGE ||
+        messageType === MessageType.DOCUMENT
+      ) {
+        const handled = await this.payments.detectProof(inboundMessage.id);
+        if (handled) return 'payment_proof';
+      }
+
       // Best-effort: an attribution outage must not interrupt the existing
       // WhatsApp, AI or human-handoff flow.
       let attributionStatus = 'retry';
@@ -450,7 +465,7 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
       const errorMessage =
         error instanceof Error ? error.message : String(error);
       this.logger.error(
-        `Error procesando mensaje de ${metaContact.wa_id}: ${errorMessage}`,
+        `Error procesando mensaje ${message.id}: ${errorMessage}`,
         error instanceof Error ? error.stack : undefined,
       );
       throw error;
@@ -487,7 +502,7 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.logger.log(
-      `Mensaje recibido de ${contact.waId}: ${messageContent?.substring(0, 50)}...`,
+      `Mensaje recibido en conversación ${conversation.id}: ${redactPaymentMessageForAi(messageContent || '').substring(0, 50)}...`,
     );
 
     // Verificar si la conversación está en handoff (derivada a humano)

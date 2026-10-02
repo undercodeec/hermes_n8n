@@ -11,6 +11,7 @@ import { ConversationGuardModule } from '../conversation-guard/conversation-guar
 import { AdvertisingModule } from '../advertising/advertising.module';
 import { ConversationsModule } from '../conversations/conversations.module';
 import { AutomatedDeliveryModule } from '../automated-deliveries/automated-delivery.module';
+import { PaymentsModule } from '../payments/payments.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { AutomatedDeliveryModule } from '../automated-deliveries/automated-deliv
     AdvertisingModule,
     ConversationsModule,
     AutomatedDeliveryModule,
+    PaymentsModule,
   ],
   controllers: [WebhookController],
   providers: [WebhookService],

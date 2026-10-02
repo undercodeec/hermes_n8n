@@ -16,6 +16,7 @@ describe('LeadsService', () => {
       update: jest.fn(),
     },
     contact: { findUniqueOrThrow: jest.fn() },
+    transferPayment: { findFirst: jest.fn().mockResolvedValue(null) },
     advertisingConversion: {
       upsert: jest.fn().mockResolvedValue({ id: 'conversion-1' }),
     },
@@ -38,6 +39,19 @@ describe('LeadsService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('impide cerrar manualmente una transferencia abierta', async () => {
+    tx.lead.findUnique.mockResolvedValue({
+      id: 'lead-payment',
+      contactId: 'contact-1',
+      stage: LeadStage.PAYMENT_PENDING,
+    });
+    tx.transferPayment.findFirst.mockResolvedValueOnce({ id: 'transfer-1' });
+    await expect(
+      service.update('lead-payment', { stage: LeadStage.WON }, 'operator-1'),
+    ).rejects.toThrow('transferencia debe aprobarse desde Inbox');
+    expect(tx.lead.update).not.toHaveBeenCalled();
   });
 
   it('crea exactamente un lead NEW para la primera conversación', async () => {

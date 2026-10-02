@@ -23,6 +23,7 @@ import { CampaignsModule } from './campaigns/campaigns.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { AdvertisingModule } from './advertising/advertising.module';
 import { GoogleCalendarModule } from './integrations/google-calendar/google-calendar.module';
+import { PaymentsModule } from './payments/payments.module';
 
 @Module({
   imports: [
@@ -82,6 +83,7 @@ import { GoogleCalendarModule } from './integrations/google-calendar/google-cale
     PlaybooksModule,
     HandoffModule,
     TasksModule,
+    PaymentsModule,
     CampaignsModule,
     AdvertisingModule,
     // Analytics y métricas

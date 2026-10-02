@@ -135,14 +135,20 @@ export class ConversationsService {
   private hermesReviewTaskQuery() {
     return {
       where: {
-        type: TaskType.GENERAL,
+        OR: [
+          {
+            type: TaskType.GENERAL,
+            metadata: { path: ['actionStatus'], equals: 'PENDING_REVIEW' },
+          },
+          { type: TaskType.PAYMENT_VERIFICATION },
+        ],
         status: { in: OPEN_TASK_STATUSES },
-        metadata: { path: ['actionStatus'], equals: 'PENDING_REVIEW' },
       },
       orderBy: { createdAt: Prisma.SortOrder.desc },
-      take: 1,
+      take: 10,
       select: {
         id: true,
+        type: true,
         title: true,
         status: true,
         createdAt: true,
@@ -199,9 +205,21 @@ export class ConversationsService {
       };
     }
     if (query.priorityOnly) {
-      where.handoffs = {
-        some: { status: { in: OPEN_HANDOFF_STATUSES } },
-      };
+      where.AND = [
+        {
+          OR: [
+            { handoffs: { some: { status: { in: OPEN_HANDOFF_STATUSES } } } },
+            {
+              tasks: {
+                some: {
+                  type: TaskType.PAYMENT_VERIFICATION,
+                  status: { in: OPEN_TASK_STATUSES },
+                },
+              },
+            },
+          ],
+        },
+      ];
     }
 
     const [conversations, total] = await Promise.all([
@@ -252,8 +270,15 @@ export class ConversationsService {
         return {
           ...safeConversation,
           hermesIncident: this.hermesIncident(metadata),
-          hermesReviewTask: this.hermesReviewTask(tasks[0]),
-          isPriority: conversation.handoffs.length > 0,
+          hermesReviewTask: this.hermesReviewTask(
+            tasks.find((task) => task.type === TaskType.GENERAL),
+          ),
+          paymentReviewTask:
+            tasks.find((task) => task.type === TaskType.PAYMENT_VERIFICATION) ??
+            null,
+          isPriority:
+            conversation.handoffs.length > 0 ||
+            tasks.some((task) => task.type === TaskType.PAYMENT_VERIFICATION),
           replyWindow: this.replyWindow(
             lastInboundByConversation.get(conversation.id) ?? null,
           ),
@@ -306,7 +331,12 @@ export class ConversationsService {
       ...safeConversation,
       messages: conversation.messages.reverse(),
       hermesIncident: this.hermesIncident(metadata),
-      hermesReviewTask: this.hermesReviewTask(tasks[0]),
+      hermesReviewTask: this.hermesReviewTask(
+        tasks.find((task) => task.type === TaskType.GENERAL),
+      ),
+      paymentReviewTask:
+        tasks.find((task) => task.type === TaskType.PAYMENT_VERIFICATION) ??
+        null,
       replyWindow: this.replyWindow(lastInbound?.createdAt ?? null),
     };
   }
@@ -339,6 +369,27 @@ export class ConversationsService {
       limit: query.limit,
       totalPages: Math.ceil(total / query.limit),
     };
+  }
+
+  async inboxMedia(conversationId: string, messageId: string) {
+    const message = await this.prisma.message.findFirst({
+      where: {
+        id: messageId,
+        conversationId,
+        sender: MessageSender.CONTACT,
+        direction: MessageDirection.INBOUND,
+        type: { in: [MessageType.IMAGE, MessageType.DOCUMENT] },
+      },
+      select: { rawPayload: true, type: true },
+    });
+    if (!message)
+      throw new NotFoundException('Adjunto no encontrado en esta conversación');
+    const payload = this.objectValue(message.rawPayload);
+    const media = this.objectValue(payload?.[message.type.toLowerCase()]);
+    const mediaId = media?.id;
+    if (typeof mediaId !== 'string' || !mediaId)
+      throw new NotFoundException('Media ID no disponible');
+    return this.metaService.fetchInboxMedia(mediaId);
   }
 
   async reply(id: string, dto: ReplyConversationDto, userId: string) {
