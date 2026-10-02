@@ -1,5 +1,6 @@
 /* eslint-disable
   @typescript-eslint/no-unsafe-assignment,
+  @typescript-eslint/no-unsafe-argument,
   @typescript-eslint/no-unsafe-call,
   @typescript-eslint/no-unsafe-member-access,
   @typescript-eslint/no-unsafe-return,
@@ -25,6 +26,7 @@ import { ConversationGuardService } from '../conversation-guard/conversation-gua
 import { AdvertisingService } from '../advertising/advertising.service';
 import { ConversationEventsService } from '../conversations/conversation-events.service';
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
+import { PaymentsService } from '../payments/payments.service';
 
 function webhookWithDoubles(
   prisma: PrismaService,
@@ -294,6 +296,261 @@ describe('WebhookService durable inbox', () => {
       },
       4,
     );
+  });
+});
+
+describe('WebhookService attribution with transfer proofs', () => {
+  const reference = 'UC-AAAAAAAAAAAAAAAAAAAAAA';
+  const contact = { wa_id: '593990000001', profile: { name: 'Prueba' } };
+
+  function harness(
+    options: {
+      openTransfer?: boolean;
+      claimStatus?: 'confirmed' | 'used';
+      claimFails?: boolean;
+      proofAlreadyRecorded?: boolean;
+    } = {},
+  ) {
+    const messages = new Map<string, Record<string, any>>();
+    const attributedMessages = new Set<string>();
+    const proofMessages = new Set<string>();
+    if (options.proofAlreadyRecorded) proofMessages.add('message-1');
+    const calls: string[] = [];
+    let tasks = 0;
+    let reviewTransitions = 0;
+    let claimFailuresLeft = options.claimFails ? 1 : 0;
+    const prisma = {
+      message: {
+        findUnique: jest.fn(({ where }) =>
+          Promise.resolve(messages.get(where.wamid) || null),
+        ),
+        create: jest.fn(({ data }) => {
+          const row = { ...data, id: 'message-1', createdAt: new Date() };
+          messages.set(data.wamid, row);
+          calls.push('persist');
+          return Promise.resolve(row);
+        }),
+      },
+      conversation: { update: jest.fn().mockResolvedValue({}) },
+    };
+    const advertising = {
+      claimReference: jest.fn(({ messageContent, inboundMessageId }) => {
+        calls.push('claim');
+        if (claimFailuresLeft) {
+          claimFailuresLeft -= 1;
+          return Promise.reject(new Error('temporary attribution outage'));
+        }
+        if (!messageContent?.includes(reference))
+          return Promise.resolve({ status: 'missing' });
+        if (options.claimStatus === 'used')
+          return Promise.resolve({ status: 'used' });
+        attributedMessages.add(inboundMessageId);
+        return Promise.resolve({ status: 'confirmed' });
+      }),
+    };
+    const payments = {
+      detectProof: jest.fn((messageId: string) => {
+        calls.push('proof');
+        if (options.openTransfer === false) return Promise.resolve(false);
+        if (!proofMessages.has(messageId)) {
+          proofMessages.add(messageId);
+          tasks += 1;
+          reviewTransitions += 1;
+        }
+        return Promise.resolve(true);
+      }),
+    };
+    const service = new WebhookService(
+      { get: jest.fn() } as unknown as ConfigService,
+      prisma as unknown as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {
+        findOrCreateForConversation: jest.fn().mockResolvedValue({}),
+      } as unknown as LeadsService,
+      {
+        markReplied: jest.fn().mockResolvedValue(undefined),
+        findHumanManagedRecipient: jest.fn().mockResolvedValue(null),
+      } as unknown as CampaignsService,
+      {} as AutoReplyService,
+      {} as ConversationGuardService,
+      advertising as unknown as AdvertisingService,
+      {
+        publishCustomerMessage: jest.fn().mockResolvedValue(undefined),
+      } as unknown as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+      payments as unknown as PaymentsService,
+    );
+    jest.spyOn(service as any, 'upsertContact').mockResolvedValue({
+      id: 'contact-1',
+      waId: contact.wa_id,
+      name: contact.profile.name,
+    });
+    jest.spyOn(service as any, 'getOrCreateConversation').mockResolvedValue({
+      id: 'conversation-1',
+      status: ConversationStatus.ACTIVE,
+    });
+    const routeInbound = jest
+      .spyOn(service as any, 'routeInbound')
+      .mockResolvedValue('routed');
+    const process = (message: Record<string, unknown>) =>
+      (service as any).processIncomingMessage(
+        message,
+        contact,
+      ) as Promise<string>;
+    return {
+      process,
+      prisma,
+      advertising,
+      payments,
+      calls,
+      routeInbound,
+      attributedMessages,
+      proofMessages,
+      get tasks() {
+        return tasks;
+      },
+      get reviewTransitions() {
+        return reviewTransitions;
+      },
+    };
+  }
+
+  function media(type: 'image' | 'document', caption?: string) {
+    return {
+      id: 'wamid.proof',
+      from: contact.wa_id,
+      timestamp: '1',
+      type,
+      [type]: {
+        id: 'media-1',
+        mime_type: type === 'image' ? 'image/jpeg' : 'application/pdf',
+        caption,
+      },
+    };
+  }
+
+  it.each(['image', 'document'] as const)(
+    '%s caption claims attribution before associating the proof',
+    async (type) => {
+      const flow = harness();
+      await expect(
+        flow.process(media(type, `Comprobante. Referencia: ${reference}`)),
+      ).resolves.toBe('payment_proof');
+      expect(flow.calls).toEqual(['persist', 'claim', 'proof']);
+      expect(flow.advertising.claimReference).toHaveBeenCalledWith({
+        messageContent: `Comprobante. Referencia: ${reference}`,
+        contactId: 'contact-1',
+        conversationId: 'conversation-1',
+        inboundMessageId: 'message-1',
+      });
+      expect(flow.attributedMessages.size).toBe(1);
+      expect(flow.proofMessages.size).toBe(1);
+      expect(flow.tasks).toBe(1);
+      expect(flow.reviewTransitions).toBe(1);
+      expect(flow.routeInbound).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps image proof handling when the caption has no reference', async () => {
+    const flow = harness();
+    await expect(
+      flow.process(media('image', 'Aquí está el comprobante')),
+    ).resolves.toBe('payment_proof');
+    expect(flow.advertising.claimReference).toHaveBeenCalledTimes(1);
+    expect(flow.attributedMessages.size).toBe(0);
+    expect(flow.proofMessages.size).toBe(1);
+  });
+
+  it('preserves text reference handling without proof detection', async () => {
+    const flow = harness();
+    await expect(
+      flow.process({
+        id: 'wamid.text',
+        from: contact.wa_id,
+        timestamp: '1',
+        type: 'text',
+        text: { body: `Referencia: ${reference}` },
+      }),
+    ).resolves.toBe('routed');
+    expect(flow.attributedMessages.size).toBe(1);
+    expect(flow.payments.detectProof).not.toHaveBeenCalled();
+    expect(flow.routeInbound).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['image', 'document'] as const)(
+    'replaying the same %s keeps one message, attribution, proof, task and review transition',
+    async (type) => {
+      const flow = harness();
+      const message = media(type, `Referencia: ${reference}`);
+      await flow.process(message);
+      await expect(flow.process(message)).resolves.toBe('payment_proof');
+      expect(flow.prisma.message.create).toHaveBeenCalledTimes(1);
+      expect(flow.attributedMessages.size).toBe(1);
+      expect(flow.proofMessages.size).toBe(1);
+      expect(flow.tasks).toBe(1);
+      expect(flow.reviewTransitions).toBe(1);
+      expect(flow.calls).toEqual([
+        'persist',
+        'claim',
+        'proof',
+        'claim',
+        'proof',
+      ]);
+    },
+  );
+
+  it('keeps a valid proof when the reference is invalid', async () => {
+    const flow = harness();
+    await expect(
+      flow.process(media('image', 'Referencia: UC-BBBBBBBBBBBBBBBBBBBBBB')),
+    ).resolves.toBe('payment_proof');
+    expect(flow.attributedMessages.size).toBe(0);
+    expect(flow.proofMessages.size).toBe(1);
+  });
+
+  it('claims attribution when the proof was already associated', async () => {
+    const flow = harness({ proofAlreadyRecorded: true });
+    await expect(
+      flow.process(media('image', `Referencia: ${reference}`)),
+    ).resolves.toBe('payment_proof');
+    expect(flow.attributedMessages.size).toBe(1);
+    expect(flow.proofMessages.size).toBe(1);
+    expect(flow.tasks).toBe(0);
+    expect(flow.reviewTransitions).toBe(0);
+  });
+
+  it('does not block proof handling when the reference is already used', async () => {
+    const flow = harness({ claimStatus: 'used' });
+    await expect(
+      flow.process(media('image', `Referencia: ${reference}`)),
+    ).resolves.toBe('payment_proof');
+    expect(flow.attributedMessages.size).toBe(0);
+    expect(flow.proofMessages.size).toBe(1);
+  });
+
+  it('keeps valid attribution when no open transfer accepts the media', async () => {
+    const flow = harness({ openTransfer: false });
+    await expect(
+      flow.process(media('document', `Referencia: ${reference}`)),
+    ).resolves.toBe('routed');
+    expect(flow.attributedMessages.size).toBe(1);
+    expect(flow.proofMessages.size).toBe(0);
+    expect(flow.routeInbound).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries attribution after a recoverable failure while retaining the proof', async () => {
+    const flow = harness({ claimFails: true });
+    const message = media('image', `Referencia: ${reference}`);
+    await expect(flow.process(message)).resolves.toBe('retry');
+    expect(flow.proofMessages.size).toBe(1);
+    expect(flow.tasks).toBe(1);
+    expect(flow.routeInbound).not.toHaveBeenCalled();
+    await expect(flow.process(message)).resolves.toBe('payment_proof');
+    expect(flow.attributedMessages.size).toBe(1);
+    expect(flow.proofMessages.size).toBe(1);
+    expect(flow.tasks).toBe(1);
   });
 });
 

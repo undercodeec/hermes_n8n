@@ -329,10 +329,6 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
         },
       });
       if (alreadyProcessed) {
-        if (message.type === 'image' || message.type === 'document') {
-          const handled = await this.payments.detectProof(alreadyProcessed.id);
-          if (handled) return 'payment_proof';
-        }
         let attributionStatus = 'retry';
         try {
           const result = await this.advertisingService.claimReference({
@@ -346,6 +342,11 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
           this.logger.warn(
             `Attribution retry failed: ${error instanceof Error ? error.message : String(error)}`,
           );
+        }
+        if (message.type === 'image' || message.type === 'document') {
+          const handled = await this.payments.detectProof(alreadyProcessed.id);
+          if (handled)
+            return attributionStatus === 'retry' ? 'retry' : 'payment_proof';
         }
         if (!resumeCommercial) return attributionStatus;
         const contact = await this.prisma.contact.findUniqueOrThrow({
@@ -423,14 +424,6 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
         createdAt: (inboundMessage.createdAt || new Date()).toISOString(),
       });
 
-      if (
-        messageType === MessageType.IMAGE ||
-        messageType === MessageType.DOCUMENT
-      ) {
-        const handled = await this.payments.detectProof(inboundMessage.id);
-        if (handled) return 'payment_proof';
-      }
-
       // Best-effort: an attribution outage must not interrupt the existing
       // WhatsApp, AI or human-handoff flow.
       let attributionStatus = 'retry';
@@ -450,6 +443,14 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
               : 'unknown error'
           }`,
         );
+      }
+      if (
+        messageType === MessageType.IMAGE ||
+        messageType === MessageType.DOCUMENT
+      ) {
+        const handled = await this.payments.detectProof(inboundMessage.id);
+        if (handled)
+          return attributionStatus === 'retry' ? 'retry' : 'payment_proof';
       }
 
       return this.routeInbound(
