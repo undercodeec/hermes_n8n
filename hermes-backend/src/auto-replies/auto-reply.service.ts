@@ -57,6 +57,7 @@ import { AGENT_DEFAULT_INTENTS } from '../conversation-engine/agent-output.contr
 import { InboundTurnService } from './inbound-turn.service';
 import { MeetingsService } from '../integrations/google-calendar/meetings.service';
 import { PaymentsService } from '../payments/payments.service';
+import { ConversationReviewService } from '../learning/conversation-review.service';
 import { redactPaymentMessageForAi } from '../payments/payment-message-redaction';
 import {
   VoiceProcessingError,
@@ -86,6 +87,7 @@ export class AutoReplyService {
     @Optional() private readonly voice?: VoiceService,
     @Optional() private readonly meetings?: MeetingsService,
     @Optional() private readonly payments?: PaymentsService,
+    @Optional() private readonly learningReviews?: ConversationReviewService,
   ) {}
 
   async enqueue(data: AutoReplyJobData, messageLength: number): Promise<void> {
@@ -1219,6 +1221,19 @@ export class AutoReplyService {
     }
     if (incident) {
       await this.persistHermesIncident(data.conversationId, incident);
+      if (incident.requiresHumanReview && this.learningReviews) {
+        try {
+          await this.learningReviews.scheduleIncident({
+            conversationId: data.conversationId,
+            sourceMessageId: inbound.id,
+            code: incident.code,
+          });
+        } catch (error) {
+          this.logger.warn(
+            `No se pudo programar revisión de incidente: ${error instanceof Error ? error.name : 'UNKNOWN'}`,
+          );
+        }
+      }
     }
     const latencyMs = Date.now() - startedAt;
     await this.prisma.conversation.update({

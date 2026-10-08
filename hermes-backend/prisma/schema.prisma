@@ -108,6 +108,7 @@ model User {
   approvedTransfers   TransferPayment[] @relation("TransferApprover")
   rejectedTransfers   TransferPayment[] @relation("TransferRejecter")
   conversationFeedback ConversationFeedback[]
+  approvedLearnings LearningItem[] @relation("LearningApprover")
 
   @@map("users")
 }
@@ -329,6 +330,8 @@ model Conversation {
   meetings                Meeting[]
   transferPayments        TransferPayment[]
   feedback                ConversationFeedback[]
+  reviews                 ConversationReview[]
+  learningEvidence        LearningEvidence[]
 
   @@index([contactId, updatedAt])
   @@index([status, updatedAt])
@@ -465,6 +468,8 @@ model Message {
   inboundTurn               InboundTurn?                 @relation(fields: [inboundTurnId], references: [id], onDelete: SetNull)
   transferProof             TransferPaymentProofMessage?
   feedback                  ConversationFeedback[]
+  sourceReviews             ConversationReview[] @relation("ReviewSourceMessage")
+  learningEvidence          LearningEvidence[]
 
   @@unique([inboundTurnId, inboundTurnPosition])
   @@index([conversationId, createdAt])
@@ -488,10 +493,115 @@ model ConversationFeedback {
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   message      Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
   user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  learningEvidence LearningEvidence[]
+  reviews ConversationReview[]
 
   @@unique([messageId, userId])
   @@index([conversationId, createdAt])
   @@map("conversation_feedback")
+}
+
+enum ConversationReviewTrigger {
+  BAD_FEEDBACK
+  INCIDENT
+}
+
+enum ConversationReviewStatus {
+  PENDING
+  PROCESSING
+  NO_LEARNING
+  PROPOSED
+  FAILED
+}
+
+enum LearningItemStatus {
+  PROPOSED
+  ACTIVE
+  REJECTED
+  RETIRED
+}
+
+enum LearningRiskLevel {
+  LOW
+  NEEDS_REVIEW
+  HIGH
+}
+
+model ConversationReview {
+  id              String                   @id @default(uuid())
+  reviewKey       String                   @unique
+  conversationId  String
+  sourceMessageId String
+  feedbackId      String?
+  reviewerVersion String
+  trigger         ConversationReviewTrigger
+  status          ConversationReviewStatus @default(PENDING)
+  issueCode       String?                  @db.VarChar(60)
+  summary         String?                  @db.VarChar(500)
+  counterexample  String?                  @db.VarChar(500)
+  confidence      Float?
+  providerModel   String?                  @db.VarChar(100)
+  processingAt    DateTime?
+  attempts        Int                      @default(0)
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
+
+  conversation Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sourceMessage Message             @relation("ReviewSourceMessage", fields: [sourceMessageId], references: [id], onDelete: Cascade)
+  feedback      ConversationFeedback? @relation(fields: [feedbackId], references: [id], onDelete: SetNull)
+  items         LearningItem[]
+  evidence      LearningEvidence[]
+
+  @@index([status, createdAt])
+  @@index([conversationId, createdAt])
+  @@map("conversation_reviews")
+}
+
+model LearningItem {
+  id             String             @id @default(uuid())
+  fingerprint    String
+  version        Int                @default(1)
+  status         LearningItemStatus @default(PROPOSED)
+  kind           String             @db.VarChar(60)
+  trigger        String             @db.VarChar(200)
+  guidance       String             @db.VarChar(500)
+  serviceCode    String?            @db.VarChar(60)
+  market         String?            @db.VarChar(60)
+  riskLevel      LearningRiskLevel  @default(NEEDS_REVIEW)
+  validUntil     DateTime?
+  sourceReviewId String?
+  approvedById   String?
+  approvedAt     DateTime?
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+
+  sourceReview ConversationReview? @relation(fields: [sourceReviewId], references: [id], onDelete: SetNull)
+  approvedBy   User?               @relation("LearningApprover", fields: [approvedById], references: [id], onDelete: SetNull)
+  evidence     LearningEvidence[]
+
+  @@unique([fingerprint, version])
+  @@index([status, serviceCode, market, validUntil])
+  @@map("learning_items")
+}
+
+model LearningEvidence {
+  id             String   @id @default(uuid())
+  learningItemId String
+  conversationId String
+  messageId      String?
+  feedbackId     String?
+  reviewId       String?
+  createdAt      DateTime @default(now())
+
+  learningItem LearningItem          @relation(fields: [learningItemId], references: [id], onDelete: Cascade)
+  conversation Conversation          @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      Message?              @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  feedback     ConversationFeedback? @relation(fields: [feedbackId], references: [id], onDelete: SetNull)
+  review       ConversationReview?   @relation(fields: [reviewId], references: [id], onDelete: SetNull)
+
+  @@unique([learningItemId, conversationId])
+  @@index([conversationId, createdAt])
+  @@map("learning_evidence")
 }
 
 enum MetaWebhookInboxStatus {

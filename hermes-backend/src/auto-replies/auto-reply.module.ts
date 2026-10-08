@@ -16,11 +16,13 @@ import { InboundTurnRecoveryService } from './inbound-turn-recovery.service';
 import { VoiceService } from '../voice/voice.service';
 import { GoogleCalendarModule } from '../integrations/google-calendar/google-calendar.module';
 import { PaymentsModule } from '../payments/payments.module';
+import { LearningModule } from '../learning/learning.module';
 
 @Module({
   imports: [
     GoogleCalendarModule,
     PaymentsModule,
+    LearningModule,
     ConversationEngineModule,
     MetaModule,
     HandoffModule,

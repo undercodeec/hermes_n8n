@@ -2,6 +2,8 @@ import {
   BadRequestException,
   ConflictException,
   Injectable,
+  Logger,
+  Optional,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -12,10 +14,31 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateFeedbackDto } from './dto/create-feedback.dto';
+import { ConversationReviewService } from '../learning/conversation-review.service';
 
 @Injectable()
 export class FeedbackService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(FeedbackService.name);
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly reviews?: ConversationReviewService,
+  ) {}
+
+  private async scheduleReview(feedback: {
+    id: string;
+    conversationId: string;
+    messageId: string;
+    rating: FeedbackRating;
+  }): Promise<void> {
+    if (feedback.rating !== FeedbackRating.BAD || !this.reviews) return;
+    try {
+      await this.reviews.scheduleBadFeedback(feedback);
+    } catch (error) {
+      this.logger.warn(
+        `No se pudo programar la revisión: ${error instanceof Error ? error.name : 'UNKNOWN'}`,
+      );
+    }
+  }
 
   private normalize(dto: CreateFeedbackDto) {
     const suggestedReply = dto.suggestedReply?.trim() || null;
@@ -62,7 +85,10 @@ export class FeedbackService {
       where: { requestKey: dto.requestKey },
     });
     if (prior) {
-      if (this.sameRequest(prior, dto, userId, normalized)) return prior;
+      if (this.sameRequest(prior, dto, userId, normalized)) {
+        await this.scheduleReview(prior);
+        return prior;
+      }
       throw new ConflictException(
         'La clave de solicitud ya pertenece a otro feedback',
       );
@@ -85,7 +111,7 @@ export class FeedbackService {
     }
 
     try {
-      return await this.prisma.conversationFeedback.create({
+      const created = await this.prisma.conversationFeedback.create({
         data: {
           conversationId: dto.conversationId,
           messageId: dto.messageId,
@@ -96,6 +122,8 @@ export class FeedbackService {
           requestKey: dto.requestKey,
         },
       });
+      await this.scheduleReview(created);
+      return created;
     } catch (error) {
       if (
         error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -105,6 +133,7 @@ export class FeedbackService {
           where: { requestKey: dto.requestKey },
         });
         if (duplicate && this.sameRequest(duplicate, dto, userId, normalized)) {
+          await this.scheduleReview(duplicate);
           return duplicate;
         }
         throw new ConflictException(
