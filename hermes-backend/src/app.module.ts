@@ -24,6 +24,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { AdvertisingModule } from './advertising/advertising.module';
 import { GoogleCalendarModule } from './integrations/google-calendar/google-calendar.module';
 import { PaymentsModule } from './payments/payments.module';
+import { FeedbackModule } from './feedback/feedback.module';
 
 @Module({
   imports: [
@@ -86,6 +87,7 @@ import { PaymentsModule } from './payments/payments.module';
     PaymentsModule,
     CampaignsModule,
     AdvertisingModule,
+    FeedbackModule,
     // Analytics y métricas
     AnalyticsModule,
   ],

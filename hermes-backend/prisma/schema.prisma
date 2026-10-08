@@ -107,6 +107,7 @@ model User {
   updatedBankAccounts BankAccount[]     @relation("BankAccountUpdater")
   approvedTransfers   TransferPayment[] @relation("TransferApprover")
   rejectedTransfers   TransferPayment[] @relation("TransferRejecter")
+  conversationFeedback ConversationFeedback[]
 
   @@map("users")
 }
@@ -327,6 +328,7 @@ model Conversation {
   inboundTurns            InboundTurn[]
   meetings                Meeting[]
   transferPayments        TransferPayment[]
+  feedback                ConversationFeedback[]
 
   @@index([contactId, updatedAt])
   @@index([status, updatedAt])
@@ -377,6 +379,20 @@ enum MessageSender {
   HERMES
   HUMAN
   SYSTEM
+}
+
+enum FeedbackRating {
+  GOOD
+  BAD
+}
+
+enum FeedbackReasonCode {
+  REPETITION
+  WRONG_FACT
+  MISSED_INTENT
+  NO_NEXT_STEP
+  TONE
+  OTHER
 }
 
 enum InboundTurnStatus {
@@ -448,6 +464,7 @@ model Message {
   outboundAutomatedDelivery AutomatedDelivery?           @relation("AutomatedDeliveryOutbound")
   inboundTurn               InboundTurn?                 @relation(fields: [inboundTurnId], references: [id], onDelete: SetNull)
   transferProof             TransferPaymentProofMessage?
+  feedback                  ConversationFeedback[]
 
   @@unique([inboundTurnId, inboundTurnPosition])
   @@index([conversationId, createdAt])
@@ -455,6 +472,26 @@ model Message {
   @@index([inboundTurnId, createdAt])
   @@index([sentByUserId])
   @@map("messages")
+}
+
+model ConversationFeedback {
+  id             String             @id @default(uuid())
+  conversationId String
+  messageId      String
+  userId         String
+  rating         FeedbackRating
+  reasonCode     FeedbackReasonCode?
+  suggestedReply String?            @db.VarChar(2000)
+  requestKey     String             @unique
+  createdAt      DateTime           @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message      Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@index([conversationId, createdAt])
+  @@map("conversation_feedback")
 }
 
 enum MetaWebhookInboxStatus {
