@@ -216,6 +216,6 @@ Usar un tag/release de rollback en operación continua, no una referencia ambigu
 ## Referencias
 
 - `docs/security-preflight-2026-09-21.md`: preflight histórico; sus cifras de lint y auditoría fueron sustituidas por este documento.
-- `../../ProyectMD/vps-preflight.md`: evidencia y restricciones VPS anteriores.
+- `../../ProyectMD/estado-proyecto.md`: estado consolidado y pendientes VPS; el preflight inicial del agente fue retirado tras completar esa etapa.
 - `../../ProyectMD/hermes-agent-vps-handoff.md`: contrato privado del agente Nous Hermes.
 - `.env.example`: catálogo de variables; nunca debe contener valores operativos.
