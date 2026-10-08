@@ -1,11 +1,19 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ConversationReviewStatus,
   ConversationReviewTrigger,
   FeedbackRating,
   LearningRiskLevel,
+  LearningItemStatus,
 } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { Queue } from 'bullmq';
@@ -16,6 +24,10 @@ import {
   ReviewJobData,
 } from './learning.constants';
 import { ReviewModelService } from './review-model.service';
+import {
+  LearningDecisionAction,
+  LearningDecisionDto,
+} from './dto/learning-decision.dto';
 
 type FeedbackRef = {
   id: string;
@@ -334,7 +346,16 @@ export class ConversationReviewService implements OnModuleInit {
 
   async listCandidates() {
     return this.prisma.learningItem.findMany({
-      where: { status: 'PROPOSED' },
+      where: {
+        status: {
+          in: [
+            LearningItemStatus.PROPOSED,
+            LearningItemStatus.ACTIVE,
+            LearningItemStatus.RETIRED,
+            LearningItemStatus.REJECTED,
+          ],
+        },
+      },
       orderBy: { createdAt: 'desc' },
       take: 50,
       select: {
@@ -346,6 +367,9 @@ export class ConversationReviewService implements OnModuleInit {
         serviceCode: true,
         market: true,
         riskLevel: true,
+        status: true,
+        validUntil: true,
+        approvedAt: true,
         createdAt: true,
         sourceReview: {
           select: {
@@ -362,5 +386,159 @@ export class ConversationReviewService implements OnModuleInit {
         },
       },
     });
+  }
+
+  async decide(id: string, dto: LearningDecisionDto, userId: string) {
+    const reason = dto.reason?.trim();
+    if (!reason || reason.length < 10 || reason.length > 500)
+      throw new BadRequestException('Motivo de 10 a 500 caracteres requerido');
+    if (/[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?:\+?\d[\d\s().-]{7,}\d)/i.test(reason))
+      throw new BadRequestException(
+        'El motivo no debe contener datos de contacto',
+      );
+    const approval = dto.action === LearningDecisionAction.APPROVE;
+    const previous =
+      dto.action === LearningDecisionAction.RETIRE
+        ? LearningItemStatus.ACTIVE
+        : LearningItemStatus.PROPOSED;
+    const next =
+      dto.action === LearningDecisionAction.APPROVE
+        ? LearningItemStatus.ACTIVE
+        : dto.action === LearningDecisionAction.REJECT
+          ? LearningItemStatus.REJECTED
+          : LearningItemStatus.RETIRED;
+    if (!Object.values(LearningDecisionAction).includes(dto.action))
+      throw new BadRequestException('Decisión inválida');
+    if (!userId) throw new BadRequestException('Operador requerido');
+    const until = approval && dto.validUntil ? new Date(dto.validUntil) : null;
+    if (
+      approval &&
+      (!until ||
+        !Number.isFinite(until.getTime()) ||
+        until.getTime() <= Date.now() ||
+        until.getTime() > Date.now() + 180 * 86400_000)
+    )
+      throw new BadRequestException(
+        'Vencimiento futuro de hasta 180 días requerido',
+      );
+    if (!approval && dto.validUntil)
+      throw new BadRequestException(
+        'El vencimiento sólo corresponde a aprobación',
+      );
+    return this.prisma.$transaction(async (tx) => {
+      const item = await tx.learningItem.findUnique({
+        where: { id },
+        select: {
+          id: true,
+          status: true,
+          version: true,
+          _count: { select: { evidence: true } },
+        },
+      });
+      if (!item) throw new NotFoundException('Candidato inexistente');
+      if (item.status !== previous)
+        throw new ConflictException('El candidato cambió de estado');
+      if (approval && item._count.evidence < 1)
+        throw new BadRequestException('No existe evidencia para aprobar');
+      const updated = await tx.learningItem.updateMany({
+        where: { id, status: previous },
+        data: {
+          status: next,
+          ...(approval
+            ? {
+                validUntil: until,
+                approvedById: userId,
+                approvedAt: new Date(),
+              }
+            : {}),
+        },
+      });
+      if (updated.count !== 1)
+        throw new ConflictException('El candidato cambió de estado');
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: `LEARNING_${dto.action}`,
+          entity: 'learning_items',
+          entityId: id,
+          changes: {
+            version: item.version,
+            before: previous,
+            after: next,
+            reason,
+            validUntil: until?.toISOString() ?? null,
+          },
+        },
+      });
+      return tx.learningItem.findUniqueOrThrow({
+        where: { id },
+        select: {
+          id: true,
+          status: true,
+          version: true,
+          validUntil: true,
+          approvedAt: true,
+        },
+      });
+    });
+  }
+
+  async recordShadowMatches(input: {
+    conversationId: string;
+    inboundMessageId: string;
+    customerMessage: string;
+    serviceCode?: string;
+    market?: string;
+    engine: string;
+  }): Promise<void> {
+    if (this.config.get<string>('LEARNING_SHADOW_ENABLED', 'false') !== 'true')
+      return;
+    const started = Date.now();
+    const now = new Date();
+    const items = await this.prisma.learningItem.findMany({
+      where: {
+        status: LearningItemStatus.ACTIVE,
+        validUntil: { gt: now },
+        OR: [
+          { serviceCode: null },
+          ...(input.serviceCode ? [{ serviceCode: input.serviceCode }] : []),
+        ],
+        AND: [
+          {
+            OR: [
+              { market: null },
+              ...(input.market ? [{ market: input.market }] : []),
+            ],
+          },
+        ],
+      },
+      select: { id: true, version: true, trigger: true },
+      take: 100,
+    });
+    const tokens = new Set(
+      input.customerMessage.toLocaleLowerCase('es').match(/[\p{L}]{4,}/gu) ||
+        [],
+    );
+    const matches = items
+      .map((item) => ({
+        id: item.id,
+        version: item.version,
+        score: (
+          item.trigger.toLocaleLowerCase('es').match(/[\p{L}]{4,}/gu) || []
+        ).filter((word) => tokens.has(word)).length,
+      }))
+      .filter((item) => item.score > 0)
+      .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
+      .slice(0, 3);
+    this.logger.log(
+      JSON.stringify({
+        event: 'learning_shadow_retrieval',
+        conversationId: input.conversationId,
+        inboundMessageId: input.inboundMessageId,
+        engine: input.engine,
+        matches,
+        elapsedMs: Date.now() - started,
+      }),
+    );
   }
 }

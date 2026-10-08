@@ -496,6 +496,24 @@ export class AutoReplyService {
     const startedAt = Date.now();
     await this.showTypingIndicator(inbound.wamid);
     const approvedKnowledge = commercialSnapshotKnowledge(commercialSnapshot);
+    if (
+      this.config.get<string>('LEARNING_SHADOW_ENABLED', 'false') === 'true'
+    ) {
+      try {
+        await this.learningReviews?.recordShadowMatches({
+          conversationId: data.conversationId,
+          inboundMessageId: inbound.id,
+          customerMessage,
+          serviceCode: context.commercialProfile?.service,
+          market: commercialSnapshot.market,
+          engine: this.conversationEngine.selectedEngine(data.conversationId),
+        });
+      } catch {
+        this.logger.warn(
+          'No se pudo registrar la búsqueda de aprendizajes en sombra',
+        );
+      }
+    }
     const engineResult = await this.conversationEngine.respond({
       conversationId: data.conversationId,
       inboundMessageId: inbound.id,
