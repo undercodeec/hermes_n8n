@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import {
   ConversationStatus,
+  HandoffStatus,
   MessageSender,
   TaskStatus,
   TaskType,
@@ -17,7 +18,7 @@ import { ConversationsService } from './conversations.service';
 describe('ConversationsService', () => {
   const tx = {
     $executeRaw: jest.fn(),
-    message: { create: jest.fn() },
+    message: { create: jest.fn(), findFirst: jest.fn() },
     conversation: { findUnique: jest.fn(), update: jest.fn() },
     humanHandoff: { findFirst: jest.fn() },
     auditLog: { create: jest.fn() },
@@ -38,15 +39,21 @@ describe('ConversationsService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    (prisma.conversation.findUnique as unknown as jest.Mock).mockResolvedValue({
+    tx.conversation.findUnique.mockResolvedValue({
       id: 'conversation-1',
+      status: ConversationStatus.HANDED_OFF,
       contactId: 'contact-1',
       contact: { waId: '593999999999' },
+    });
+    tx.humanHandoff.findFirst.mockResolvedValue({
+      id: 'handoff-1',
+      status: HandoffStatus.IN_PROGRESS,
+      assignedAgentId: 'user-1',
     });
   });
 
   it('rechaza texto libre fuera de la ventana de 24 horas', async () => {
-    (prisma.message.findFirst as unknown as jest.Mock).mockResolvedValue({
+    tx.message.findFirst.mockResolvedValue({
       createdAt: new Date(Date.now() - 25 * 60 * 60 * 1000),
     });
 
@@ -57,7 +64,7 @@ describe('ConversationsService', () => {
   });
 
   it('registra un mensaje humano y su auditoría dentro de la ventana', async () => {
-    (prisma.message.findFirst as unknown as jest.Mock).mockResolvedValue({
+    tx.message.findFirst.mockResolvedValue({
       createdAt: new Date(Date.now() - 60 * 60 * 1000),
     });
     (meta.sendTextMessage as jest.Mock).mockResolvedValue({
@@ -88,7 +95,7 @@ describe('ConversationsService', () => {
   });
 
   it('no registra como enviado un mensaje que Meta no confirmó', async () => {
-    (prisma.message.findFirst as unknown as jest.Mock).mockResolvedValue({
+    tx.message.findFirst.mockResolvedValue({
       createdAt: new Date(),
     });
     (meta.sendTextMessage as jest.Mock).mockResolvedValue(null);
@@ -100,7 +107,7 @@ describe('ConversationsService', () => {
   });
 
   it('rechaza respuestas manuales en una conversación cerrada', async () => {
-    (prisma.conversation.findUnique as unknown as jest.Mock).mockResolvedValue({
+    tx.conversation.findUnique.mockResolvedValue({
       id: 'conversation-1',
       status: ConversationStatus.CLOSED,
       contact: { waId: '593999999999' },
@@ -109,6 +116,24 @@ describe('ConversationsService', () => {
     await expect(
       service.reply('conversation-1', { content: 'Hola' }, 'user-1'),
     ).rejects.toBeInstanceOf(ConflictException);
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['sin handoff', null, ConversationStatus.HANDED_OFF],
+    ['handoff pendiente', { id: 'handoff-1', status: HandoffStatus.PENDING }, ConversationStatus.HANDED_OFF],
+    ['handoff solo asignado', { id: 'handoff-1', status: HandoffStatus.ASSIGNED, assignedAgentId: 'user-1' }, ConversationStatus.HANDED_OFF],
+    ['atención ajena', null, ConversationStatus.HANDED_OFF],
+    ['Hermes activo', { id: 'handoff-1' }, ConversationStatus.ACTIVE],
+  ])('rechaza la respuesta %s antes de Meta', async (_label, handoff, status) => {
+    tx.conversation.findUnique.mockResolvedValue({
+      id: 'conversation-1',
+      status,
+      contact: { waId: '593999999999' },
+    });
+    tx.humanHandoff.findFirst.mockResolvedValue(handoff);
+    await expect(service.reply('conversation-1', { content: 'Hola' }, 'user-1'))
+      .rejects.toBeInstanceOf(ConflictException);
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
   });
 
@@ -154,6 +179,17 @@ describe('ConversationsService', () => {
     await expect(
       service.reopen('conversation-1', 'user-1'),
     ).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.conversation.update).not.toHaveBeenCalled();
+  });
+
+  it('no cierra una conversación con atención humana abierta', async () => {
+    tx.conversation.findUnique.mockResolvedValue({
+      id: 'conversation-1',
+      status: ConversationStatus.HANDED_OFF,
+    });
+    tx.humanHandoff.findFirst.mockResolvedValue({ id: 'handoff-1' });
+    await expect(service.close('conversation-1', 'user-1'))
+      .rejects.toBeInstanceOf(ConflictException);
     expect(tx.conversation.update).not.toHaveBeenCalled();
   });
 

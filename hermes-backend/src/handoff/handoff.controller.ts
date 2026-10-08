@@ -54,10 +54,9 @@ export class HandoffController {
   @ApiOperation({ summary: 'Tomar el handoff y marcarlo en progreso' })
   take(
     @Param('id') id: string,
-    @Body() dto: AssignHandoffDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.handoffService.assign(id, dto.agentId ?? userId, userId);
+    return this.handoffService.assign(id, userId, userId);
   }
 
   @Put(':id/assign')

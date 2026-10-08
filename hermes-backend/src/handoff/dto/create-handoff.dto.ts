@@ -16,8 +16,4 @@ export class CreateHandoffDto {
   @IsString()
   reasonDetail?: string;
 
-  @ApiPropertyOptional({ description: 'ID del agente a asignar' })
-  @IsOptional()
-  @IsString()
-  assignedAgentId?: string;
 }

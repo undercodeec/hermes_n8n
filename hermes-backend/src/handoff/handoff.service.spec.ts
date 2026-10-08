@@ -18,6 +18,7 @@ import { HandoffService } from './handoff.service';
 
 describe('HandoffService', () => {
   const tx = {
+    $executeRaw: jest.fn(),
     humanHandoff: {
       findUnique: jest.fn(),
       update: jest.fn(),
@@ -100,6 +101,19 @@ describe('HandoffService', () => {
       }),
     ).resolves.toEqual(expect.objectContaining({ id: 'handoff-1' }));
     expect(createTx.humanHandoff.create).toHaveBeenCalledTimes(1);
+    expect(createTx.humanHandoff.create).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ status: HandoffStatus.PENDING }) }),
+    );
+    expect(createTx.conversation.update).toHaveBeenCalledWith({
+      where: { id: 'conversation-1' },
+      data: { status: ConversationStatus.HANDED_OFF, closedAt: null },
+    });
+  });
+
+  it('does not let another operator take an assigned handoff', async () => {
+    await expect(service.assign('handoff-1', 'user-2', 'user-2'))
+      .rejects.toThrow('El handoff ya está asignado a otro operador');
+    expect(tx.humanHandoff.update).not.toHaveBeenCalled();
   });
 
   it('moves a new lead to CONTACTED and creates one callback task with the handoff', async () => {

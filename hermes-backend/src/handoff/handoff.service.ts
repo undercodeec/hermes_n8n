@@ -172,9 +172,7 @@ export class HandoffService {
         const handoff = await tx.humanHandoff.create({
           data: {
             ...dto,
-            status: dto.assignedAgentId
-              ? HandoffStatus.ASSIGNED
-              : HandoffStatus.PENDING,
+            status: HandoffStatus.PENDING,
             ...(commercial
               ? {
                   metadata: {
@@ -313,7 +311,16 @@ export class HandoffService {
 
   async assign(id: string, agentId: string, actorUserId: string) {
     return this.prisma.$transaction(async (tx) => {
+      const target = await tx.humanHandoff.findUnique({ where: { id } });
+      if (!target) throw new NotFoundException('Handoff no encontrado');
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${target.conversationId}))`;
       const handoff = await this.getOpenHandoff(tx, id);
+      if (handoff.assignedAgentId && handoff.assignedAgentId !== agentId) {
+        throw new ConflictException('El handoff ya está asignado a otro operador');
+      }
+      if (handoff.status === HandoffStatus.IN_PROGRESS && handoff.assignedAgentId === agentId) {
+        return handoff;
+      }
       const updated = await tx.humanHandoff.update({
         where: { id },
         data: {
@@ -346,7 +353,13 @@ export class HandoffService {
 
   async resolve(id: string, dto: ResolveHandoffDto, actorUserId: string) {
     return this.prisma.$transaction(async (tx) => {
+      const target = await tx.humanHandoff.findUnique({ where: { id } });
+      if (!target) throw new NotFoundException('Handoff no encontrado');
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${target.conversationId}))`;
       const handoff = await this.getOpenHandoff(tx, id);
+      if (handoff.assignedAgentId !== actorUserId) {
+        throw new ConflictException('La atención está asignada a otro operador');
+      }
 
       if (dto.action === HandoffResolutionAction.KEEP_HUMAN) {
         const kept = await tx.humanHandoff.update({

@@ -393,52 +393,63 @@ export class ConversationsService {
   }
 
   async reply(id: string, dto: ReplyConversationDto, userId: string) {
-    const conversation = await this.prisma.conversation.findUnique({
-      where: { id },
-      include: { contact: true },
-    });
-    if (!conversation) {
-      throw new NotFoundException('Conversación no encontrada');
-    }
-
-    if (conversation.status === ConversationStatus.CLOSED) {
-      throw new ConflictException({
-        code: 'CONVERSATION_CLOSED',
-        message:
-          'La conversación está cerrada. Reábrela antes de enviar una respuesta.',
-      });
-    }
-
-    const lastInbound = await this.prisma.message.findFirst({
-      where: { conversationId: id, sender: MessageSender.CONTACT },
-      orderBy: { createdAt: 'desc' },
-      select: { createdAt: true },
-    });
-    const window = this.replyWindow(lastInbound?.createdAt ?? null);
-
-    if (!window.isOpen) {
-      throw new BadRequestException({
-        code: 'WHATSAPP_TEMPLATE_REQUIRED',
-        message:
-          'La ventana de atención de 24 horas está cerrada. Debes usar una plantilla aprobada.',
-        templateRequired: true,
-        lastInboundAt: window.lastInboundAt,
-        windowClosesAt: window.closesAt,
-      });
-    }
-
-    const sentMessage = await this.metaService.sendTextMessage(
-      conversation.contact.waId,
-      dto.content,
-    );
-    const wamid = sentMessage?.messages?.[0]?.id;
-    if (!wamid) {
-      throw new BadGatewayException(
-        'Meta no confirmó el envío. El mensaje no se registró como enviado.',
-      );
-    }
-
     return this.prisma.$transaction(async (tx) => {
+      // Serialize takeover/resolution with the final authorization before Meta.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${id}))`;
+      const conversation = await tx.conversation.findUnique({
+        where: { id },
+        include: { contact: true },
+      });
+      if (!conversation) throw new NotFoundException('Conversación no encontrada');
+      if (conversation.status === ConversationStatus.CLOSED) {
+        throw new ConflictException({
+          code: 'CONVERSATION_CLOSED',
+          message: 'La conversación está cerrada. Reábrela antes de enviar una respuesta.',
+        });
+      }
+      const handoff = await tx.humanHandoff.findFirst({
+        where: {
+          conversationId: id,
+          status: HandoffStatus.IN_PROGRESS,
+          assignedAgentId: userId,
+        },
+      });
+      if (
+        conversation.status !== ConversationStatus.HANDED_OFF ||
+        !handoff ||
+        handoff.assignedAgentId !== userId ||
+        handoff.status !== HandoffStatus.IN_PROGRESS
+      ) {
+        throw new ConflictException({
+          code: 'HUMAN_HANDOFF_REQUIRED',
+          message: 'Toma la atención de esta conversación antes de responder.',
+        });
+      }
+      const lastInbound = await tx.message.findFirst({
+        where: { conversationId: id, sender: MessageSender.CONTACT },
+        orderBy: { createdAt: 'desc' },
+        select: { createdAt: true },
+      });
+      const window = this.replyWindow(lastInbound?.createdAt ?? null);
+      if (!window.isOpen) {
+        throw new BadRequestException({
+          code: 'WHATSAPP_TEMPLATE_REQUIRED',
+          message: 'La ventana de atención de 24 horas está cerrada. Debes usar una plantilla aprobada.',
+          templateRequired: true,
+          lastInboundAt: window.lastInboundAt,
+          windowClosesAt: window.closesAt,
+        });
+      }
+      const sentMessage = await this.metaService.sendTextMessage(
+        conversation.contact.waId,
+        dto.content,
+      );
+      const wamid = sentMessage?.messages?.[0]?.id;
+      if (!wamid) {
+        throw new BadGatewayException(
+          'Meta no confirmó el envío. El mensaje no se registró como enviado.',
+        );
+      }
       const message = await tx.message.create({
         data: {
           conversationId: id,
@@ -470,14 +481,27 @@ export class ConversationsService {
         },
       });
       return message;
-    });
+    }, { timeout: 40000 });
   }
 
   async updateStatus(id: string, status: ConversationStatus, userId?: string) {
     return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${id}))`;
       const existing = await tx.conversation.findUnique({ where: { id } });
       if (!existing) {
         throw new NotFoundException('Conversación no encontrada');
+      }
+      if (status === ConversationStatus.CLOSED) {
+        const openHandoff = await tx.humanHandoff.findFirst({
+          where: { conversationId: id, status: { in: OPEN_HANDOFF_STATUSES } },
+          select: { id: true },
+        });
+        if (openHandoff) {
+          throw new ConflictException({
+            code: 'OPEN_HANDOFF',
+            message: 'Resuelve el handoff abierto antes de cerrar la conversación.',
+          });
+        }
       }
 
       const conversation = await tx.conversation.update({
