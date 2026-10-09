@@ -25,7 +25,10 @@
     "admin:create:dev": "ts-node src/scripts/create-admin.ts",
     "audit:hermes-data": "ts-node src/scripts/audit-hermes-data.ts",
     "benchmark:hermes": "ts-node src/scripts/benchmark-hermes.ts",
-    "evaluate:learning-phase4": "ts-node src/scripts/evaluate-learning-phase4.ts"
+    "evaluate:learning-phase4": "ts-node src/scripts/evaluate-learning-phase4.ts",
+    "learning:harness:up": "docker compose -f docker-compose.learning-test.yml -p hermes-learning-test up -d --wait",
+    "learning:harness:down": "docker compose -f docker-compose.learning-test.yml -p hermes-learning-test down --volumes --remove-orphans",
+    "test:learning:integration": "node scripts/run-learning-integration.mjs"
   },
   "dependencies": {
     "@nestjs/bullmq": "^11.0.4",
