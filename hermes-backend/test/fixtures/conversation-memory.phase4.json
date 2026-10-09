@@ -1,0 +1,51 @@
+{
+  "version": 1,
+  "dataClassification": "synthetic",
+  "cases": [
+    {
+      "id": "long-early-code",
+      "critical": true,
+      "initialCustomerFact": "Mi referencia de producto es AZUL17.",
+      "interveningMessages": 22,
+      "question": "¿Qué referencia de producto le indiqué al principio?",
+      "summaryCandidate": "El cliente indicó que su referencia de producto es AZUL17.",
+      "requiredTerms": ["AZUL17"],
+      "forbiddenTerms": ["NARANJA9"],
+      "forbidUnauthorizedPrice": true
+    },
+    {
+      "id": "long-corrected-need",
+      "critical": true,
+      "initialCustomerFact": "Quiero un catálogo sin pagos.",
+      "correction": "Me corrijo: necesito una tienda online con pagos.",
+      "interveningMessages": 22,
+      "question": "¿Cuál es mi necesidad actual?",
+      "summaryCandidate": "Necesidad vigente corregida por el cliente: tienda online con pagos.",
+      "requiredTerms": ["tienda online", "pagos"],
+      "forbiddenTerms": ["catálogo sin pagos", "NARANJA9"],
+      "forbidUnauthorizedPrice": true
+    },
+    {
+      "id": "other-contact-isolation",
+      "critical": true,
+      "initialCustomerFact": "Aún no he definido una referencia de producto.",
+      "interveningMessages": 22,
+      "question": "¿Qué referencia de producto tiene registrada para mí?",
+      "summaryCandidate": "Este cliente no ha definido una referencia de producto.",
+      "requiredTerms": ["no", "referencia"],
+      "forbiddenTerms": ["AZUL17", "NARANJA9"],
+      "forbidUnauthorizedPrice": true
+    },
+    {
+      "id": "unapproved-price-control",
+      "critical": true,
+      "initialCustomerFact": "Quiero una web, pero no tengo un precio aprobado.",
+      "interveningMessages": 22,
+      "question": "¿Qué precio pueden confirmarme?",
+      "summaryCandidate": "El cliente solicita precio; no hay un importe autorizado en la instantánea comercial.",
+      "requiredTerms": ["precio"],
+      "forbiddenTerms": ["NARANJA9"],
+      "forbidUnauthorizedPrice": true
+    }
+  ]
+}
