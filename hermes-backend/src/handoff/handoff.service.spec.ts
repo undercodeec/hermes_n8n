@@ -102,7 +102,9 @@ describe('HandoffService', () => {
     ).resolves.toEqual(expect.objectContaining({ id: 'handoff-1' }));
     expect(createTx.humanHandoff.create).toHaveBeenCalledTimes(1);
     expect(createTx.humanHandoff.create).toHaveBeenCalledWith(
-      expect.objectContaining({ data: expect.objectContaining({ status: HandoffStatus.PENDING }) }),
+      expect.objectContaining({
+        data: expect.objectContaining({ status: HandoffStatus.PENDING }),
+      }),
     );
     expect(createTx.conversation.update).toHaveBeenCalledWith({
       where: { id: 'conversation-1' },
@@ -111,8 +113,9 @@ describe('HandoffService', () => {
   });
 
   it('does not let another operator take an assigned handoff', async () => {
-    await expect(service.assign('handoff-1', 'user-2', 'user-2'))
-      .rejects.toThrow('El handoff ya está asignado a otro operador');
+    await expect(
+      service.assign('handoff-1', 'user-2', 'user-2'),
+    ).rejects.toThrow('El handoff ya está asignado a otro operador');
     expect(tx.humanHandoff.update).not.toHaveBeenCalled();
   });
 

@@ -393,95 +393,102 @@ export class ConversationsService {
   }
 
   async reply(id: string, dto: ReplyConversationDto, userId: string) {
-    return this.prisma.$transaction(async (tx) => {
-      // Serialize takeover/resolution with the final authorization before Meta.
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${id}))`;
-      const conversation = await tx.conversation.findUnique({
-        where: { id },
-        include: { contact: true },
-      });
-      if (!conversation) throw new NotFoundException('Conversación no encontrada');
-      if (conversation.status === ConversationStatus.CLOSED) {
-        throw new ConflictException({
-          code: 'CONVERSATION_CLOSED',
-          message: 'La conversación está cerrada. Reábrela antes de enviar una respuesta.',
+    return this.prisma.$transaction(
+      async (tx) => {
+        // Serialize takeover/resolution with the final authorization before Meta.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${id}))`;
+        const conversation = await tx.conversation.findUnique({
+          where: { id },
+          include: { contact: true },
         });
-      }
-      const handoff = await tx.humanHandoff.findFirst({
-        where: {
-          conversationId: id,
-          status: HandoffStatus.IN_PROGRESS,
-          assignedAgentId: userId,
-        },
-      });
-      if (
-        conversation.status !== ConversationStatus.HANDED_OFF ||
-        !handoff ||
-        handoff.assignedAgentId !== userId ||
-        handoff.status !== HandoffStatus.IN_PROGRESS
-      ) {
-        throw new ConflictException({
-          code: 'HUMAN_HANDOFF_REQUIRED',
-          message: 'Toma la atención de esta conversación antes de responder.',
+        if (!conversation)
+          throw new NotFoundException('Conversación no encontrada');
+        if (conversation.status === ConversationStatus.CLOSED) {
+          throw new ConflictException({
+            code: 'CONVERSATION_CLOSED',
+            message:
+              'La conversación está cerrada. Reábrela antes de enviar una respuesta.',
+          });
+        }
+        const handoff = await tx.humanHandoff.findFirst({
+          where: {
+            conversationId: id,
+            status: HandoffStatus.IN_PROGRESS,
+            assignedAgentId: userId,
+          },
         });
-      }
-      const lastInbound = await tx.message.findFirst({
-        where: { conversationId: id, sender: MessageSender.CONTACT },
-        orderBy: { createdAt: 'desc' },
-        select: { createdAt: true },
-      });
-      const window = this.replyWindow(lastInbound?.createdAt ?? null);
-      if (!window.isOpen) {
-        throw new BadRequestException({
-          code: 'WHATSAPP_TEMPLATE_REQUIRED',
-          message: 'La ventana de atención de 24 horas está cerrada. Debes usar una plantilla aprobada.',
-          templateRequired: true,
-          lastInboundAt: window.lastInboundAt,
-          windowClosesAt: window.closesAt,
+        if (
+          conversation.status !== ConversationStatus.HANDED_OFF ||
+          !handoff ||
+          handoff.assignedAgentId !== userId ||
+          handoff.status !== HandoffStatus.IN_PROGRESS
+        ) {
+          throw new ConflictException({
+            code: 'HUMAN_HANDOFF_REQUIRED',
+            message:
+              'Toma la atención de esta conversación antes de responder.',
+          });
+        }
+        const lastInbound = await tx.message.findFirst({
+          where: { conversationId: id, sender: MessageSender.CONTACT },
+          orderBy: { createdAt: 'desc' },
+          select: { createdAt: true },
         });
-      }
-      const sentMessage = await this.metaService.sendTextMessage(
-        conversation.contact.waId,
-        dto.content,
-      );
-      const wamid = sentMessage?.messages?.[0]?.id;
-      if (!wamid) {
-        throw new BadGatewayException(
-          'Meta no confirmó el envío. El mensaje no se registró como enviado.',
+        const window = this.replyWindow(lastInbound?.createdAt ?? null);
+        if (!window.isOpen) {
+          throw new BadRequestException({
+            code: 'WHATSAPP_TEMPLATE_REQUIRED',
+            message:
+              'La ventana de atención de 24 horas está cerrada. Debes usar una plantilla aprobada.',
+            templateRequired: true,
+            lastInboundAt: window.lastInboundAt,
+            windowClosesAt: window.closesAt,
+          });
+        }
+        const sentMessage = await this.metaService.sendTextMessage(
+          conversation.contact.waId,
+          dto.content,
         );
-      }
-      const message = await tx.message.create({
-        data: {
-          conversationId: id,
-          contactId: conversation.contactId,
-          direction: MessageDirection.OUTBOUND,
-          sender: MessageSender.HUMAN,
-          sentByUserId: userId,
-          type: MessageType.TEXT,
-          content: dto.content,
-          wamid,
-          metadata: { source: 'crm' },
-        },
-        include: {
-          sentByUser: { select: { id: true, name: true, email: true } },
-        },
-      });
+        const wamid = sentMessage?.messages?.[0]?.id;
+        if (!wamid) {
+          throw new BadGatewayException(
+            'Meta no confirmó el envío. El mensaje no se registró como enviado.',
+          );
+        }
+        const message = await tx.message.create({
+          data: {
+            conversationId: id,
+            contactId: conversation.contactId,
+            direction: MessageDirection.OUTBOUND,
+            sender: MessageSender.HUMAN,
+            sentByUserId: userId,
+            type: MessageType.TEXT,
+            content: dto.content,
+            wamid,
+            metadata: { source: 'crm' },
+          },
+          include: {
+            sentByUser: { select: { id: true, name: true, email: true } },
+          },
+        });
 
-      await tx.conversation.update({
-        where: { id },
-        data: { updatedAt: new Date() },
-      });
-      await tx.auditLog.create({
-        data: {
-          userId,
-          action: 'HUMAN_MESSAGE_SENT',
-          entity: 'conversations',
-          entityId: id,
-          changes: { messageId: message.id, wamid },
-        },
-      });
-      return message;
-    }, { timeout: 40000 });
+        await tx.conversation.update({
+          where: { id },
+          data: { updatedAt: new Date() },
+        });
+        await tx.auditLog.create({
+          data: {
+            userId,
+            action: 'HUMAN_MESSAGE_SENT',
+            entity: 'conversations',
+            entityId: id,
+            changes: { messageId: message.id, wamid },
+          },
+        });
+        return message;
+      },
+      { timeout: 40000 },
+    );
   }
 
   async updateStatus(id: string, status: ConversationStatus, userId?: string) {
@@ -499,7 +506,8 @@ export class ConversationsService {
         if (openHandoff) {
           throw new ConflictException({
             code: 'OPEN_HANDOFF',
-            message: 'Resuelve el handoff abierto antes de cerrar la conversación.',
+            message:
+              'Resuelve el handoff abierto antes de cerrar la conversación.',
           });
         }
       }

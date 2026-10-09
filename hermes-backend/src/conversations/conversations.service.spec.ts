@@ -121,21 +121,37 @@ describe('ConversationsService', () => {
 
   it.each([
     ['sin handoff', null, ConversationStatus.HANDED_OFF],
-    ['handoff pendiente', { id: 'handoff-1', status: HandoffStatus.PENDING }, ConversationStatus.HANDED_OFF],
-    ['handoff solo asignado', { id: 'handoff-1', status: HandoffStatus.ASSIGNED, assignedAgentId: 'user-1' }, ConversationStatus.HANDED_OFF],
+    [
+      'handoff pendiente',
+      { id: 'handoff-1', status: HandoffStatus.PENDING },
+      ConversationStatus.HANDED_OFF,
+    ],
+    [
+      'handoff solo asignado',
+      {
+        id: 'handoff-1',
+        status: HandoffStatus.ASSIGNED,
+        assignedAgentId: 'user-1',
+      },
+      ConversationStatus.HANDED_OFF,
+    ],
     ['atención ajena', null, ConversationStatus.HANDED_OFF],
     ['Hermes activo', { id: 'handoff-1' }, ConversationStatus.ACTIVE],
-  ])('rechaza la respuesta %s antes de Meta', async (_label, handoff, status) => {
-    tx.conversation.findUnique.mockResolvedValue({
-      id: 'conversation-1',
-      status,
-      contact: { waId: '593999999999' },
-    });
-    tx.humanHandoff.findFirst.mockResolvedValue(handoff);
-    await expect(service.reply('conversation-1', { content: 'Hola' }, 'user-1'))
-      .rejects.toBeInstanceOf(ConflictException);
-    expect(meta.sendTextMessage).not.toHaveBeenCalled();
-  });
+  ])(
+    'rechaza la respuesta %s antes de Meta',
+    async (_label, handoff, status) => {
+      tx.conversation.findUnique.mockResolvedValue({
+        id: 'conversation-1',
+        status,
+        contact: { waId: '593999999999' },
+      });
+      tx.humanHandoff.findFirst.mockResolvedValue(handoff);
+      await expect(
+        service.reply('conversation-1', { content: 'Hola' }, 'user-1'),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    },
+  );
 
   it('reabre manualmente, limpia closedAt y registra auditoría', async () => {
     const closedAt = new Date('2026-09-18T18:00:00Z');
@@ -188,8 +204,9 @@ describe('ConversationsService', () => {
       status: ConversationStatus.HANDED_OFF,
     });
     tx.humanHandoff.findFirst.mockResolvedValue({ id: 'handoff-1' });
-    await expect(service.close('conversation-1', 'user-1'))
-      .rejects.toBeInstanceOf(ConflictException);
+    await expect(
+      service.close('conversation-1', 'user-1'),
+    ).rejects.toBeInstanceOf(ConflictException);
     expect(tx.conversation.update).not.toHaveBeenCalled();
   });
 

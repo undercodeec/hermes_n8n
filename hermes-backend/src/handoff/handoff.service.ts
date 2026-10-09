@@ -316,9 +316,14 @@ export class HandoffService {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${target.conversationId}))`;
       const handoff = await this.getOpenHandoff(tx, id);
       if (handoff.assignedAgentId && handoff.assignedAgentId !== agentId) {
-        throw new ConflictException('El handoff ya está asignado a otro operador');
+        throw new ConflictException(
+          'El handoff ya está asignado a otro operador',
+        );
       }
-      if (handoff.status === HandoffStatus.IN_PROGRESS && handoff.assignedAgentId === agentId) {
+      if (
+        handoff.status === HandoffStatus.IN_PROGRESS &&
+        handoff.assignedAgentId === agentId
+      ) {
         return handoff;
       }
       const updated = await tx.humanHandoff.update({
@@ -358,7 +363,9 @@ export class HandoffService {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${target.conversationId}))`;
       const handoff = await this.getOpenHandoff(tx, id);
       if (handoff.assignedAgentId !== actorUserId) {
-        throw new ConflictException('La atención está asignada a otro operador');
+        throw new ConflictException(
+          'La atención está asignada a otro operador',
+        );
       }
 
       if (dto.action === HandoffResolutionAction.KEEP_HUMAN) {

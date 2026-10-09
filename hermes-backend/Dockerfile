@@ -22,6 +22,13 @@ FROM node:22-bookworm-slim AS production
 
 WORKDIR /app
 
+ARG GIT_COMMIT
+RUN if ! printf '%s' "$GIT_COMMIT" | grep -Eq '^[0-9a-f]{40}$'; then \
+      echo 'GIT_COMMIT must be the full lowercase Git SHA (40 hex characters)' >&2; \
+      exit 1; \
+    fi
+LABEL org.opencontainers.image.revision="${GIT_COMMIT}"
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openssl \
     ca-certificates \

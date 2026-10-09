@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        GIT_COMMIT: ${BACKEND_GIT_COMMIT:?Set BACKEND_GIT_COMMIT to the full source commit SHA}
     container_name: hermes-app
     restart: unless-stopped
     env_file:

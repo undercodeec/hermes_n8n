@@ -15,5 +15,4 @@ export class CreateHandoffDto {
   @IsOptional()
   @IsString()
   reasonDetail?: string;
-
 }

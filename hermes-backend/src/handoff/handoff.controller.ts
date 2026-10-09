@@ -52,10 +52,7 @@ export class HandoffController {
 
   @Put(':id/take')
   @ApiOperation({ summary: 'Tomar el handoff y marcarlo en progreso' })
-  take(
-    @Param('id') id: string,
-    @CurrentUser('id') userId: string,
-  ) {
+  take(@Param('id') id: string, @CurrentUser('id') userId: string) {
     return this.handoffService.assign(id, userId, userId);
   }
 
