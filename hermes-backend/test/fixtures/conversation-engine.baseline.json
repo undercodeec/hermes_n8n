@@ -10,6 +10,29 @@
     },
     {
       "id": "direct-price",
+      "serviceCode": "LANDING_SYNTHETIC",
+      "commercialSnapshot": {
+        "market": "EC",
+        "marketSource": "CURRENT",
+        "relevantServiceCodes": ["LANDING_SYNTHETIC"],
+        "needsMarketClarification": false,
+        "recommendedOfferId": "phase0-landing-ec",
+        "offers": [{
+          "id": "phase0-landing-ec",
+          "name": "Landing sintética",
+          "serviceCode": "LANDING_SYNTHETIC",
+          "market": "EC",
+          "marketScope": "MARKET",
+          "priceType": "FIXED",
+          "amount": "137.00",
+          "currency": "USD",
+          "taxMode": "INCLUDED",
+          "taxLabel": "IVA",
+          "scope": "Una página sintética de prueba",
+          "policyVersion": "phase0-synthetic-v1",
+          "promotion": false
+        }]
+      },
       "history": [],
       "message": "¿Cuánto cuesta una landing básica?",
       "expected": ["direct_answer", "approved_catalog_only"]
@@ -31,12 +54,14 @@
     },
     {
       "id": "campaign-opt-out",
+      "inboundKind": "campaign_opt_out_button",
       "history": [],
       "message": "No recibir mensajes",
       "expected": ["campaign_opt_out", "no_ai_call"]
     },
     {
       "id": "closed-24h-window",
+      "deliveryWindow": "closed",
       "history": [],
       "message": "Seguimos con la propuesta",
       "expected": ["approved_template_required", "no_free_text_send"]

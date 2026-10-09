@@ -25,6 +25,8 @@
     "admin:create:dev": "ts-node src/scripts/create-admin.ts",
     "audit:hermes-data": "ts-node src/scripts/audit-hermes-data.ts",
     "benchmark:hermes": "ts-node src/scripts/benchmark-hermes.ts",
+    "evaluate:phase0:offline": "ts-node src/scripts/evaluate-phase0.ts",
+    "evaluate:phase0:provider": "ts-node src/scripts/evaluate-phase0.ts --provider",
     "evaluate:learning-phase4": "ts-node src/scripts/evaluate-learning-phase4.ts",
     "learning:harness:up": "docker compose -f docker-compose.learning-test.yml -p hermes-learning-test up -d --wait",
     "learning:harness:down": "docker compose -f docker-compose.learning-test.yml -p hermes-learning-test down --volumes --remove-orphans",
