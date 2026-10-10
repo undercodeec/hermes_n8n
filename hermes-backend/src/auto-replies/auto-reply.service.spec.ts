@@ -14,6 +14,7 @@ import {
   CommercialPriceType,
   CommercialTaxMode,
   ConversationStatus,
+  HandoffReason,
   MessageDirection,
 } from '@prisma/client';
 import { Queue } from 'bullmq';
@@ -926,6 +927,94 @@ describe('AutoReplyService', () => {
     });
     expect(harness.handoffs.create).toHaveBeenCalledTimes(1);
     expect(meetings.handleTurn).not.toHaveBeenCalled();
+  });
+
+  it.each(['nous_hermes', 'gemini_direct'] as const)(
+    'creates a complaint handoff before acknowledgement without calling %s',
+    async (engine) => {
+      const harness = setupProcessHarness({
+        inboundContent: 'Estoy molesto y quiero presentar un reclamo',
+        hermesResponse: { response: 'No debe redactar' },
+      });
+      harness.engine.selectedEngine.mockReturnValue(engine);
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      expect(harness.handoffs.create).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: HandoffReason.COMPLAINT }),
+        undefined,
+        undefined,
+      );
+      expect(harness.engine.respond).not.toHaveBeenCalled();
+      expect(harness.deliveries.prepareBatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          allowHandedOff: true,
+          parts: [
+            expect.objectContaining({
+              content: expect.stringContaining('pendiente de asignación'),
+            }),
+          ],
+        }),
+      );
+      expect(harness.handoffs.create.mock.invocationCallOrder[0]).toBeLessThan(
+        harness.deliveries.prepareBatch.mock.invocationCallOrder[0],
+      );
+      expect(harness.conversationStateUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          update: expect.objectContaining({ detectedIntent: 'reclamo' }),
+        }),
+      );
+    },
+  );
+
+  it('routes an equivalent service complaint without a commercial reply', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Quiero poner una queja por el servicio',
+      hermesResponse: { response: 'No debe redactar' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.handoffs.create).toHaveBeenCalledTimes(1);
+    expect(harness.engine.respond).not.toHaveBeenCalled();
+  });
+
+  it('escalates a payment complaint before automatic payment status replies', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Quiero presentar un reclamo por el estado de mi pago',
+      hermesResponse: { response: 'No debe redactar' },
+    });
+    const payments = {
+      maybeSendInstructions: jest.fn().mockResolvedValue(true),
+      maybeReplyWithStatus: jest.fn().mockResolvedValue(true),
+    };
+    Object.assign(harness.service, { payments });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.handoffs.create).toHaveBeenCalledTimes(1);
+    expect(payments.maybeSendInstructions).not.toHaveBeenCalled();
+    expect(payments.maybeReplyWithStatus).not.toHaveBeenCalled();
+  });
+
+  it('does not escalate ordinary negative feedback without a request', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'El servicio estuvo lento ayer',
+      hermesResponse: { response: 'Gracias por avisarnos.' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.handoffs.create).not.toHaveBeenCalled();
+    expect(harness.engine.respond).toHaveBeenCalledTimes(1);
   });
 
   it('recommends the restaurant base plan while separating reservations from the plan', async () => {

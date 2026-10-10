@@ -124,7 +124,7 @@
       "id": "complaint",
       "history": [],
       "message": "Estoy molesto y quiero presentar un reclamo",
-      "expected": ["human_handoff", "no_sales_discovery"]
+      "expected": ["human_handoff", "handoff_before_acknowledgement", "no_sales_discovery"]
     },
     {
       "id": "support-owned-project",

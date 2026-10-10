@@ -52,6 +52,24 @@ describe('Phase 0 final output evaluation', () => {
     expect(cases.every((item) => Array.isArray(item.expected))).toBe(true);
   });
 
+  it.each(['nous_hermes', 'gemini_direct'] as const)(
+    'records complaint handoff before acknowledgement with %s',
+    async (engine) => {
+      const result = await harness.run(find('complaint'), engine);
+      expect(result.status).toBe('PASS');
+      expect(
+        result.assertions.find((check) => check.name === 'human_handoff')
+          ?.passed,
+      ).toBe(true);
+      expect(
+        result.assertions.find(
+          (check) => check.name === 'handoff_before_acknowledgement',
+        )?.passed,
+      ).toBe(true);
+      expect(result.delivery.metaCalls).toBe(0);
+    },
+  );
+
   it('runs the same case through both engines and captures the final fake delivery', async () => {
     const pair = await Promise.all([
       harness.run(find('direct-price'), 'nous_hermes'),

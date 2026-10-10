@@ -6,6 +6,33 @@ import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 
 describe('CommercialPolicyService', () => {
   it.each([
+    'Estoy molesto y quiero presentar un reclamo',
+    'Quiero poner una queja por el servicio',
+    'Quiero quejarme por el servicio',
+    'Quiero reportar un problema con el servicio',
+    'Necesito que alguien revise este reclamo',
+    'Quiero hablar con alguien porque tengo un problema serio',
+  ])('classifies a service escalation as complaint: %s', (message) => {
+    const decision = new CommercialPolicyService().analyze(message, new Date());
+    expect(decision.requiresComplaintHandoff).toBe(true);
+    expect(decision.intent).toBe('reclamo');
+  });
+
+  it.each([
+    'El servicio estuvo lento ayer',
+    'Estoy molesto por la espera',
+    'No quiero presentar un reclamo, solo consultar el precio',
+  ])(
+    'does not escalate negative feedback without a complaint request: %s',
+    (message) => {
+      expect(
+        new CommercialPolicyService().analyze(message, new Date())
+          .requiresComplaintHandoff,
+      ).toBe(false);
+    },
+  );
+
+  it.each([
     ['¿Cuánto cuesta una web con soporte por 3 meses?', ['price']],
     ['¿Cuánto cuesta con hosting por 12 meses?', ['price']],
     ['¿Cuánto cuesta una web con mantenimiento durante 6 meses?', ['price']],

@@ -27,6 +27,7 @@ import {
 import {
   CommercialPolicyService,
   PendingQuestion,
+  requiresComplaintHandoff,
 } from '../hermes/commercial-policy.service';
 import {
   commercialClauses,
@@ -320,6 +321,69 @@ export class AutoReplyService {
       return;
     }
 
+    const context = await this.buildConversationContext(
+      data.contactId,
+      data.conversationId,
+      turnMessages?.map((message) => message.id) ?? [inbound.id],
+    );
+    const receivedAt =
+      this.providerTimestamp(inbound.rawPayload) ?? inbound.createdAt;
+    const policy = this.commercialPolicy.analyze(
+      customerMessage,
+      receivedAt,
+      context.commercialProfile?.pendingQuestions,
+      {
+        conversationHistory: context.recentMessages,
+        commercialProfile: context.commercialProfile,
+      },
+    );
+    // Both explicit human requests and service complaints must create a durable
+    // handoff before an acknowledgement or any conversation engine response.
+    if (policy.requestsHuman || policy.requiresComplaintHandoff) {
+      const complaint = policy.requiresComplaintHandoff;
+      await this.meetings?.interrupt(data.conversationId);
+      this.logger.log(
+        JSON.stringify({
+          event: 'handoff_requested',
+          conversationId: data.conversationId,
+          sourceMessageId: inbound.id,
+          reason: complaint ? 'COMPLAINT' : 'CUSTOM',
+        }),
+      );
+      await this.handoffs.create(
+        {
+          conversationId: data.conversationId,
+          reason: complaint ? HandoffReason.COMPLAINT : HandoffReason.CUSTOM,
+          reasonDetail: complaint
+            ? 'El cliente solicitó atención humana por un reclamo sobre el servicio.'
+            : 'El cliente solicitó expresamente hablar con una persona.',
+        },
+        undefined,
+        complaint
+          ? undefined
+          : { sourceMessageId: inbound.id, callRequested: policy.requestsCall },
+      );
+      const delivery = await this.sendAndPersist({
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        sourceMessageId: inbound.id,
+        inboundWamid: inbound.wamid,
+        content: complaint
+          ? 'He registrado su reclamo para que lo atienda una persona del equipo. Queda pendiente de asignación.'
+          : policy.requestsCall
+            ? 'He registrado su solicitud para que un asesor coordine una llamada usando este mismo número de WhatsApp. Está pendiente de asignación y confirmación del horario.'
+            : 'He registrado su solicitud para que continúe con una persona del equipo. La conversación queda pendiente de asignación.',
+        metadata: { action: 'HUMAN_HANDOFF_CREATED' },
+        allowHandedOff: true,
+      });
+      if (delivery.confirmed > 0) {
+        await this.persistConversationState(data.conversationId, {
+          detectedIntent: complaint ? 'reclamo' : 'solicitud_humano',
+          nextAction: 'derivar_humano',
+        });
+      }
+      return;
+    }
     if (
       this.payments &&
       (await this.payments.maybeSendInstructions({
@@ -341,22 +405,6 @@ export class AutoReplyService {
     )
       return;
 
-    const context = await this.buildConversationContext(
-      data.contactId,
-      data.conversationId,
-      turnMessages?.map((message) => message.id) ?? [inbound.id],
-    );
-    const receivedAt =
-      this.providerTimestamp(inbound.rawPayload) ?? inbound.createdAt;
-    const policy = this.commercialPolicy.analyze(
-      customerMessage,
-      receivedAt,
-      context.commercialProfile?.pendingQuestions,
-      {
-        conversationHistory: context.recentMessages,
-        commercialProfile: context.commercialProfile,
-      },
-    );
     const commercialSnapshot = await this.commercialAuthority.snapshot({
       customerMessage,
       profile: context.commercialProfile,
@@ -375,45 +423,6 @@ export class AutoReplyService {
     const selectedEngine = policy.requestsCall
       ? this.conversationEngine.selectedEngine(data.conversationId)
       : undefined;
-
-    if (policy.requestsHuman) {
-      await this.meetings?.interrupt(data.conversationId);
-      this.logger.log(
-        JSON.stringify({
-          event: 'handoff_requested',
-          conversationId: data.conversationId,
-          sourceMessageId: inbound.id,
-        }),
-      );
-      await this.handoffs.create(
-        {
-          conversationId: data.conversationId,
-          reason: HandoffReason.CUSTOM,
-          reasonDetail:
-            'El cliente solicitó expresamente hablar con una persona.',
-        },
-        undefined,
-        { sourceMessageId: inbound.id, callRequested: policy.requestsCall },
-      );
-      const delivery = await this.sendAndPersist({
-        conversationId: data.conversationId,
-        contactId: data.contactId,
-        sourceMessageId: inbound.id,
-        inboundWamid: inbound.wamid,
-        content: policy.requestsCall
-          ? 'He registrado su solicitud para que un asesor coordine una llamada usando este mismo número de WhatsApp. Está pendiente de asignación y confirmación del horario.'
-          : 'He registrado su solicitud para que continúe con una persona del equipo. La conversación queda pendiente de asignación.',
-        metadata: { action: 'HUMAN_HANDOFF_CREATED' },
-        allowHandedOff: true,
-      });
-      if (delivery.confirmed > 0) {
-        await this.persistConversationState(data.conversationId, {
-          detectedIntent: 'solicitud_humano',
-          nextAction: 'derivar_humano',
-        });
-      }
-      return;
-    }
 
     if (this.meetings) {
       const meetingReply = await this.meetings.handleTurn({
@@ -1817,10 +1826,6 @@ export class AutoReplyService {
       'hablar con humano',
       'hablar con persona',
       'agente real',
-      'quiero quejarme',
-      'reclamo',
-      'estoy molesto',
-      'no funciona',
       'descuento especial',
       'cotización compleja',
       'precio corporativo',
@@ -1836,6 +1841,8 @@ export class AutoReplyService {
     // Un fallo del proveedor o de validación no expresa que el cliente necesite
     // atención humana. Nunca crear un handoff comercial por un error técnico.
     if (normalizedIntent === 'error') return false;
+    if (normalizedIntent === 'queja' || normalizedIntent === 'reclamo')
+      return requiresComplaintHandoff(message);
     return (
       keywords.some((keyword) =>
         message.toLocaleLowerCase('es').includes(keyword),
