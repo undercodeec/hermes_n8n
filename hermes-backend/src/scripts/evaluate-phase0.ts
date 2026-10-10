@@ -1,11 +1,32 @@
-import { writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import {
   ConversationEvaluationHarness,
   loadPhase0Cases,
+  type BaselineCase,
+  type EvaluationResult,
 } from './phase0-evaluation-harness';
+import { Phase0ReportWriter } from './phase0-report-writer';
 import type { ConversationEngineId } from '../conversation-engine/conversation-engine.types';
 import { Logger } from '@nestjs/common';
+
+export const PHASE0_PROVIDER_CONCURRENCY = 1;
+
+export async function evaluatePhase0Cases(
+  cases: BaselineCase[],
+  engines: ConversationEngineId[],
+  harness: Pick<ConversationEvaluationHarness, 'run'>,
+  append: (result: EvaluationResult) => void,
+): Promise<boolean> {
+  let failed = false;
+  for (const item of cases) {
+    for (const engine of engines) {
+      const result = await harness.run(item, engine);
+      append(result);
+      if (result.status === 'ERROR_INFRA' || result.status === 'FAIL_CRITICAL')
+        failed = true;
+    }
+  }
+  return failed;
+}
 
 async function main(): Promise<void> {
   Logger.overrideLogger(false);
@@ -32,38 +53,30 @@ async function main(): Promise<void> {
   const engines = selectedEngine
     ? [selectedEngine as ConversationEngineId]
     : (['nous_hermes', 'gemini_direct'] as ConversationEngineId[]);
-  const cases = loadPhase0Cases().filter(
-    (item) => !caseId || item.id === caseId,
-  );
+  const fixtures = loadPhase0Cases();
+  const cases = fixtures.filter((item) => !caseId || item.id === caseId);
   if (!cases.length) throw new Error(`Unknown case: ${caseId}`);
   const harness = new ConversationEvaluationHarness(mode);
-  const results = [];
-  for (const item of cases)
-    for (const engine of engines) results.push(await harness.run(item, engine));
-  const report = {
-    mode,
-    fixtureCount: loadPhase0Cases().length,
-    evaluated: results.length,
-    results,
-  };
-  const out = option('--out');
-  if (out)
-    writeFileSync(resolve(out), JSON.stringify(report, null, 2) + '\n', {
-      flag: 'w',
-    });
-  else process.stdout.write(JSON.stringify(report, null, 2) + '\n');
-  if (
-    results.some(
-      (result) =>
-        result.status === 'ERROR_INFRA' || result.status === 'FAIL_CRITICAL',
-    )
-  )
-    process.exitCode = 1;
+  const writer = new Phase0ReportWriter(mode, fixtures.length, option('--out'));
+  try {
+    const failed = await evaluatePhase0Cases(
+      cases,
+      engines,
+      harness,
+      (result) => writer.append(result),
+    );
+    writer.finish();
+    if (failed) process.exitCode = 1;
+  } catch (error) {
+    writer.abort();
+    throw error;
+  }
 }
 
-void main().catch((error: unknown) => {
-  process.stderr.write(
-    `${error instanceof Error ? error.message : String(error)}\n`,
-  );
-  process.exitCode = 1;
-});
+if (require.main === module)
+  void main().catch((error: unknown) => {
+    process.stderr.write(
+      `${error instanceof Error ? error.message : String(error)}\n`,
+    );
+    process.exitCode = 1;
+  });

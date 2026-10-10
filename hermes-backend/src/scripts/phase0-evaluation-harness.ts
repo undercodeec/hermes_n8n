@@ -15,23 +15,16 @@ import type { AutoReplyJobData } from '../auto-replies/auto-reply.constants';
 import type { PrepareAutomatedDeliveryBatch } from '../automated-deliveries/automated-delivery.types';
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 import { ConversationEngineService } from '../conversation-engine/conversation-engine.service';
-import { DirectGeminiEngine } from '../conversation-engine/direct-gemini.engine';
-import { AgentOutputValidator } from '../conversation-engine/agent-output.validator';
 import type {
   ConversationEngineId,
   ConversationTurnInput,
   ConversationTurnResult,
 } from '../conversation-engine/conversation-engine.types';
-import {
-  NousHermesSecretReader,
-  NousHermesTransport,
-} from '../conversation-engine/nous-hermes.transport';
 import { NOUS_HERMES_MODEL } from '../conversation-engine/nous-hermes.constants';
 import { ConversationGuardService } from '../conversation-guard/conversation-guard.service';
 import { CommercialPolicyService } from '../hermes/commercial-policy.service';
 import type { CommercialSnapshot } from '../hermes/commercial-authority.service';
 import { CommercialAuthorityService } from '../hermes/commercial-authority.service';
-import { HermesService } from '../hermes/hermes.service';
 import {
   hasAuthorizedMonetaryValue,
   reviewCommercialClaims,
@@ -656,23 +649,40 @@ export class ConversationEvaluationHarness {
     let engineCalls = 0;
     let handoffCalls = 0;
     let observed: ConversationTurnResult | undefined;
-    const hermes =
-      this.mode === 'provider' && engine === 'gemini_direct'
-        ? new HermesService(config, prisma)
-        : undefined;
-    const direct = hermes ? new DirectGeminiEngine(hermes) : undefined;
-    const nous =
-      this.mode === 'provider' && engine === 'nous_hermes'
-        ? new NousHermesTransport(
-            config,
-            new AgentOutputValidator(),
-            new NousHermesSecretReader(),
-          )
-        : undefined;
+    let providerRespond:
+      | ((input: ConversationTurnInput) => Promise<ConversationTurnResult>)
+      | undefined;
+    let providerPromptVersion: string | undefined;
+    let providerModel: string | undefined;
     const selected = {
       selectedEngine: () => engine,
       respond: async (input: ConversationTurnInput) => {
         engineCalls++;
+        if (this.mode === 'provider' && !override && !providerRespond) {
+          if (engine === 'gemini_direct') {
+            const [{ HermesService }, { DirectGeminiEngine }] =
+              await Promise.all([
+                import('../hermes/hermes.service.js'),
+                import('../conversation-engine/direct-gemini.engine.js'),
+              ]);
+            const hermes = new HermesService(config, prisma);
+            const direct = new DirectGeminiEngine(hermes);
+            providerPromptVersion = hermes.getPromptVersion();
+            providerModel = hermes.getProviderModel();
+            providerRespond = (turn) => direct.respond(turn);
+          } else {
+            const [transport, { AgentOutputValidator }] = await Promise.all([
+              import('../conversation-engine/nous-hermes.transport.js'),
+              import('../conversation-engine/agent-output.validator.js'),
+            ]);
+            const nous = new transport.NousHermesTransport(
+              config,
+              new AgentOutputValidator(),
+              new transport.NousHermesSecretReader(),
+            );
+            providerRespond = (turn) => nous.execute(turn);
+          }
+        }
         observed = override
           ? await override(input)
           : this.mode === 'offline'
@@ -680,9 +690,7 @@ export class ConversationEvaluationHarness {
                 ...offlineResponse(input, engine),
                 ...(item.offlineReply ? { replyText: item.offlineReply } : {}),
               }
-            : engine === 'gemini_direct'
-              ? await direct!.respond(input)
-              : await nous!.execute(input);
+            : await providerRespond!(input);
         return observed;
       },
     } as unknown as ConversationEngineService;
@@ -850,22 +858,21 @@ export class ConversationEvaluationHarness {
       (check) => !check.passed && !check.critical,
     );
     const promptVersion =
-      engine === 'gemini_direct' && hermes
-        ? hermes.getPromptVersion()
-        : createHash('sha256')
-            .update(
-              readFileSync(
-                join(
-                  process.cwd(),
-                  'src',
-                  engine === 'nous_hermes'
-                    ? 'conversation-engine/nous-hermes.transport.ts'
-                    : 'hermes/hermes.service.ts',
-                ),
-              ),
-            )
-            .digest('hex')
-            .slice(0, 12);
+      providerPromptVersion ??
+      createHash('sha256')
+        .update(
+          readFileSync(
+            join(
+              process.cwd(),
+              'src',
+              engine === 'nous_hermes'
+                ? 'conversation-engine/nous-hermes.transport.ts'
+                : 'hermes/hermes.service.ts',
+            ),
+          ),
+        )
+        .digest('hex')
+        .slice(0, 12);
     const policySubstitutions = proposalRejections.filter((reason) =>
       /PRICE|CLAIM|COMMERCIAL|UNCONFIRMED/u.test(reason),
     );
@@ -888,7 +895,7 @@ export class ConversationEvaluationHarness {
         observed?.providerModel ??
         (engine === 'nous_hermes'
           ? NOUS_HERMES_MODEL
-          : (hermes?.getProviderModel() ?? 'none')),
+          : (providerModel ?? 'none')),
       proposalRejections,
       policySubstitutions,
       guards: [
