@@ -325,6 +325,16 @@ describe('AutomatedDeliveryService', () => {
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
   });
 
+  it('suppresses a prepared commercial reply after a complaint handoff', async () => {
+    await service.prepareBatch(batch('respuesta comercial pendiente'));
+    store.handoff = { id: 'complaint-handoff', status: 'PENDING' };
+    store.conversation.status = 'HANDED_OFF';
+    const result = await service.deliverPreparedBatch('inbound-1');
+    expect(result.reasonCode).toBe('HANDOFF_ACTIVE');
+    expect(store.rows[0].status).toBe('SUPPRESSED');
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
   it.each([
     [new MetaSendError('AMBIGUOUS', false, null, 'META_TRANSPORT_ERROR')],
     [new MetaSendError('AMBIGUOUS', false, 500, '500')],
