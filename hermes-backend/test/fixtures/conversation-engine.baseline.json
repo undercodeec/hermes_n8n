@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "dataClassification": "synthetic",
   "cases": [
     {
@@ -10,6 +10,29 @@
     },
     {
       "id": "direct-price",
+      "serviceCode": "LANDING_SYNTHETIC",
+      "commercialSnapshot": {
+        "market": "EC",
+        "marketSource": "CURRENT",
+        "relevantServiceCodes": ["LANDING_SYNTHETIC"],
+        "needsMarketClarification": false,
+        "recommendedOfferId": "phase0-landing-ec",
+        "offers": [{
+          "id": "phase0-landing-ec",
+          "name": "Landing sintética",
+          "serviceCode": "LANDING_SYNTHETIC",
+          "market": "EC",
+          "marketScope": "MARKET",
+          "priceType": "FIXED",
+          "amount": "137.00",
+          "currency": "USD",
+          "taxMode": "INCLUDED",
+          "taxLabel": "IVA",
+          "scope": "Una página sintética de prueba",
+          "policyVersion": "phase0-synthetic-v1",
+          "promotion": false
+        }]
+      },
       "history": [],
       "message": "¿Cuánto cuesta una landing básica?",
       "expected": ["direct_answer", "approved_catalog_only"]
@@ -31,12 +54,14 @@
     },
     {
       "id": "campaign-opt-out",
+      "inboundKind": "campaign_opt_out_button",
       "history": [],
       "message": "No recibir mensajes",
       "expected": ["campaign_opt_out", "no_ai_call"]
     },
     {
       "id": "closed-24h-window",
+      "deliveryWindow": "closed",
       "history": [],
       "message": "Seguimos con la propuesta",
       "expected": ["approved_template_required", "no_free_text_send"]
@@ -151,6 +176,33 @@
       "history": [{ "role": "user", "text": "Aún no tengo presupuesto" }],
       "message": "¿Qué información necesita?",
       "expected": ["use_own_context", "must_not_mention_usd_700"]
+    },
+    {
+      "id": "continued-interest-no-repeat",
+      "history": [
+        { "role": "assistant", "text": "¿Cuántas personas usarán la herramienta y qué accesos necesitan?" },
+        { "role": "user", "text": "Serán 12 personas con acceso por roles; necesitamos coordinar pedidos entre dos áreas." },
+        { "role": "assistant", "text": "Entiendo la necesidad. ¿Quieren continuar con la definición?" }
+      ],
+      "message": "Sí, queremos continuar. ¿Cuál sería el siguiente paso?",
+      "knownFacts": { "users": 12 },
+      "nextTopics": ["integration", "workflow", "next_step"],
+      "offlineReply": "Entendido: 12 personas con acceso por roles. Para avanzar, ¿qué integración necesitan primero?",
+      "expected": ["no_repeat_known_fact", "advance_to_unanswered_topic", "no_unrequested_handoff", "no_unauthorized_payment_terms"]
+    },
+    {
+      "id": "changed-need-latest-fact",
+      "history": [
+        { "role": "user", "text": "Inicialmente usarán la herramienta 8 personas." },
+        { "role": "assistant", "text": "Gracias, tomaré ese dato para definir accesos." },
+        { "role": "user", "text": "Corrijo ese requisito: finalmente serán 15 personas." }
+      ],
+      "message": "Confirmo 15 accesos. ¿Con qué cantidad trabajarán ahora y qué sigue?",
+      "knownFacts": { "users": 15 },
+      "factRevision": { "field": "users", "previous": 8, "current": 15 },
+      "nextTopics": ["workflow", "next_step"],
+      "offlineReply": "Trabajaré con 15 personas como dato vigente. ¿Qué proceso desean priorizar?",
+      "expected": ["no_repeat_known_fact", "use_latest_corrected_fact", "advance_to_unanswered_topic", "no_unrequested_handoff", "no_unauthorized_payment_terms"]
     }
   ]
 }
