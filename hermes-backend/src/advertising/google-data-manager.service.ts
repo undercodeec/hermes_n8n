@@ -54,7 +54,7 @@ export class GoogleDataManagerService {
       where: { id: syncJobId },
       include: {
         conversion: {
-          include: { touch: true, contact: true },
+          include: { touch: true, contact: true, lead: true },
         },
       },
     });
@@ -68,6 +68,30 @@ export class GoogleDataManagerService {
         'Sync job is not dispatchable',
         false,
         'TERMINAL_JOB',
+      );
+    }
+    if (
+      job.conversion.eventType === AdvertisingEventType.LEAD_QUALIFIED &&
+      (job.conversion.invalidatedAt ||
+        job.conversion.lead === null ||
+        (job.conversion.lead && job.conversion.lead.stage !== 'QUALIFIED'))
+    ) {
+      await this.prisma.advertisingSyncJob.updateMany({
+        where: {
+          id: job.id,
+          status: {
+            in: [AdvertisingSyncStatus.QUEUED, AdvertisingSyncStatus.RETRYING],
+          },
+        },
+        data: {
+          status: AdvertisingSyncStatus.CANCELLED,
+          errorCode: 'LEAD_STAGE_CORRECTED',
+        },
+      });
+      throw new GoogleSyncError(
+        'Qualification was invalidated before export',
+        false,
+        'LEAD_STAGE_CORRECTED',
       );
     }
     const mapping = await this.prisma.advertisingConversionMapping.findUnique({
@@ -269,7 +293,7 @@ export class GoogleDataManagerService {
   ): Promise<void> {
     const current = await this.prisma.advertisingSyncJob.findUnique({
       where: { id: syncJobId },
-      include: { conversion: { include: { touch: true } } },
+      include: { conversion: { include: { touch: true, lead: true } } },
     });
     const mapping = current
       ? await this.prisma.advertisingConversionMapping.findUnique({
@@ -301,6 +325,11 @@ export class GoogleDataManagerService {
           ))) ||
       current.conversion.touch?.adUserData !==
         AdvertisingConsentChoice.GRANTED ||
+      (current.conversion.eventType === AdvertisingEventType.LEAD_QUALIFIED &&
+        (current.conversion.invalidatedAt ||
+          current.conversion.lead === null ||
+          (current.conversion.lead &&
+            current.conversion.lead.stage !== 'QUALIFIED'))) ||
       this.config.get<string>('ADVERTISING_GOOGLE_SYNC_ENABLED') !== 'true' ||
       (!validateOnly &&
         this.config.get<string>('ADVERTISING_GOOGLE_SEND_ENABLED') !== 'true')

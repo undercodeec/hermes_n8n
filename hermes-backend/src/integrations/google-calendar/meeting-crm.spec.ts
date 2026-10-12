@@ -36,7 +36,8 @@ describe('Confirmed meeting CRM policy', () => {
       },
       auditLog: { create: jest.fn() },
       advertisingConversion: {
-        upsert: jest.fn().mockResolvedValue({ id: 'conversion-meeting' }),
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'conversion-meeting' }),
       },
       advertisingSyncJob: { upsert: jest.fn() },
     };
@@ -59,7 +60,7 @@ describe('Confirmed meeting CRM policy', () => {
     expect(tx.lead.update).toHaveBeenCalledTimes(
       ['NEW', 'CONTACTED'].includes(stage) ? 1 : 0,
     );
-    expect(tx.advertisingConversion.upsert).toHaveBeenCalledTimes(
+    expect(tx.advertisingConversion.create).toHaveBeenCalledTimes(
       ['NEW', 'CONTACTED'].includes(stage) ? 1 : 0,
     );
   });

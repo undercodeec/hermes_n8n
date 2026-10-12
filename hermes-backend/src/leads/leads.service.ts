@@ -11,6 +11,7 @@ import {
   AdvertisingSyncStatus,
   HandoffStatus,
   Lead,
+  LeadStageCorrection,
   Meeting,
   LeadStage,
   MessageSender,
@@ -25,6 +26,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { QueryLeadsDto } from './dto/query-leads.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
+import { CorrectLeadStageDto } from './dto/correct-lead-stage.dto';
 import { CommercialProfile } from '../hermes/dto/hermes-request.dto';
 
 const OPEN_HANDOFF_STATUSES: HandoffStatus[] = [
@@ -61,6 +63,12 @@ const ALLOWED_STAGE_TRANSITIONS: Partial<Record<LeadStage, LeadStage[]>> = {
     LeadStage.LOST,
   ],
   [LeadStage.PAYMENT_PENDING]: [LeadStage.NEGOTIATION, LeadStage.LOST],
+};
+
+export const CORRECTION_SAFE_TRANSITIONS: Partial<
+  Record<LeadStage, LeadStage[]>
+> = {
+  [LeadStage.QUALIFIED]: [LeadStage.CONTACTED],
 };
 
 @Injectable()
@@ -157,24 +165,32 @@ export class LeadsService {
     lead: Pick<Lead, 'id' | 'contactId' | 'updatedAt'>,
     source: string,
   ): Promise<void> {
-    const conversion = await tx.advertisingConversion.upsert({
+    const latest = await tx.advertisingConversion.findFirst({
       where: {
-        leadId_eventType: {
-          leadId: lead.id,
-          eventType: AdvertisingEventType.LEAD_QUALIFIED,
-        },
-      },
-      create: {
-        idempotencyKey: `lead:${lead.id}:LEAD_QUALIFIED`,
-        eventType: AdvertisingEventType.LEAD_QUALIFIED,
         leadId: lead.id,
-        contactId: lead.contactId,
-        occurredAt: lead.updatedAt || new Date(),
-        source,
-        verified: true,
+        eventType: AdvertisingEventType.LEAD_QUALIFIED,
       },
-      update: {},
+      orderBy: { qualificationCycle: 'desc' },
     });
+    const cycle = latest ? latest.qualificationCycle + 1 : 0;
+    const conversion =
+      latest && !latest.invalidatedAt
+        ? latest
+        : await tx.advertisingConversion.create({
+            data: {
+              idempotencyKey:
+                cycle === 0
+                  ? `lead:${lead.id}:LEAD_QUALIFIED`
+                  : `lead:${lead.id}:LEAD_QUALIFIED:${cycle}`,
+              eventType: AdvertisingEventType.LEAD_QUALIFIED,
+              qualificationCycle: cycle,
+              leadId: lead.id,
+              contactId: lead.contactId,
+              occurredAt: lead.updatedAt || new Date(),
+              source,
+              verified: true,
+            },
+          });
     await tx.advertisingSyncJob.upsert({
       where: { conversionId: conversion.id },
       create: {
@@ -194,9 +210,10 @@ export class LeadsService {
   ): Promise<void> {
     const conversion = await tx.advertisingConversion.upsert({
       where: {
-        leadId_eventType: {
+        leadId_eventType_qualificationCycle: {
           leadId: lead.id,
           eventType: AdvertisingEventType.CONTRACT_LOST,
+          qualificationCycle: 0,
         },
       },
       create: {
@@ -232,9 +249,10 @@ export class LeadsService {
   ): Promise<void> {
     const conversion = await tx.advertisingConversion.upsert({
       where: {
-        leadId_eventType: {
+        leadId_eventType_qualificationCycle: {
           leadId: lead.id,
           eventType: AdvertisingEventType.CONTRACT_WON,
+          qualificationCycle: 0,
         },
       },
       create: {
@@ -528,6 +546,12 @@ export class LeadsService {
   async update(id: string, dto: UpdateLeadDto, userId: string) {
     const { previousStage, updated } = await this.prisma.$transaction(
       async (tx) => {
+        const identity = await tx.lead.findUnique({
+          where: { id },
+          select: { contactId: true },
+        });
+        if (!identity) throw new NotFoundException('Lead no encontrado');
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${identity.contactId}))`;
         const lead = await tx.lead.findUnique({ where: { id } });
         if (!lead) throw new NotFoundException('Lead no encontrado');
         if (
@@ -599,7 +623,6 @@ export class LeadsService {
           );
         }
 
-        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lead.contactId}))`;
         if (
           dto.stage &&
           dto.stage !== lead.stage &&
@@ -701,6 +724,217 @@ export class LeadsService {
     }
 
     return updated;
+  }
+
+  async correctStage(id: string, dto: CorrectLeadStageDto, userId: string) {
+    const reason = dto.reason?.trim();
+    if (!reason || reason.length < 8) {
+      throw new BadRequestException(
+        'El motivo debe tener al menos 8 caracteres',
+      );
+    }
+    if (dto.targetStage === dto.expectedCurrentStage) {
+      throw new BadRequestException('La etapa corregida debe ser distinta');
+    }
+    if (
+      !CORRECTION_SAFE_TRANSITIONS[dto.expectedCurrentStage]?.includes(
+        dto.targetStage,
+      )
+    ) {
+      throw new BadRequestException(
+        'Corrección no permitida; use la transición comercial normal si corresponde',
+      );
+    }
+
+    const matchesRequest = (existing: LeadStageCorrection) =>
+      existing.leadId === id &&
+      existing.actorUserId === userId &&
+      existing.previousStage === dto.expectedCurrentStage &&
+      existing.targetStage === dto.targetStage &&
+      existing.reasonCode === String(dto.reasonCode) &&
+      existing.reason === reason;
+
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        const identity = await tx.lead.findUnique({
+          where: { id },
+          select: { contactId: true },
+        });
+        if (!identity) throw new NotFoundException('Lead no encontrado');
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${identity.contactId}))`;
+
+        const existing = await tx.leadStageCorrection.findUnique({
+          where: { requestKey: dto.requestKey },
+        });
+        if (existing) {
+          if (!matchesRequest(existing)) {
+            throw new ConflictException(
+              'requestKey reutilizado con otro contenido',
+            );
+          }
+          return existing.result;
+        }
+
+        const lead = await tx.lead.findUnique({ where: { id } });
+        if (!lead) throw new NotFoundException('Lead no encontrado');
+        if (lead.stage !== dto.expectedCurrentStage) {
+          throw new ConflictException('La etapa cambió; actualice el lead');
+        }
+        const conversion = await tx.advertisingConversion.findFirst({
+          where: {
+            leadId: id,
+            eventType: AdvertisingEventType.LEAD_QUALIFIED,
+            invalidatedAt: null,
+          },
+          orderBy: { qualificationCycle: 'desc' },
+          include: { syncJob: true },
+        });
+        const job = conversion?.syncJob;
+        let advertisingReconciliation = 'NOT_APPLICABLE';
+        if (job) {
+          if (
+            (
+              [
+                AdvertisingSyncStatus.PENDING,
+                AdvertisingSyncStatus.QUEUED,
+              ] as AdvertisingSyncStatus[]
+            ).includes(job.status) &&
+            job.attempts === 0 &&
+            !job.googleRequestId &&
+            !job.submittedAt
+          ) {
+            const cancelled = await tx.advertisingSyncJob.updateMany({
+              where: {
+                id: job.id,
+                status: job.status,
+                attempts: 0,
+                googleRequestId: null,
+                submittedAt: null,
+              },
+              data: {
+                status: AdvertisingSyncStatus.CANCELLED,
+                nextAttemptAt: null,
+                errorCode: 'LEAD_STAGE_CORRECTED',
+                errorMessage: 'Calificación invalidada por corrección ADMIN',
+              },
+            });
+            if (cancelled.count !== 1) {
+              throw new ConflictException(
+                'El job publicitario cambió durante la corrección',
+              );
+            }
+            advertisingReconciliation = 'PENDING_CANCELLED';
+          } else if (
+            job.status === AdvertisingSyncStatus.RETRYING ||
+            ((
+              [
+                AdvertisingSyncStatus.PENDING,
+                AdvertisingSyncStatus.QUEUED,
+              ] as AdvertisingSyncStatus[]
+            ).includes(job.status) &&
+              (job.attempts > 0 || job.googleRequestId || job.submittedAt))
+          ) {
+            throw new ConflictException(
+              'Exportación publicitaria en curso o ambigua; conciliar antes de corregir',
+            );
+          } else if (
+            (
+              [
+                AdvertisingSyncStatus.SUBMITTED,
+                AdvertisingSyncStatus.ACCEPTED,
+                AdvertisingSyncStatus.PARTIAL,
+              ] as AdvertisingSyncStatus[]
+            ).includes(job.status) ||
+            (job.googleRequestId && !job.validateOnly)
+          ) {
+            advertisingReconciliation = 'EXTERNAL_RECONCILIATION_REQUIRED';
+          } else if (job.status === AdvertisingSyncStatus.FAILED) {
+            advertisingReconciliation = 'AMBIGUOUS';
+          } else {
+            advertisingReconciliation = 'NO_EXTERNAL_EFFECT';
+          }
+        }
+
+        const correctedAt = new Date();
+        const stageUpdate = await tx.lead.updateMany({
+          where: { id, stage: dto.expectedCurrentStage },
+          data: { stage: dto.targetStage },
+        });
+        if (stageUpdate.count !== 1) {
+          throw new ConflictException('La etapa cambió durante la corrección');
+        }
+        if (conversion) {
+          await tx.advertisingConversion.update({
+            where: { id: conversion.id },
+            data: {
+              invalidatedAt: correctedAt,
+              invalidationReason: 'LEAD_STAGE_CORRECTED',
+            },
+          });
+        }
+        const result = {
+          lead: { id, stage: dto.targetStage },
+          correction: {
+            previousStage: dto.expectedCurrentStage,
+            correctedStage: dto.targetStage,
+            reasonCode: dto.reasonCode,
+            requestKey: dto.requestKey,
+            correctedAt: correctedAt.toISOString(),
+          },
+          advertisingReconciliation,
+        };
+        await tx.leadStageCorrection.create({
+          data: {
+            requestKey: dto.requestKey,
+            leadId: id,
+            actorUserId: userId,
+            previousStage: dto.expectedCurrentStage,
+            targetStage: dto.targetStage,
+            reasonCode: dto.reasonCode,
+            reason,
+            advertisingReconciliation,
+            advertisingSyncJobId: job?.id,
+            result,
+            createdAt: correctedAt,
+          },
+        });
+        await tx.auditLog.create({
+          data: {
+            userId,
+            action: 'LEAD_STAGE_CORRECTED',
+            entity: 'leads',
+            entityId: id,
+            changes: {
+              before: { stage: lead.stage },
+              after: { stage: dto.targetStage },
+              actorUserId: userId,
+              reasonCode: dto.reasonCode,
+              reason,
+              requestKey: dto.requestKey,
+              correctedAt: correctedAt.toISOString(),
+              advertisingReconciliation,
+              advertisingSyncJobId: job?.id ?? null,
+            },
+          },
+        });
+        return result;
+      });
+    } catch (error) {
+      if ((error as { code?: string }).code === 'P2002') {
+        const existing = await this.prisma.leadStageCorrection.findUnique({
+          where: { requestKey: dto.requestKey },
+        });
+        if (existing) {
+          if (!matchesRequest(existing)) {
+            throw new ConflictException(
+              'requestKey reutilizado con otro contenido',
+            );
+          }
+          return existing.result;
+        }
+      }
+      throw error;
+    }
   }
 
   async qualifyFromConversation(params: {

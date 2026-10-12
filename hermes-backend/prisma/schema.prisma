@@ -1098,6 +1098,9 @@ model AdvertisingConversion {
   id                  String               @id @default(uuid())
   idempotencyKey      String               @unique
   eventType           AdvertisingEventType
+  qualificationCycle  Int                  @default(0)
+  invalidatedAt       DateTime?
+  invalidationReason  String?
   attributionId       String?
   touchId             String?
   contactId           String?
@@ -1119,7 +1122,7 @@ model AdvertisingConversion {
   lead        Lead?                   @relation(fields: [leadId], references: [id], onDelete: SetNull)
   syncJob     AdvertisingSyncJob?
 
-  @@unique([leadId, eventType])
+  @@unique([leadId, eventType, qualificationCycle])
   @@index([eventType, occurredAt])
   @@index([touchId, occurredAt])
   @@map("advertising_conversions")
@@ -1203,6 +1206,24 @@ model AuditLog {
   @@index([userId])
   @@index([createdAt])
   @@map("audit_logs")
+}
+
+model LeadStageCorrection {
+  id                        String    @id @default(uuid())
+  requestKey                String    @unique
+  leadId                    String
+  actorUserId               String
+  previousStage             LeadStage
+  targetStage               LeadStage
+  reasonCode                String
+  reason                    String
+  advertisingReconciliation String
+  advertisingSyncJobId      String?
+  result                    Json
+  createdAt                 DateTime  @default(now())
+
+  @@index([leadId, createdAt])
+  @@map("lead_stage_corrections")
 }
 
 enum BankAccountType {

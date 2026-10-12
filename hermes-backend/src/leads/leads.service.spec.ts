@@ -18,6 +18,8 @@ describe('LeadsService', () => {
     contact: { findUniqueOrThrow: jest.fn() },
     transferPayment: { findFirst: jest.fn().mockResolvedValue(null) },
     advertisingConversion: {
+      findFirst: jest.fn().mockResolvedValue(null),
+      create: jest.fn().mockResolvedValue({ id: 'conversion-1' }),
       upsert: jest.fn().mockResolvedValue({ id: 'conversion-1' }),
     },
     advertisingSyncJob: { upsert: jest.fn() },
@@ -128,16 +130,12 @@ describe('LeadsService', () => {
 
     expect(lead.stage).toBe(LeadStage.QUALIFIED);
     expect(tx.lead.create).not.toHaveBeenCalled();
-    expect(tx.advertisingConversion.upsert).toHaveBeenCalledWith({
-      where: {
-        leadId_eventType: { leadId: 'lead-1', eventType: 'LEAD_QUALIFIED' },
-      },
-      create: expect.objectContaining({
+    expect(tx.advertisingConversion.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
         leadId: 'lead-1',
         eventType: 'LEAD_QUALIFIED',
         source: 'CRM_QUALIFICATION_RULES',
       }),
-      update: {},
     });
     expect(tx.advertisingSyncJob.upsert).toHaveBeenCalledWith({
       where: { conversionId: 'conversion-1' },
@@ -171,7 +169,7 @@ describe('LeadsService', () => {
       stage: LeadStage.QUALIFIED,
       contact: { name: 'Ada', waId: '593999999999' },
     });
-    tx.advertisingConversion.upsert.mockResolvedValue({
+    tx.advertisingConversion.create.mockResolvedValue({
       id: 'conversion-manual',
     });
     await service.update(
@@ -179,9 +177,9 @@ describe('LeadsService', () => {
       { stage: LeadStage.QUALIFIED },
       'operator-1',
     );
-    expect(tx.advertisingConversion.upsert).toHaveBeenCalledWith(
+    expect(tx.advertisingConversion.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
+        data: expect.objectContaining({
           leadId: 'lead-manual',
           source: 'CRM_STAGE_CHANGE',
         }),
@@ -204,9 +202,9 @@ describe('LeadsService', () => {
       contactId: 'contact-1',
       stage: LeadStage.QUALIFIED,
     });
-    expect(tx.advertisingConversion.upsert).toHaveBeenCalledWith(
+    expect(tx.advertisingConversion.create).toHaveBeenCalledWith(
       expect.objectContaining({
-        create: expect.objectContaining({
+        data: expect.objectContaining({
           leadId: 'lead-created-qualified',
           source: 'CRM_LEAD_CREATE',
         }),
@@ -216,6 +214,43 @@ describe('LeadsService', () => {
     expect(events.emit).toHaveBeenCalledWith(
       'lead.qualified',
       expect.objectContaining({ leadId: 'lead-created-qualified' }),
+    );
+  });
+
+  it('creates a new independent qualification cycle after an invalidated correction', async () => {
+    tx.lead.findUnique.mockResolvedValue({
+      id: 'lead-requalified',
+      contactId: 'contact-1',
+      stage: LeadStage.CONTACTED,
+    });
+    tx.lead.update.mockResolvedValue({
+      id: 'lead-requalified',
+      contactId: 'contact-1',
+      conversationId: 'conversation-1',
+      stage: LeadStage.QUALIFIED,
+      contact: { name: 'Ada', waId: '593999999999' },
+    });
+    tx.advertisingConversion.findFirst.mockResolvedValueOnce({
+      id: 'conversion-old',
+      qualificationCycle: 0,
+      invalidatedAt: new Date(),
+    });
+    tx.advertisingConversion.create.mockResolvedValueOnce({
+      id: 'conversion-new',
+    });
+    await service.update(
+      'lead-requalified',
+      { stage: LeadStage.QUALIFIED },
+      'operator-1',
+    );
+    expect(tx.advertisingConversion.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        qualificationCycle: 1,
+        idempotencyKey: 'lead:lead-requalified:LEAD_QUALIFIED:1',
+      }),
+    });
+    expect(tx.advertisingSyncJob.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { conversionId: 'conversion-new' } }),
     );
   });
 

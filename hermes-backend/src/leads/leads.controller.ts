@@ -24,6 +24,7 @@ import { LeadsService } from './leads.service';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { QueryLeadsDto } from './dto/query-leads.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
+import { CorrectLeadStageDto } from './dto/correct-lead-stage.dto';
 
 @ApiTags('Leads')
 @ApiBearerAuth()
@@ -66,6 +67,20 @@ export class LeadsController {
     @CurrentUser('id') userId: string,
   ) {
     return this.leadsService.update(id, dto, userId);
+  }
+
+  @Post(':id/correct-stage')
+  @Roles(UserRole.ADMIN)
+  @ApiOperation({
+    summary: 'Corregir etapa comercial con auditoría administrativa',
+  })
+  @ApiResponse({ status: 201, description: 'Corrección registrada' })
+  correctStage(
+    @Param('id') id: string,
+    @Body() dto: CorrectLeadStageDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return this.leadsService.correctStage(id, dto, userId);
   }
 
   @Delete(':id')
