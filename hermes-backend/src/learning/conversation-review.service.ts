@@ -24,6 +24,9 @@ import {
   ReviewJobData,
 } from './learning.constants';
 import { ReviewModelService } from './review-model.service';
+import { validateCandidateSafety } from './review-candidate-safety';
+import { sanitizeReviewInput, privacyFailure } from './review-privacy';
+import { parseReviewOutput } from './review-output.validator';
 import {
   LearningDecisionAction,
   LearningDecisionDto,
@@ -35,14 +38,6 @@ type FeedbackRef = {
   messageId: string;
   rating: FeedbackRating;
 };
-
-function redact(text: string): string {
-  return text
-    .replace(/[\w.+-]+@[\w.-]+\.[a-z]{2,}/gi, '[correo]')
-    .replace(/(?:\+?\d[\d\s().-]{7,}\d)/g, '[teléfono]')
-    .replace(/\b(?:\d[ -]?){12,19}\b/g, '[número]')
-    .slice(0, 500);
-}
 
 @Injectable()
 export class ConversationReviewService implements OnModuleInit {
@@ -239,12 +234,18 @@ export class ConversationReviewService implements OnModuleInit {
         take: 12,
         select: { id: true, sender: true, content: true },
       });
-      const input = messages.reverse().map((message) => ({
-        id: message.id,
-        sender: message.sender,
-        content: redact(message.content || ''),
-      }));
-      if (!input.some((message) => message.id === review.sourceMessageId)) {
+      const ordered = messages.reverse();
+      const evidenceIds = new Map<string, string>();
+      const input = ordered.map((message, index) => {
+        const alias = `m${index + 1}`;
+        evidenceIds.set(alias, message.id);
+        return {
+          id: alias,
+          sender: message.sender,
+          content: sanitizeReviewInput(message.content || ''),
+        };
+      });
+      if (!ordered.some((message) => message.id === review.sourceMessageId)) {
         await this.prisma.conversationReview.update({
           where: { id: reviewId },
           data: {
@@ -254,12 +255,17 @@ export class ConversationReviewService implements OnModuleInit {
         });
         return;
       }
-      const output = await this.model.review(
-        input,
-        review.feedback?.reasonCode || review.issueCode || 'INCIDENT',
-        review.feedback?.suggestedReply
-          ? redact(review.feedback.suggestedReply)
-          : null,
+      const output = parseReviewOutput(
+        await this.model.review(
+          input,
+          sanitizeReviewInput(
+            review.feedback?.reasonCode || review.issueCode || 'INCIDENT',
+          ),
+          review.feedback?.suggestedReply
+            ? sanitizeReviewInput(review.feedback.suggestedReply)
+            : null,
+        ),
+        new Set(input.map((message) => message.id)),
       );
       if (!output.candidate) {
         await this.prisma.conversationReview.update({
@@ -276,6 +282,11 @@ export class ConversationReviewService implements OnModuleInit {
         return;
       }
       const candidate = output.candidate;
+      const resolvedEvidenceIds = candidate.evidenceMessageIds.map((id) =>
+        evidenceIds.get(id),
+      );
+      if (resolvedEvidenceIds.some((id) => !id))
+        throw new Error('REVIEW_CANDIDATE_INVALID');
       const fingerprint = createHash('sha256')
         .update(
           JSON.stringify([
@@ -314,7 +325,7 @@ export class ConversationReviewService implements OnModuleInit {
           create: {
             learningItemId: item.id,
             conversationId: review.conversationId,
-            messageId: candidate.evidenceMessageIds[0],
+            messageId: resolvedEvidenceIds[0],
             feedbackId: review.feedbackId,
             reviewId,
           },
@@ -335,7 +346,13 @@ export class ConversationReviewService implements OnModuleInit {
     } catch (error) {
       await this.prisma.conversationReview.update({
         where: { id: reviewId },
-        data: { status: ConversationReviewStatus.FAILED },
+        data: {
+          status: ConversationReviewStatus.FAILED,
+          ...(error instanceof Error &&
+          /^(?:PRIVACY|COMMERCIAL)_VALIDATION_FAILED:/.test(error.message)
+            ? { summary: error.message }
+            : {}),
+        },
       });
       this.logger.warn(
         `Revisión fallida: ${error instanceof Error ? error.name : 'UNKNOWN'}`,
@@ -432,6 +449,14 @@ export class ConversationReviewService implements OnModuleInit {
           id: true,
           status: true,
           version: true,
+          kind: true,
+          trigger: true,
+          guidance: true,
+          serviceCode: true,
+          market: true,
+          sourceReview: {
+            select: { issueCode: true, summary: true, counterexample: true },
+          },
           _count: { select: { evidence: true } },
         },
       });
@@ -440,6 +465,23 @@ export class ConversationReviewService implements OnModuleInit {
         throw new ConflictException('El candidato cambió de estado');
       if (approval && item._count.evidence < 1)
         throw new BadRequestException('No existe evidencia para aprobar');
+      if (approval) {
+        try {
+          validateCandidateSafety(item);
+          for (const value of [
+            item.sourceReview?.issueCode,
+            item.sourceReview?.summary,
+            item.sourceReview?.counterexample,
+          ]) {
+            if (value && privacyFailure(value))
+              throw new Error('PRIVACY_VALIDATION_FAILED:REVIEW_METADATA');
+          }
+        } catch {
+          throw new BadRequestException(
+            'El candidato no supera la validación de seguridad',
+          );
+        }
+      }
       const updated = await tx.learningItem.updateMany({
         where: { id, status: previous },
         data: {

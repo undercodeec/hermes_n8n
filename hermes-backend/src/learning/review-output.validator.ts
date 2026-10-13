@@ -1,3 +1,5 @@
+import { validateReviewOutputSafety } from './review-candidate-safety';
+
 export type ReviewCandidate = {
   kind: string;
   trigger: string;
@@ -15,13 +17,10 @@ export type ReviewOutput = {
   candidate: ReviewCandidate | null;
 };
 
-const forbidden =
-  /(?:[\w.+-]+@[\w.-]+\.[a-z]{2,}|(?:\+?\d[\d\s().-]{7,}\d)|[$€£])/i;
-
 function shortText(value: unknown, max: number): string | null {
   if (typeof value !== 'string') return null;
   const text = value.trim().replace(/\s+/g, ' ');
-  return text && text.length <= max && !forbidden.test(text) ? text : null;
+  return text && text.length <= max ? text : null;
 }
 
 export function parseReviewOutput(
@@ -68,8 +67,17 @@ export function parseReviewOutput(
   )
     throw new Error('REVIEW_OUTPUT_INVALID');
 
-  if (value.candidate === null)
-    return { summary, counterexample, issueCode, confidence, candidate: null };
+  if (value.candidate === null) {
+    const output = {
+      summary,
+      counterexample,
+      issueCode,
+      confidence,
+      candidate: null,
+    };
+    validateReviewOutputSafety(output);
+    return output;
+  }
   if (
     !value.candidate ||
     typeof value.candidate !== 'object' ||
@@ -115,7 +123,7 @@ export function parseReviewOutput(
     )
   )
     throw new Error('REVIEW_CANDIDATE_INVALID');
-  return {
+  const output = {
     issueCode,
     summary,
     counterexample,
@@ -129,4 +137,6 @@ export function parseReviewOutput(
       evidenceMessageIds: evidenceMessageIds as string[],
     },
   };
+  validateReviewOutputSafety(output);
+  return output;
 }

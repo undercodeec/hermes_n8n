@@ -39,6 +39,16 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
       id: 'item-1',
       status: LearningItemStatus.PROPOSED,
       version: 1,
+      kind: 'STYLE',
+      trigger: 'Cuando el cliente corrige un dato',
+      guidance: 'Usar el dato más reciente',
+      serviceCode: null,
+      market: null,
+      sourceReview: {
+        issueCode: 'REPETITION',
+        summary: 'Pauta general',
+        counterexample: null,
+      },
       _count: { evidence: 1 },
     });
     tx.learningItem.updateMany.mockResolvedValue({ count: 1 });
@@ -96,6 +106,36 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
     await expect(
       service.decide('item-1', dto, 'admin-1'),
     ).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('bloquea la activación de candidatos históricos inseguros', async () => {
+    const dto = {
+      action: LearningDecisionAction.APPROVE,
+      reason: 'Pauta revisada con evidencia suficiente',
+      validUntil,
+    };
+    for (const guidance of [
+      'Recordar que Juan Pérez necesita 15 usuarios.',
+      'Ofrecer 20% de descuento si paga por transferencia.',
+    ]) {
+      tx.learningItem.findUnique.mockResolvedValueOnce({
+        id: 'item-1',
+        status: LearningItemStatus.PROPOSED,
+        version: 1,
+        kind: 'STYLE',
+        trigger: 'Cuando el cliente consulta',
+        guidance,
+        serviceCode: null,
+        market: null,
+        sourceReview: null,
+        _count: { evidence: 1 },
+      });
+      await expect(
+        service.decide('item-1', dto, 'admin-1'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    }
+    expect(tx.learningItem.updateMany).not.toHaveBeenCalled();
     expect(tx.auditLog.create).not.toHaveBeenCalled();
   });
 
