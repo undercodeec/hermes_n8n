@@ -7,6 +7,7 @@ import { ConversationReviewService } from './conversation-review.service';
 import { LearningDecisionAction } from './dto/learning-decision.dto';
 import { ReviewJobData } from './learning.constants';
 import { ReviewModelService } from './review-model.service';
+import { ReviewCanaryPolicy } from './review-canary.policy';
 
 describe('Fase 3: decisión auditada y recuperación en sombra', () => {
   const tx = {
@@ -29,6 +30,7 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
     config as unknown as ConfigService,
     {} as ReviewModelService,
     {} as Queue<ReviewJobData>,
+    {} as ReviewCanaryPolicy,
   );
   const validUntil = new Date(Date.now() + 30 * 86400_000).toISOString();
 

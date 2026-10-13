@@ -20,6 +20,7 @@ import {
   ReviewJobData,
 } from '../src/learning/learning.constants';
 import { ReviewModelService } from '../src/learning/review-model.service';
+import { ReviewCanaryPolicy } from '../src/learning/review-canary.policy';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { LearningReviewProviderFixture } from './fixtures/learning-review-provider';
 
@@ -27,6 +28,7 @@ type Seed = {
   conversationId: string;
   feedbackId: string;
   sourceMessageId: string;
+  userId: string;
 };
 
 type InvalidProviderResponse = Record<string, unknown> | string;
@@ -67,6 +69,7 @@ const invalidProviderResponses: Array<[string, InvalidProviderResponse]> = [
 
 const databaseUrl = process.env.DATABASE_INTEGRATION_URL;
 const redisUrl = process.env.REDIS_INTEGRATION_URL;
+const postgresPort = process.env.LEARNING_TEST_POSTGRES_PORT || '55432';
 
 function isUnknownArray(value: unknown): value is unknown[] {
   return Array.isArray(value);
@@ -81,7 +84,7 @@ function assertIsolatedTargets(): void {
   const redis = new URL(redisUrl);
   if (
     database.hostname !== '127.0.0.1' ||
-    database.port !== '55432' ||
+    database.port !== postgresPort ||
     !database.pathname.includes('hermes_learning_test') ||
     redis.hostname !== '127.0.0.1' ||
     redis.port !== '56379'
@@ -127,6 +130,7 @@ describe('Conversation learning loop (isolated integration)', () => {
   let redis: IORedis;
   let queue: Queue<ReviewJobData>;
   let provider: LearningReviewProviderFixture;
+  const allowlisted = new Set<string>();
 
   const config = (dailyLimit = 10) =>
     new ConfigService({
@@ -144,11 +148,20 @@ describe('Conversation learning loop (isolated integration)', () => {
       settings,
       new ReviewModelService(settings),
       queue,
+      {
+        allowedIds: () => [...allowlisted],
+        isFeedbackAllowed: (id: string | null) => !!id && allowlisted.has(id),
+        assertFeedbackAllowed: (id: string) => {
+          if (!allowlisted.has(id)) throw new Error('Feedback not allowlisted');
+        },
+      } as unknown as ReviewCanaryPolicy,
     );
   };
 
   async function clearFixture(): Promise<void> {
+    allowlisted.clear();
     await queue.obliterate({ force: true });
+    await prisma.auditLog.deleteMany();
     await prisma.learningEvidence.deleteMany();
     await prisma.learningItem.deleteMany();
     await prisma.conversationReview.deleteMany();
@@ -225,10 +238,12 @@ describe('Conversation learning loop (isolated integration)', () => {
         requestKey: `feedback-${suffix}`,
       },
     });
+    allowlisted.add(feedback.id);
     return {
       conversationId: conversation.id,
       feedbackId: feedback.id,
       sourceMessageId: source.id,
+      userId: user.id,
     };
   }
 
@@ -300,7 +315,7 @@ describe('Conversation learning loop (isolated integration)', () => {
     expect(result.status).toBe(ConversationReviewStatus.NO_LEARNING);
     expect(await prisma.learningItem.count()).toBe(0);
     expect(provider.requests).toHaveLength(1);
-    expect(JSON.stringify(provider.requests[0])).toContain('[correo]');
+    expect(JSON.stringify(provider.requests[0])).toContain('[EMAIL_PATTERN]');
     expect(JSON.stringify(provider.requests[0])).not.toContain(
       'synthetic@example.test',
     );
@@ -329,6 +344,77 @@ describe('Conversation learning loop (isolated integration)', () => {
       }),
     ).toBe(1);
     expect(await queue.count()).toBe(1);
+  });
+
+  it('isolates manual canary scheduling with durable request keys and concurrent requests', async () => {
+    const allowed = await seed('canary-allowed');
+    const excluded = await seed('canary-excluded');
+    allowlisted.delete(excluded.feedbackId);
+    const reviewService = service();
+    const requestKey = randomUUID();
+    const [first, repeated] = await Promise.all([
+      reviewService.triggerCanary(
+        { feedbackId: allowed.feedbackId, requestKey },
+        allowed.userId,
+      ),
+      reviewService.triggerCanary(
+        { feedbackId: allowed.feedbackId, requestKey },
+        allowed.userId,
+      ),
+    ]);
+    expect(first.reviewId).toBe(repeated.reviewId);
+    expect(await prisma.conversationReview.count()).toBe(1);
+    expect(await queue.count()).toBe(1);
+    expect(
+      await prisma.auditLog.count({
+        where: { entity: 'learning_review_canary_request' },
+      }),
+    ).toBe(1);
+    allowlisted.add(excluded.feedbackId);
+    await expect(
+      reviewService.triggerCanary(
+        { feedbackId: excluded.feedbackId, requestKey },
+        excluded.userId,
+      ),
+    ).rejects.toMatchObject({ status: 409 });
+    allowlisted.delete(excluded.feedbackId);
+    await reviewService.scheduleBadFeedback({
+      id: excluded.feedbackId,
+      conversationId: excluded.conversationId,
+      messageId: (
+        await prisma.conversationFeedback.findUniqueOrThrow({
+          where: { id: excluded.feedbackId },
+        })
+      ).messageId,
+      rating: FeedbackRating.BAD,
+    });
+    expect(await prisma.conversationReview.count()).toBe(1);
+    expect(await queue.count()).toBe(1);
+
+    const excludedReview = await prisma.conversationReview.create({
+      data: {
+        reviewKey: `synthetic-excluded-${excluded.feedbackId}`,
+        conversationId: excluded.conversationId,
+        sourceMessageId: excluded.sourceMessageId,
+        feedbackId: excluded.feedbackId,
+        reviewerVersion: 'synthetic',
+        trigger: 'BAD_FEEDBACK',
+      },
+    });
+    const allowedJob = await queue.getJob(`review-${first.reviewId}`);
+    await allowedJob?.remove();
+    await reviewService.onModuleInit();
+    expect(await queue.getJob(`review-${first.reviewId}`)).toBeDefined();
+    expect(await queue.getJob(`review-${excludedReview.id}`)).toBeUndefined();
+    await reviewService.process(excludedReview.id);
+    expect(
+      (
+        await prisma.conversationReview.findUniqueOrThrow({
+          where: { id: excludedReview.id },
+        })
+      ).status,
+    ).toBe(ConversationReviewStatus.PENDING);
+    expect(provider.requests).toHaveLength(0);
   });
 
   it('creates one deduplicated PROPOSED candidate with evidence from separate conversations', async () => {

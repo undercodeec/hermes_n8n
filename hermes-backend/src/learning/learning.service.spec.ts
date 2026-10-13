@@ -9,6 +9,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { ConversationReviewService } from './conversation-review.service';
 import { ReviewJobData } from './learning.constants';
 import { ReviewModelService } from './review-model.service';
+import { ReviewCanaryPolicy } from './review-canary.policy';
 import { parseReviewOutput } from './review-output.validator';
 
 describe('Fase 2: revisión aislada', () => {
@@ -17,6 +18,8 @@ describe('Fase 2: revisión aislada', () => {
     conversationReview: {
       count: jest.fn(),
       upsert: jest.fn(),
+      findUnique: jest.fn(),
+      findFirst: jest.fn(),
       updateMany: jest.fn(),
       findUniqueOrThrow: jest.fn(),
       update: jest.fn(),
@@ -39,6 +42,10 @@ describe('Fase 2: revisión aislada', () => {
     config as unknown as ConfigService,
     model as unknown as ReviewModelService,
     queue as unknown as Queue<ReviewJobData>,
+    {
+      isFeedbackAllowed: () => true,
+      allowedIds: () => ['feedback-1'],
+    } as unknown as ReviewCanaryPolicy,
   );
 
   beforeEach(() => {
@@ -56,6 +63,8 @@ describe('Fase 2: revisión aislada', () => {
       status: ConversationReviewStatus.PENDING,
     });
     queue.add.mockResolvedValue({});
+    prisma.conversationReview.findUnique.mockResolvedValue(null);
+    prisma.conversationReview.findFirst.mockResolvedValue(null);
   });
 
   function prepareProcess(guidance: string) {
@@ -65,6 +74,7 @@ describe('Fase 2: revisión aislada', () => {
       conversationId: 'conversation-1',
       sourceMessageId: 'inbound-1',
       trigger: 'BAD_FEEDBACK',
+      feedbackId: 'feedback-1',
       feedbackId: 'feedback-1',
       createdAt: new Date(),
       feedback: {

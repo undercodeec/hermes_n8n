@@ -6,12 +6,16 @@ import {
   Logger,
   NotFoundException,
   OnModuleInit,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ConversationReviewStatus,
   ConversationReviewTrigger,
   FeedbackRating,
+  MessageDirection,
+  MessageSender,
+  Prisma,
   LearningRiskLevel,
   LearningItemStatus,
 } from '@prisma/client';
@@ -25,6 +29,8 @@ import {
 } from './learning.constants';
 import { ReviewModelService } from './review-model.service';
 import { validateCandidateSafety } from './review-candidate-safety';
+import { ReviewCanaryPolicy } from './review-canary.policy';
+import { ReviewCanaryTriggerDto } from './dto/review-canary-trigger.dto';
 import { sanitizeReviewInput, privacyFailure } from './review-privacy';
 import { parseReviewOutput } from './review-output.validator';
 import {
@@ -39,6 +45,14 @@ type FeedbackRef = {
   rating: FeedbackRating;
 };
 
+type ScheduledReview = {
+  feedbackId: string;
+  reviewId: string;
+  status: ConversationReviewStatus;
+  scheduled: boolean;
+  reused: boolean;
+};
+
 @Injectable()
 export class ConversationReviewService implements OnModuleInit {
   private readonly logger = new Logger(ConversationReviewService.name);
@@ -49,6 +63,7 @@ export class ConversationReviewService implements OnModuleInit {
     private readonly model: ReviewModelService,
     @InjectQueue(LEARNING_REVIEW_QUEUE)
     private readonly queue: Queue<ReviewJobData>,
+    private readonly canary: ReviewCanaryPolicy,
   ) {}
 
   private enabled(): boolean {
@@ -75,9 +90,13 @@ export class ConversationReviewService implements OnModuleInit {
   }
 
   async onModuleInit(): Promise<void> {
-    if (!this.enabled()) return;
+    if (!this.enabled() || this.canary.allowedIds().length === 0) return;
     const pending = await this.prisma.conversationReview.findMany({
-      where: { status: ConversationReviewStatus.PENDING },
+      where: {
+        status: ConversationReviewStatus.PENDING,
+        trigger: ConversationReviewTrigger.BAD_FEEDBACK,
+        feedbackId: { in: this.canary.allowedIds() },
+      },
       select: { id: true },
       take: this.dailyLimit(),
       orderBy: { createdAt: 'asc' },
@@ -91,13 +110,16 @@ export class ConversationReviewService implements OnModuleInit {
     }
   }
 
-  async scheduleBadFeedback(feedback: FeedbackRef): Promise<void> {
+  async scheduleBadFeedback(
+    feedback: FeedbackRef,
+  ): Promise<ScheduledReview | null> {
     if (
       !this.enabled() ||
       feedback.rating !== FeedbackRating.BAD ||
+      !this.canary.isFeedbackAllowed(feedback.id) ||
       (await this.pausedByErrors())
     )
-      return;
+      return null;
     const source = await this.prisma.automatedDelivery.findFirst({
       where: {
         outboundMessageId: feedback.messageId,
@@ -105,60 +127,157 @@ export class ConversationReviewService implements OnModuleInit {
       },
       select: { sourceMessageId: true },
     });
-    if (!source) return;
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    const scheduled = await this.prisma.conversationReview.count({
-      where: { createdAt: { gte: today } },
-    });
-    if (scheduled >= this.dailyLimit()) return;
-
+    if (!source) return null;
     const reviewKey = `${REVIEWER_VERSION}:${ConversationReviewTrigger.BAD_FEEDBACK}:${feedback.id}`;
-    const review = await this.prisma.conversationReview.upsert({
+    const incompatible = await this.prisma.conversationReview.findFirst({
+      where: { feedbackId: feedback.id, reviewKey: { not: reviewKey } },
+      select: { id: true },
+    });
+    if (incompatible) return null;
+    const prior = await this.prisma.conversationReview.findUnique({
       where: { reviewKey },
-      create: {
-        reviewKey,
-        conversationId: feedback.conversationId,
-        sourceMessageId: source.sourceMessageId,
-        feedbackId: feedback.id,
-        reviewerVersion: REVIEWER_VERSION,
-        trigger: ConversationReviewTrigger.BAD_FEEDBACK,
-      },
-      update: {},
       select: { id: true, status: true },
     });
+    const today = new Date();
+    today.setUTCHours(0, 0, 0, 0);
+    if (!prior) {
+      const scheduled = await this.prisma.conversationReview.count({
+        where: { createdAt: { gte: today } },
+      });
+      if (scheduled >= this.dailyLimit()) return null;
+    }
+
+    let review: { id: string; status: ConversationReviewStatus };
+    let raceRecovered = false;
+    try {
+      review = await this.prisma.conversationReview.upsert({
+        where: { reviewKey },
+        create: {
+          reviewKey,
+          conversationId: feedback.conversationId,
+          sourceMessageId: source.sourceMessageId,
+          feedbackId: feedback.id,
+          reviewerVersion: REVIEWER_VERSION,
+          trigger: ConversationReviewTrigger.BAD_FEEDBACK,
+        },
+        update: {},
+        select: { id: true, status: true },
+      });
+    } catch (error) {
+      if (
+        !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+        error.code !== 'P2002'
+      )
+        throw error;
+      // Prisma's read-then-create upsert can lose a concurrent insert.
+      review = await this.prisma.conversationReview.findUniqueOrThrow({
+        where: { reviewKey },
+        select: { id: true, status: true },
+      });
+      raceRecovered = true;
+    }
     if (review.status === ConversationReviewStatus.PENDING)
       await this.enqueue(review.id);
+    this.logger.log(
+      `review canary scheduled feedback=${feedback.id} review=${review.id}`,
+    );
+    return {
+      feedbackId: feedback.id,
+      reviewId: review.id,
+      status: review.status,
+      scheduled: review.status === ConversationReviewStatus.PENDING,
+      reused: Boolean(prior) || raceRecovered,
+    };
   }
 
-  async scheduleIncident(input: {
+  scheduleIncident(input: {
     conversationId: string;
     sourceMessageId: string;
     code: string;
   }): Promise<void> {
-    if (!this.enabled() || (await this.pausedByErrors())) return;
-    const today = new Date();
-    today.setUTCHours(0, 0, 0, 0);
-    const scheduled = await this.prisma.conversationReview.count({
-      where: { createdAt: { gte: today } },
+    // The canary admits only reviews tied to an explicitly allowed feedbackId.
+    void input;
+    return Promise.resolve();
+  }
+
+  async triggerCanary(
+    dto: ReviewCanaryTriggerDto,
+    userId: string,
+  ): Promise<ScheduledReview> {
+    if (!this.enabled())
+      throw new ServiceUnavailableException('El reviewer está apagado');
+    const feedbackId = dto.feedbackId.toLowerCase();
+    const requestKey = dto.requestKey.toLowerCase();
+    this.canary.assertFeedbackAllowed(feedbackId);
+    const feedback = await this.prisma.conversationFeedback.findUnique({
+      where: { id: feedbackId },
+      select: { id: true, conversationId: true, messageId: true, rating: true },
     });
-    if (scheduled >= this.dailyLimit()) return;
-    const reviewKey = `${REVIEWER_VERSION}:${ConversationReviewTrigger.INCIDENT}:${input.sourceMessageId}:${input.code}`;
-    const review = await this.prisma.conversationReview.upsert({
-      where: { reviewKey },
-      create: {
-        reviewKey,
-        conversationId: input.conversationId,
-        sourceMessageId: input.sourceMessageId,
-        reviewerVersion: REVIEWER_VERSION,
-        trigger: ConversationReviewTrigger.INCIDENT,
-        issueCode: input.code.slice(0, 60),
+    if (!feedback) throw new NotFoundException('Feedback inexistente');
+    if (feedback.rating !== FeedbackRating.BAD)
+      throw new BadRequestException('El feedback debe ser BAD');
+    const message = await this.prisma.message.findFirst({
+      where: {
+        id: feedback.messageId,
+        conversationId: feedback.conversationId,
+        direction: MessageDirection.OUTBOUND,
+        sender: MessageSender.HERMES,
+        wamid: { not: null },
       },
-      update: {},
-      select: { id: true, status: true },
+      select: { id: true },
     });
-    if (review.status === ConversationReviewStatus.PENDING)
-      await this.enqueue(review.id);
+    if (!message) throw new BadRequestException('Mensaje Hermes no elegible');
+    const delivery = await this.prisma.automatedDelivery.findFirst({
+      where: { outboundMessageId: feedback.messageId, status: 'CONFIRMED' },
+      select: { sourceMessageId: true },
+    });
+    if (!delivery) throw new BadRequestException('Entrega no confirmada');
+    const reviewKey = `${REVIEWER_VERSION}:${ConversationReviewTrigger.BAD_FEEDBACK}:${feedbackId}`;
+    const incompatible = await this.prisma.conversationReview.findFirst({
+      where: { feedbackId, reviewKey: { not: reviewKey } },
+      select: { id: true },
+    });
+    if (incompatible)
+      throw new ConflictException('Existe una revisión incompatible');
+
+    // AuditLog persists the request-key binding. The transaction-scoped lock makes
+    // the lookup and insert atomic across processes without a schema migration.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT 1 AS one FROM pg_advisory_xact_lock(hashtext('learning-review-canary'), hashtext(${requestKey}))`;
+      const previous = await tx.auditLog.findFirst({
+        where: {
+          entity: 'learning_review_canary_request',
+          entityId: requestKey,
+        },
+        select: { changes: true },
+      });
+      if (previous) {
+        const changes = previous.changes;
+        const boundFeedbackId =
+          changes && typeof changes === 'object' && !Array.isArray(changes)
+            ? changes.feedbackId
+            : null;
+        if (boundFeedbackId !== feedbackId)
+          throw new ConflictException(
+            'La clave de solicitud ya pertenece a otro feedback',
+          );
+        return;
+      }
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'LEARNING_REVIEW_CANARY_REQUEST',
+          entity: 'learning_review_canary_request',
+          entityId: requestKey,
+          changes: { feedbackId },
+        },
+      });
+    });
+
+    const result = await this.scheduleBadFeedback(feedback);
+    if (!result)
+      throw new ServiceUnavailableException('La revisión no se pudo agendar');
+    return result;
   }
 
   private async enqueue(reviewId: string): Promise<void> {
@@ -171,10 +290,21 @@ export class ConversationReviewService implements OnModuleInit {
 
   async process(reviewId: string): Promise<void> {
     if (!this.enabled()) return;
+    const review = await this.prisma.conversationReview.findUniqueOrThrow({
+      where: { id: reviewId },
+      include: { feedback: true },
+    });
+    if (
+      review.trigger !== ConversationReviewTrigger.BAD_FEEDBACK ||
+      !this.canary.isFeedbackAllowed(review.feedbackId)
+    )
+      return;
     const stale = new Date(Date.now() - 10 * 60_000);
     const claim = await this.prisma.conversationReview.updateMany({
       where: {
         id: reviewId,
+        feedbackId: review.feedbackId,
+        trigger: ConversationReviewTrigger.BAD_FEEDBACK,
         attempts: { lt: 3 },
         OR: [
           { status: ConversationReviewStatus.PENDING },
@@ -194,10 +324,6 @@ export class ConversationReviewService implements OnModuleInit {
     if (claim.count !== 1) return;
 
     try {
-      const review = await this.prisma.conversationReview.findUniqueOrThrow({
-        where: { id: reviewId },
-        include: { feedback: true },
-      });
       if (
         review.trigger === ConversationReviewTrigger.BAD_FEEDBACK &&
         (!review.feedback || review.feedback.rating !== FeedbackRating.BAD)

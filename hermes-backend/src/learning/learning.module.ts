@@ -5,6 +5,7 @@ import { LearningController } from './learning.controller';
 import { LEARNING_REVIEW_QUEUE } from './learning.constants';
 import { LearningProcessor } from './learning.processor';
 import { ReviewModelService } from './review-model.service';
+import { ReviewCanaryPolicy } from './review-canary.policy';
 
 @Module({
   imports: [
@@ -19,7 +20,12 @@ import { ReviewModelService } from './review-model.service';
     }),
   ],
   controllers: [LearningController],
-  providers: [ConversationReviewService, ReviewModelService, LearningProcessor],
+  providers: [
+    ConversationReviewService,
+    ReviewModelService,
+    ReviewCanaryPolicy,
+    LearningProcessor,
+  ],
   exports: [ConversationReviewService],
 })
 export class LearningModule {}

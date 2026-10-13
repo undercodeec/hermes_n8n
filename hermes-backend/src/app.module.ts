@@ -25,6 +25,7 @@ import { AdvertisingModule } from './advertising/advertising.module';
 import { GoogleCalendarModule } from './integrations/google-calendar/google-calendar.module';
 import { PaymentsModule } from './payments/payments.module';
 import { FeedbackModule } from './feedback/feedback.module';
+import { parseReviewCanaryFeedbackIds } from './learning/review-canary.policy';
 
 @Module({
   imports: [
@@ -32,6 +33,10 @@ import { FeedbackModule } from './feedback/feedback.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      validate: (env: Record<string, unknown>) => {
+        parseReviewCanaryFeedbackIds(env.LEARNING_REVIEW_CANARY_FEEDBACK_IDS);
+        return env;
+      },
     }),
 
     // Trazabilidad (traceId por request vía nestjs-cls)
