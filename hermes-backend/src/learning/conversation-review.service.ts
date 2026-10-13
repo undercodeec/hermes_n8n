@@ -234,13 +234,8 @@ export class ConversationReviewService implements OnModuleInit {
       select: { sourceMessageId: true },
     });
     if (!delivery) throw new BadRequestException('Entrega no confirmada');
-    const reviewKey = `${REVIEWER_VERSION}:${ConversationReviewTrigger.BAD_FEEDBACK}:${feedbackId}`;
-    const incompatible = await this.prisma.conversationReview.findFirst({
-      where: { feedbackId, reviewKey: { not: reviewKey } },
-      select: { id: true },
-    });
-    if (incompatible)
-      throw new ConflictException('Existe una revisión incompatible');
+    const baseReviewKey = `${REVIEWER_VERSION}:${ConversationReviewTrigger.BAD_FEEDBACK}:${feedbackId}`;
+    const recanaryOfReviewId = dto.recanaryOfReviewId?.toLowerCase();
 
     // Lock the feedback before the request key so concurrent requests for the
     // same feedback cannot create separate executions. Both bindings and the
@@ -257,99 +252,160 @@ export class ConversationReviewService implements OnModuleInit {
       });
       if (previous) {
         const changes = previous.changes;
-        const boundFeedbackId =
+        const binding =
           changes && typeof changes === 'object' && !Array.isArray(changes)
-            ? changes.feedbackId
+            ? changes
             : null;
+        const boundFeedbackId = binding?.feedbackId;
         if (boundFeedbackId !== feedbackId)
           throw new ConflictException(
             'La clave de solicitud ya pertenece a otro feedback',
           );
+        if ((binding?.recanaryOfReviewId ?? undefined) !== recanaryOfReviewId)
+          throw new ConflictException(
+            'La clave de solicitud ya pertenece a otra autorización',
+          );
+        const reviewId =
+          typeof binding?.reviewId === 'string' ? binding.reviewId : null;
+        const review = await tx.conversationReview.findUnique({
+          where: reviewId ? { id: reviewId } : { reviewKey: baseReviewKey },
+          select: { id: true, status: true, feedbackId: true },
+        });
+        if (!review || review.feedbackId !== feedbackId)
+          throw new ConflictException('La revisión vinculada no existe');
+        return {
+          feedbackId,
+          reviewId: review.id,
+          status: review.status,
+          scheduled: review.status === ConversationReviewStatus.PENDING,
+          reused: true,
+        };
       }
-      let review = await tx.conversationReview.findUnique({
-        where: { reviewKey },
-        select: { id: true, status: true },
+
+      const baseReview = await tx.conversationReview.findUnique({
+        where: { reviewKey: baseReviewKey },
+        select: {
+          id: true,
+          status: true,
+          feedbackId: true,
+          conversationId: true,
+          sourceMessageId: true,
+        },
       });
-      let reused = Boolean(review);
-      if (review) {
+      let reviewKey = baseReviewKey;
+      if (recanaryOfReviewId) {
+        if (
+          !baseReview ||
+          baseReview.id !== recanaryOfReviewId ||
+          baseReview.feedbackId !== feedbackId ||
+          baseReview.conversationId !== feedback.conversationId ||
+          baseReview.status !== ConversationReviewStatus.FAILED
+        )
+          throw new ConflictException(
+            'El review indicado no es el FAILED histórico',
+          );
         const marker = await tx.auditLog.findFirst({
-          where: { entity: CANARY_EXECUTION_ENTITY, entityId: review.id },
+          where: { entity: CANARY_EXECUTION_ENTITY, entityId: baseReview.id },
           select: { id: true },
         });
-        const legacyTerminal =
-          previous &&
-          (review.status === ConversationReviewStatus.FAILED ||
-            review.status === ConversationReviewStatus.NO_LEARNING ||
-            review.status === ConversationReviewStatus.PROPOSED);
-        if (!marker && !legacyTerminal)
+        const legacyRequest = marker
+          ? null
+          : await tx.auditLog.findFirst({
+              where: {
+                entity: 'learning_review_canary_request',
+                changes: { path: ['feedbackId'], equals: feedbackId },
+              },
+              select: { id: true },
+            });
+        if (!marker && !legacyRequest)
           throw new ConflictException(
-            'La revisión existente no es un canary manual',
+            'El review FAILED no proviene de un canary manual',
           );
+        const existingReviews = await tx.conversationReview.count({
+          where: { feedbackId },
+        });
+        if (existingReviews !== 1)
+          throw new ConflictException(
+            'Ya existe otra evaluación de este feedback',
+          );
+        reviewKey = `${baseReviewKey}:RECANARY:${requestKey}`;
       } else {
-        const today = new Date();
-        today.setUTCHours(0, 0, 0, 0);
-        const scheduled = await tx.conversationReview.count({
-          where: { createdAt: { gte: today } },
-        });
-        const failures = await tx.conversationReview.count({
-          where: {
-            status: ConversationReviewStatus.FAILED,
-            updatedAt: { gte: new Date(Date.now() - 3600_000) },
-          },
-        });
-        if (scheduled >= this.dailyLimit() || failures >= 3)
-          throw new ServiceUnavailableException(
-            'La revisión no se pudo agendar',
-          );
-        try {
-          review = await tx.conversationReview.create({
-            data: {
-              reviewKey,
-              conversationId: feedback.conversationId,
-              sourceMessageId: delivery.sourceMessageId,
-              feedbackId,
-              reviewerVersion: REVIEWER_VERSION,
-              trigger: ConversationReviewTrigger.BAD_FEEDBACK,
-            },
-            select: { id: true, status: true },
-          });
-        } catch (error) {
-          if (
-            !(error instanceof Prisma.PrismaClientKnownRequestError) ||
-            error.code !== 'P2002'
-          )
-            throw error;
+        if (
+          baseReview ||
+          (await tx.conversationReview.count({ where: { feedbackId } })) !== 0
+        )
           throw new ConflictException(
-            'La revisión cambió durante la solicitud',
+            'Ya existe una revisión; una nueva evaluación requiere autorización explícita',
           );
-        }
-        await tx.auditLog.create({
-          data: {
-            userId,
-            action: 'LEARNING_REVIEW_CANARY_EXECUTION',
-            entity: CANARY_EXECUTION_ENTITY,
-            entityId: review.id,
-            changes: { feedbackId },
-          },
-        });
-        reused = false;
       }
-      if (!previous)
-        await tx.auditLog.create({
+
+      const today = new Date();
+      today.setUTCHours(0, 0, 0, 0);
+      const scheduled = await tx.conversationReview.count({
+        where: { createdAt: { gte: today } },
+      });
+      const failures = await tx.conversationReview.count({
+        where: {
+          status: ConversationReviewStatus.FAILED,
+          updatedAt: { gte: new Date(Date.now() - 3600_000) },
+        },
+      });
+      if (scheduled >= this.dailyLimit() || failures >= 3)
+        throw new ServiceUnavailableException('La revisión no se pudo agendar');
+      let review: { id: string; status: ConversationReviewStatus };
+      try {
+        review = await tx.conversationReview.create({
           data: {
-            userId,
-            action: 'LEARNING_REVIEW_CANARY_REQUEST',
-            entity: 'learning_review_canary_request',
-            entityId: requestKey,
-            changes: { feedbackId },
+            reviewKey,
+            conversationId: feedback.conversationId,
+            sourceMessageId: recanaryOfReviewId
+              ? baseReview!.sourceMessageId
+              : delivery.sourceMessageId,
+            feedbackId,
+            reviewerVersion: REVIEWER_VERSION,
+            trigger: ConversationReviewTrigger.BAD_FEEDBACK,
           },
+          select: { id: true, status: true },
         });
+      } catch (error) {
+        if (
+          !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+          error.code !== 'P2002'
+        )
+          throw error;
+        throw new ConflictException('La revisión cambió durante la solicitud');
+      }
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'LEARNING_REVIEW_CANARY_EXECUTION',
+          entity: CANARY_EXECUTION_ENTITY,
+          entityId: review.id,
+          changes: {
+            feedbackId,
+            recanaryOfReviewId: recanaryOfReviewId ?? null,
+          },
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'LEARNING_REVIEW_CANARY_REQUEST',
+          entity: 'learning_review_canary_request',
+          entityId: requestKey,
+          changes: {
+            feedbackId,
+            reviewId: review.id,
+            ...(recanaryOfReviewId ? { recanaryOfReviewId } : {}),
+          },
+        },
+      });
       return {
         feedbackId,
         reviewId: review.id,
         status: review.status,
         scheduled: review.status === ConversationReviewStatus.PENDING,
-        reused,
+        reused: false,
       };
     });
     if (result.scheduled) await this.enqueue(result.reviewId);

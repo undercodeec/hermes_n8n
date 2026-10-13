@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsUUID } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsOptional, IsUUID } from 'class-validator';
 
 export class ReviewCanaryTriggerDto {
   @ApiProperty({ format: 'uuid' })
@@ -12,4 +12,13 @@ export class ReviewCanaryTriggerDto {
   })
   @IsUUID()
   requestKey: string;
+
+  @ApiPropertyOptional({
+    format: 'uuid',
+    description:
+      'ID del review FAILED histórico; requerido para autorizar una segunda evaluación independiente',
+  })
+  @IsOptional()
+  @IsUUID()
+  recanaryOfReviewId?: string;
 }

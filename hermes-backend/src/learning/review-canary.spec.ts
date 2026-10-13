@@ -32,6 +32,8 @@ import { ReviewModelService } from './review-model.service';
 const A = '10000000-0000-4000-8000-000000000001';
 const B = '10000000-0000-4000-8000-000000000002';
 const KEY = '20000000-0000-4000-8000-000000000001';
+const NEXT_KEY = '20000000-0000-4000-8000-000000000002';
+const THIRD_KEY = '20000000-0000-4000-8000-000000000003';
 const REVIEW_KEY = (id: string) => `feedback-review-v1:BAD_FEEDBACK:${id}`;
 
 function fixture(allowlist: string, enabled = true) {
@@ -57,13 +59,18 @@ function fixture(allowlist: string, enabled = true) {
       id: string;
       reviewKey: string;
       feedbackId: string | null;
+      conversationId?: string;
+      sourceMessageId?: string;
       trigger: ConversationReviewTrigger;
       status: ConversationReviewStatus;
       attempts: number;
     }
   >();
   const jobs = new Map<string, unknown>();
-  const requests = new Map<string, string>();
+  const requests = new Map<
+    string,
+    { feedbackId: string; reviewId?: string; recanaryOfReviewId?: string }
+  >();
   const executions = new Set<string>();
   const config = {
     get: jest.fn((name: string, fallback?: string) =>
@@ -87,14 +94,28 @@ function fixture(allowlist: string, enabled = true) {
     $queryRaw: jest.fn(async () => [{ one: 1 }]),
     auditLog: {
       findFirst: jest.fn(
-        async ({ where }: { where: { entity: string; entityId: string } }) =>
-          where.entity === 'learning_review_canary_execution'
-            ? executions.has(where.entityId)
+        async ({
+          where,
+        }: {
+          where: {
+            entity: string;
+            entityId?: string;
+            changes?: { path: string[]; equals: string };
+          };
+        }) => {
+          if (where.entity === 'learning_review_canary_execution')
+            return executions.has(where.entityId ?? '')
               ? { id: 'marker' }
-              : null
-            : requests.has(where.entityId)
-              ? { changes: { feedbackId: requests.get(where.entityId) } }
-              : null,
+              : null;
+          if (where.changes)
+            return [...requests.values()].some(
+              (request) => request.feedbackId === where.changes?.equals,
+            )
+              ? { id: 'legacy-request' }
+              : null;
+          const request = requests.get(where.entityId ?? '');
+          return request ? { changes: request } : null;
+        },
       ),
       create: jest.fn(
         async ({
@@ -103,21 +124,41 @@ function fixture(allowlist: string, enabled = true) {
           data: {
             entity: string;
             entityId: string;
-            changes: { feedbackId: string };
+            changes: {
+              feedbackId: string;
+              reviewId?: string;
+              recanaryOfReviewId?: string;
+            };
           };
         }) => {
           if (data.entity === 'learning_review_canary_execution')
             executions.add(data.entityId);
-          else requests.set(data.entityId, data.changes.feedbackId);
+          else requests.set(data.entityId, data.changes);
         },
       ),
     },
     conversationReview: {
       findUnique: jest.fn(
-        async ({ where }: { where: { reviewKey: string } }) =>
-          reviews.get(where.reviewKey) ?? null,
+        async ({ where }: { where: { reviewKey?: string; id?: string } }) =>
+          where.reviewKey
+            ? (reviews.get(where.reviewKey) ?? null)
+            : ([...reviews.values()].find((review) => review.id === where.id) ??
+              null),
       ),
-      count: jest.fn(async () => reviews.size),
+      count: jest.fn(
+        async ({
+          where,
+        }: {
+          where: { feedbackId?: string; status?: ConversationReviewStatus };
+        }) =>
+          [...reviews.values()].filter((review) =>
+            where.feedbackId
+              ? review.feedbackId === where.feedbackId
+              : where.status
+                ? review.status === where.status
+                : true,
+          ).length,
+      ),
       create: jest.fn(
         async ({
           data,
@@ -126,12 +167,16 @@ function fixture(allowlist: string, enabled = true) {
             reviewKey: string;
             feedbackId: string;
             trigger: ConversationReviewTrigger;
+            conversationId: string;
+            sourceMessageId: string;
           };
         }) => {
           const review = {
             id: `review-${reviews.size + 1}`,
             reviewKey: data.reviewKey,
             feedbackId: data.feedbackId,
+            conversationId: data.conversationId,
+            sourceMessageId: data.sourceMessageId,
             trigger: data.trigger,
             status: ConversationReviewStatus.PENDING,
             attempts: 0,
@@ -455,11 +500,13 @@ describe('reviewer canary fail closed', () => {
 
   it('reuses a terminal legacy canary with the same durable request key without enqueuing', async () => {
     const f = fixture(A);
-    f.requests.set(KEY, A);
+    f.requests.set(KEY, { feedbackId: A });
     f.reviews.set(REVIEW_KEY(A), {
       id: 'legacy-failed',
       reviewKey: REVIEW_KEY(A),
       feedbackId: A,
+      conversationId: 'conversation-1',
+      sourceMessageId: 'source-1',
       trigger: ConversationReviewTrigger.BAD_FEEDBACK,
       status: ConversationReviewStatus.FAILED,
       attempts: 3,
@@ -476,6 +523,82 @@ describe('reviewer canary fail closed', () => {
     });
     expect(f.queue.add).not.toHaveBeenCalled();
     expect(f.tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('requires the FAILED review ID for a new authorization and never creates a third review', async () => {
+    const f = fixture(A);
+    f.requests.set(KEY, { feedbackId: A });
+    f.reviews.set(REVIEW_KEY(A), {
+      id: 'legacy-failed',
+      reviewKey: REVIEW_KEY(A),
+      feedbackId: A,
+      conversationId: 'conversation-1',
+      sourceMessageId: 'source-1',
+      trigger: ConversationReviewTrigger.BAD_FEEDBACK,
+      status: ConversationReviewStatus.FAILED,
+      attempts: 3,
+    });
+    await expect(
+      f.service.triggerCanary(
+        { feedbackId: A, requestKey: NEXT_KEY },
+        'admin-1',
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(f.reviews.size).toBe(1);
+    const dto = {
+      feedbackId: A,
+      requestKey: NEXT_KEY,
+      recanaryOfReviewId: 'legacy-failed',
+    };
+    const first = await f.service.triggerCanary(dto, 'admin-1');
+    const repeated = await f.service.triggerCanary(dto, 'admin-1');
+    expect(first.reviewId).toBe(repeated.reviewId);
+    expect(first.reviewId).not.toBe('legacy-failed');
+    expect(f.reviews.get(REVIEW_KEY(A))?.status).toBe(
+      ConversationReviewStatus.FAILED,
+    );
+    expect(f.reviews.size).toBe(2);
+    expect(f.jobs.size).toBe(1);
+    expect(f.executions.has(first.reviewId)).toBe(true);
+    await expect(
+      f.service.triggerCanary(
+        {
+          feedbackId: A,
+          requestKey: THIRD_KEY,
+          recanaryOfReviewId: 'legacy-failed',
+        },
+        'admin-1',
+      ),
+    ).rejects.toBeInstanceOf(ConflictException);
+    expect(f.reviews.size).toBe(2);
+    expect(f.jobs.size).toBe(1);
+  });
+
+  it('converges concurrent requests for the same explicit re-canary', async () => {
+    const f = fixture(A);
+    f.requests.set(KEY, { feedbackId: A });
+    f.reviews.set(REVIEW_KEY(A), {
+      id: 'legacy-failed',
+      reviewKey: REVIEW_KEY(A),
+      feedbackId: A,
+      conversationId: 'conversation-1',
+      sourceMessageId: 'source-1',
+      trigger: ConversationReviewTrigger.BAD_FEEDBACK,
+      status: ConversationReviewStatus.FAILED,
+      attempts: 3,
+    });
+    const dto = {
+      feedbackId: A,
+      requestKey: NEXT_KEY,
+      recanaryOfReviewId: 'legacy-failed',
+    };
+    const [first, second] = await Promise.all([
+      f.service.triggerCanary(dto, 'admin-1'),
+      f.service.triggerCanary(dto, 'admin-1'),
+    ]);
+    expect(first.reviewId).toBe(second.reviewId);
+    expect(f.reviews.size).toBe(2);
+    expect(f.jobs.size).toBe(1);
   });
 
   it('recovers only allowed pending feedback and retains other pending records', async () => {

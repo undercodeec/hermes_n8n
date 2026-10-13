@@ -11,12 +11,13 @@ import {
   PrismaClient,
   UserRole,
 } from '@prisma/client';
-import { Queue } from 'bullmq';
+import { Queue, Worker } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 import IORedis from 'ioredis';
 import { ConversationReviewService } from '../src/learning/conversation-review.service';
 import {
   LEARNING_REVIEW_QUEUE,
+  REVIEWER_VERSION,
   ReviewJobData,
 } from '../src/learning/learning.constants';
 import { ReviewModelService } from '../src/learning/review-model.service';
@@ -273,6 +274,61 @@ describe('Conversation learning loop (isolated integration)', () => {
     return prisma.conversationReview.findUniqueOrThrow({
       where: { id: review.id },
     });
+  }
+
+  async function historicFailedCanary(seedData: Seed, requestKey: string) {
+    const review = await prisma.conversationReview.create({
+      data: {
+        reviewKey: `${REVIEWER_VERSION}:BAD_FEEDBACK:${seedData.feedbackId}`,
+        conversationId: seedData.conversationId,
+        sourceMessageId: seedData.sourceMessageId,
+        feedbackId: seedData.feedbackId,
+        reviewerVersion: REVIEWER_VERSION,
+        trigger: 'BAD_FEEDBACK',
+        status: ConversationReviewStatus.FAILED,
+        attempts: 3,
+      },
+    });
+    await prisma.auditLog.create({
+      data: {
+        userId: seedData.userId,
+        action: 'LEARNING_REVIEW_CANARY_REQUEST',
+        entity: 'learning_review_canary_request',
+        entityId: requestKey,
+        changes: { feedbackId: seedData.feedbackId },
+      },
+    });
+    const job = await queue.add(
+      'review',
+      { reviewId: review.id },
+      {
+        jobId: `review-${review.id}`,
+        attempts: 1,
+        removeOnFail: false,
+      },
+    );
+    const worker = new Worker(
+      LEARNING_REVIEW_QUEUE,
+      () => {
+        throw new Error('synthetic historical failure');
+      },
+      { connection: { host: '127.0.0.1', port: 56379 }, autorun: false },
+    );
+    const failed = new Promise<void>((resolve, reject) => {
+      worker.on('failed', (processed) => {
+        if (processed?.id === job.id) resolve();
+      });
+      worker.on('error', reject);
+    });
+    const running = worker.run();
+    try {
+      await failed;
+    } finally {
+      await worker.close();
+      await running;
+    }
+    expect(await job.getState()).toBe('failed');
+    return review;
   }
 
   beforeAll(async () => {
@@ -549,6 +605,194 @@ describe('Conversation learning loop (isolated integration)', () => {
         })
       ).attempts,
     ).toBe(1);
+  });
+
+  it.each([
+    ['NO_LEARNING', false],
+    ['PROPOSED', true],
+  ])(
+    'preserves a historical FAILED canary and creates one explicit re-canary ending %s',
+    async (_label, candidate) => {
+      const selected = await seed('historical-recanary');
+      const oldKey = randomUUID();
+      const historical = await historicFailedCanary(selected, oldKey);
+      const historicalBefore =
+        await prisma.conversationReview.findUniqueOrThrow({
+          where: { id: historical.id },
+        });
+      const reviewService = service();
+      const sameOld = await reviewService.triggerCanary(
+        { feedbackId: selected.feedbackId, requestKey: oldKey },
+        selected.userId,
+      );
+      expect(sameOld.reviewId).toBe(historical.id);
+      expect(sameOld.status).toBe(ConversationReviewStatus.FAILED);
+      expect(provider.requests).toHaveLength(0);
+      const newKey = randomUUID();
+      await expect(
+        reviewService.triggerCanary(
+          { feedbackId: selected.feedbackId, requestKey: newKey },
+          selected.userId,
+        ),
+      ).rejects.toMatchObject({ status: 409 });
+      const authorization = {
+        feedbackId: selected.feedbackId,
+        requestKey: newKey,
+        recanaryOfReviewId: historical.id,
+      };
+      const [first, concurrent] = await Promise.all([
+        reviewService.triggerCanary(authorization, selected.userId),
+        reviewService.triggerCanary(authorization, selected.userId),
+      ]);
+      expect(first.reviewId).toBe(concurrent.reviewId);
+      expect(first.reviewId).not.toBe(historical.id);
+      expect(
+        await prisma.conversationReview.count({
+          where: { feedbackId: selected.feedbackId },
+        }),
+      ).toBe(2);
+      const newReview = await prisma.conversationReview.findUniqueOrThrow({
+        where: { id: first.reviewId },
+      });
+      expect(newReview.reviewerVersion).toBe(historical.reviewerVersion);
+      expect(newReview.reviewKey).not.toBe(historical.reviewKey);
+      expect(
+        (await queue.getJob(`review-${first.reviewId}`))?.opts.attempts,
+      ).toBe(1);
+      await (await queue.getJob(`review-${first.reviewId}`))?.remove();
+      await reviewService.onModuleInit();
+      expect(
+        (await queue.getJob(`review-${first.reviewId}`))?.opts.attempts,
+      ).toBe(1);
+      expect(
+        await (await queue.getJob(`review-${historical.id}`))?.getState(),
+      ).toBe('failed');
+      provider.setResponse((request) => ({
+        issueCode: 'REPETITION',
+        summary: 'Resumen sintético seguro',
+        counterexample: null,
+        confidence: 0.7,
+        candidate: candidate
+          ? {
+              kind: 'STYLE',
+              trigger: 'Dato corregido',
+              guidance: 'Confirmar la información más reciente',
+              serviceCode: null,
+              market: null,
+              evidenceMessageIds: [firstEvidenceMessageId(request)],
+            }
+          : null,
+      }));
+      await Promise.all([
+        reviewService.process(first.reviewId),
+        reviewService.process(first.reviewId),
+      ]);
+      const finished = await prisma.conversationReview.findUniqueOrThrow({
+        where: { id: first.reviewId },
+      });
+      expect(finished.status).toBe(
+        candidate
+          ? ConversationReviewStatus.PROPOSED
+          : ConversationReviewStatus.NO_LEARNING,
+      );
+      expect(finished.attempts).toBe(1);
+      expect(provider.requests).toHaveLength(1);
+      expect(await prisma.learningItem.count()).toBe(candidate ? 1 : 0);
+      if (candidate)
+        expect((await prisma.learningItem.findFirstOrThrow()).status).toBe(
+          'PROPOSED',
+        );
+      const repeated = await reviewService.triggerCanary(
+        authorization,
+        selected.userId,
+      );
+      expect(repeated.reviewId).toBe(first.reviewId);
+      expect(provider.requests).toHaveLength(1);
+      await expect(
+        reviewService.triggerCanary(
+          {
+            feedbackId: selected.feedbackId,
+            requestKey: randomUUID(),
+            recanaryOfReviewId: historical.id,
+          },
+          selected.userId,
+        ),
+      ).rejects.toMatchObject({ status: 409 });
+      expect(await prisma.conversationReview.count()).toBe(2);
+      expect(
+        await prisma.conversationReview.findUniqueOrThrow({
+          where: { id: historical.id },
+        }),
+      ).toEqual(historicalBefore);
+      await (await queue.getJob(`review-${first.reviewId}`))?.remove();
+      await reviewService.onModuleInit();
+      expect(await queue.getJob(`review-${first.reviewId}`)).toBeUndefined();
+      expect(
+        await (await queue.getJob(`review-${historical.id}`))?.getState(),
+      ).toBe('failed');
+    },
+  );
+
+  it('does not recover a FAILED explicit re-canary or call its provider again', async () => {
+    const selected = await seed('failed-recanary');
+    const historical = await historicFailedCanary(selected, randomUUID());
+    const reviewService = service();
+    const authorization = {
+      feedbackId: selected.feedbackId,
+      requestKey: randomUUID(),
+      recanaryOfReviewId: historical.id,
+    };
+    const created = await reviewService.triggerCanary(
+      authorization,
+      selected.userId,
+    );
+    provider.setResponse('{');
+    await expect(reviewService.process(created.reviewId)).rejects.toThrow(
+      'REVIEW_PROVIDER_JSON',
+    );
+    const failed = await prisma.conversationReview.findUniqueOrThrow({
+      where: { id: created.reviewId },
+    });
+    expect(failed.status).toBe(ConversationReviewStatus.FAILED);
+    expect(failed.attempts).toBe(1);
+    await (await queue.getJob(`review-${created.reviewId}`))?.remove();
+    await reviewService.onModuleInit();
+    expect(await queue.getJob(`review-${created.reviewId}`)).toBeUndefined();
+    const repeated = await reviewService.triggerCanary(
+      authorization,
+      selected.userId,
+    );
+    expect(repeated.reviewId).toBe(created.reviewId);
+    expect(provider.requests).toHaveLength(1);
+    expect(await prisma.conversationReview.count()).toBe(2);
+    expect(
+      await (await queue.getJob(`review-${historical.id}`))?.getState(),
+    ).toBe('failed');
+  });
+
+  it('rejects a non-allowlisted or GOOD historical feedback before re-canary scheduling', async () => {
+    const selected = await seed('recanary-scope');
+    const historical = await historicFailedCanary(selected, randomUUID());
+    const authorization = {
+      feedbackId: selected.feedbackId,
+      requestKey: randomUUID(),
+      recanaryOfReviewId: historical.id,
+    };
+    allowlisted.delete(selected.feedbackId);
+    await expect(
+      service().triggerCanary(authorization, selected.userId),
+    ).rejects.toThrow();
+    allowlisted.add(selected.feedbackId);
+    await prisma.conversationFeedback.update({
+      where: { id: selected.feedbackId },
+      data: { rating: FeedbackRating.GOOD },
+    });
+    await expect(
+      service().triggerCanary(authorization, selected.userId),
+    ).rejects.toMatchObject({ status: 400 });
+    expect(await prisma.conversationReview.count()).toBe(1);
+    expect(await queue.getJob(`review-${historical.id}`)).toBeDefined();
+    expect(provider.requests).toHaveLength(0);
   });
 
   it('creates one deduplicated PROPOSED candidate with evidence from separate conversations', async () => {
