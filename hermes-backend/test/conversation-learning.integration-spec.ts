@@ -281,7 +281,11 @@ describe('Conversation learning loop (isolated integration)', () => {
     redis = new IORedis(redisUrl!, { maxRetriesPerRequest: null });
     queue = new Queue(LEARNING_REVIEW_QUEUE, {
       connection: redis,
-      defaultJobOptions: { removeOnComplete: true, removeOnFail: false },
+      defaultJobOptions: {
+        attempts: 3,
+        removeOnComplete: true,
+        removeOnFail: false,
+      },
     });
     provider = new LearningReviewProviderFixture();
     await Promise.all([
@@ -402,6 +406,7 @@ describe('Conversation learning loop (isolated integration)', () => {
       },
     });
     const allowedJob = await queue.getJob(`review-${first.reviewId}`);
+    expect(allowedJob?.opts.attempts).toBe(1);
     await allowedJob?.remove();
     await reviewService.onModuleInit();
     expect(await queue.getJob(`review-${first.reviewId}`)).toBeDefined();
@@ -415,6 +420,135 @@ describe('Conversation learning loop (isolated integration)', () => {
       ).status,
     ).toBe(ConversationReviewStatus.PENDING);
     expect(provider.requests).toHaveLength(0);
+  });
+
+  it.each([
+    ['invalid JSON', '{"issueCode":'],
+    [
+      'invalid schema',
+      JSON.stringify({
+        issueCode: 'TEST',
+        summary: 42,
+        counterexample: null,
+        confidence: 0.5,
+        candidate: null,
+      }),
+    ],
+  ])(
+    'gives a manual canary one provider call for %s and reuses FAILED',
+    async (_label, response) => {
+      provider.setResponse(response);
+      const selected = await seed('manual-invalid');
+      const reviewService = service();
+      const requestKey = randomUUID();
+      const first = await reviewService.triggerCanary(
+        { feedbackId: selected.feedbackId, requestKey },
+        selected.userId,
+      );
+      const job = await queue.getJob(`review-${first.reviewId}`);
+      expect(job?.opts.attempts).toBe(1);
+      await expect(reviewService.process(first.reviewId)).rejects.toThrow();
+      await reviewService.process(first.reviewId);
+      const repeated = await reviewService.triggerCanary(
+        { feedbackId: selected.feedbackId, requestKey },
+        selected.userId,
+      );
+      expect(repeated.reviewId).toBe(first.reviewId);
+      expect(repeated.status).toBe(ConversationReviewStatus.FAILED);
+      expect(provider.requests).toHaveLength(1);
+      expect(await prisma.conversationReview.count()).toBe(1);
+      expect(await queue.count()).toBe(1);
+      expect(await prisma.learningItem.count()).toBe(0);
+      expect(
+        (
+          await prisma.conversationReview.findUniqueOrThrow({
+            where: { id: first.reviewId },
+          })
+        ).attempts,
+      ).toBe(1);
+    },
+  );
+
+  it.each([
+    ['NO_LEARNING', false],
+    ['PROPOSED', true],
+  ])(
+    'keeps a valid manual canary at one call and %s',
+    async (_label, candidate) => {
+      provider.setResponse((request) => ({
+        issueCode: 'REPETITION',
+        summary: 'Resumen sintético seguro',
+        counterexample: null,
+        confidence: 0.7,
+        candidate: candidate
+          ? {
+              kind: 'STYLE',
+              trigger: 'Dato corregido',
+              guidance: 'Confirmar la información más reciente',
+              serviceCode: null,
+              market: null,
+              evidenceMessageIds: [firstEvidenceMessageId(request)],
+            }
+          : null,
+      }));
+      const selected = await seed('manual-valid');
+      const reviewService = service();
+      const scheduled = await reviewService.triggerCanary(
+        { feedbackId: selected.feedbackId, requestKey: randomUUID() },
+        selected.userId,
+      );
+      await reviewService.process(scheduled.reviewId);
+      const review = await prisma.conversationReview.findUniqueOrThrow({
+        where: { id: scheduled.reviewId },
+      });
+      expect(review.status).toBe(
+        candidate
+          ? ConversationReviewStatus.PROPOSED
+          : ConversationReviewStatus.NO_LEARNING,
+      );
+      expect(review.attempts).toBe(1);
+      expect(provider.requests).toHaveLength(1);
+      expect(await prisma.learningItem.count()).toBe(candidate ? 1 : 0);
+      if (candidate)
+        expect((await prisma.learningItem.findFirstOrThrow()).status).toBe(
+          'PROPOSED',
+        );
+    },
+  );
+
+  it('converges concurrent manual triggers and worker claims on one provider call', async () => {
+    provider.setResponse({
+      issueCode: 'TEST',
+      summary: 'Sin pauta generalizable',
+      counterexample: null,
+      confidence: 0.5,
+      candidate: null,
+    });
+    const selected = await seed('manual-concurrent');
+    const reviewService = service();
+    const request = {
+      feedbackId: selected.feedbackId,
+      requestKey: randomUUID(),
+    };
+    const [first, second] = await Promise.all([
+      reviewService.triggerCanary(request, selected.userId),
+      reviewService.triggerCanary(request, selected.userId),
+    ]);
+    expect(first.reviewId).toBe(second.reviewId);
+    await Promise.all([
+      reviewService.process(first.reviewId),
+      reviewService.process(first.reviewId),
+    ]);
+    expect(await prisma.conversationReview.count()).toBe(1);
+    expect(await queue.count()).toBe(1);
+    expect(provider.requests).toHaveLength(1);
+    expect(
+      (
+        await prisma.conversationReview.findUniqueOrThrow({
+          where: { id: first.reviewId },
+        })
+      ).attempts,
+    ).toBe(1);
   });
 
   it('creates one deduplicated PROPOSED candidate with evidence from separate conversations', async () => {
@@ -468,6 +602,7 @@ describe('Conversation learning loop (isolated integration)', () => {
     const firstService = service();
     const failed = await scheduleAndProcess(firstService, firstSeed, true);
     expect(failed.status).toBe(ConversationReviewStatus.FAILED);
+    expect((await queue.getJob(`review-${failed.id}`))?.opts.attempts).toBe(3);
 
     provider.setResponse({
       issueCode: 'REPETITION',

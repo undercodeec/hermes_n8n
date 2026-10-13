@@ -14,6 +14,7 @@ import { parseReviewOutput } from './review-output.validator';
 
 describe('Fase 2: revisión aislada', () => {
   const prisma = {
+    auditLog: { findFirst: jest.fn() },
     automatedDelivery: { findFirst: jest.fn() },
     conversationReview: {
       count: jest.fn(),
@@ -65,6 +66,7 @@ describe('Fase 2: revisión aislada', () => {
     queue.add.mockResolvedValue({});
     prisma.conversationReview.findUnique.mockResolvedValue(null);
     prisma.conversationReview.findFirst.mockResolvedValue(null);
+    prisma.auditLog.findFirst.mockResolvedValue(null);
   });
 
   function prepareProcess(guidance: string) {
@@ -74,7 +76,6 @@ describe('Fase 2: revisión aislada', () => {
       conversationId: 'conversation-1',
       sourceMessageId: 'inbound-1',
       trigger: 'BAD_FEEDBACK',
-      feedbackId: 'feedback-1',
       feedbackId: 'feedback-1',
       createdAt: new Date(),
       feedback: {

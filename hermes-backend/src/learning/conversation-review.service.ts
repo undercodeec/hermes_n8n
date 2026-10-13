@@ -53,6 +53,8 @@ type ScheduledReview = {
   reused: boolean;
 };
 
+const CANARY_EXECUTION_ENTITY = 'learning_review_canary_execution';
+
 @Injectable()
 export class ConversationReviewService implements OnModuleInit {
   private readonly logger = new Logger(ConversationReviewService.name);
@@ -240,9 +242,11 @@ export class ConversationReviewService implements OnModuleInit {
     if (incompatible)
       throw new ConflictException('Existe una revisión incompatible');
 
-    // AuditLog persists the request-key binding. The transaction-scoped lock makes
-    // the lookup and insert atomic across processes without a schema migration.
-    await this.prisma.$transaction(async (tx) => {
+    // Lock the feedback before the request key so concurrent requests for the
+    // same feedback cannot create separate executions. Both bindings and the
+    // review are committed together, before a job can be queued.
+    const result = await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT 1 AS one FROM pg_advisory_xact_lock(hashtext('learning-review-feedback'), hashtext(${feedbackId}))`;
       await tx.$queryRaw`SELECT 1 AS one FROM pg_advisory_xact_lock(hashtext('learning-review-canary'), hashtext(${requestKey}))`;
       const previous = await tx.auditLog.findFirst({
         where: {
@@ -261,30 +265,106 @@ export class ConversationReviewService implements OnModuleInit {
           throw new ConflictException(
             'La clave de solicitud ya pertenece a otro feedback',
           );
-        return;
       }
-      await tx.auditLog.create({
-        data: {
-          userId,
-          action: 'LEARNING_REVIEW_CANARY_REQUEST',
-          entity: 'learning_review_canary_request',
-          entityId: requestKey,
-          changes: { feedbackId },
-        },
+      let review = await tx.conversationReview.findUnique({
+        where: { reviewKey },
+        select: { id: true, status: true },
       });
+      let reused = Boolean(review);
+      if (review) {
+        const marker = await tx.auditLog.findFirst({
+          where: { entity: CANARY_EXECUTION_ENTITY, entityId: review.id },
+          select: { id: true },
+        });
+        const legacyTerminal =
+          previous &&
+          (review.status === ConversationReviewStatus.FAILED ||
+            review.status === ConversationReviewStatus.NO_LEARNING ||
+            review.status === ConversationReviewStatus.PROPOSED);
+        if (!marker && !legacyTerminal)
+          throw new ConflictException(
+            'La revisión existente no es un canary manual',
+          );
+      } else {
+        const today = new Date();
+        today.setUTCHours(0, 0, 0, 0);
+        const scheduled = await tx.conversationReview.count({
+          where: { createdAt: { gte: today } },
+        });
+        const failures = await tx.conversationReview.count({
+          where: {
+            status: ConversationReviewStatus.FAILED,
+            updatedAt: { gte: new Date(Date.now() - 3600_000) },
+          },
+        });
+        if (scheduled >= this.dailyLimit() || failures >= 3)
+          throw new ServiceUnavailableException(
+            'La revisión no se pudo agendar',
+          );
+        try {
+          review = await tx.conversationReview.create({
+            data: {
+              reviewKey,
+              conversationId: feedback.conversationId,
+              sourceMessageId: delivery.sourceMessageId,
+              feedbackId,
+              reviewerVersion: REVIEWER_VERSION,
+              trigger: ConversationReviewTrigger.BAD_FEEDBACK,
+            },
+            select: { id: true, status: true },
+          });
+        } catch (error) {
+          if (
+            !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+            error.code !== 'P2002'
+          )
+            throw error;
+          throw new ConflictException(
+            'La revisión cambió durante la solicitud',
+          );
+        }
+        await tx.auditLog.create({
+          data: {
+            userId,
+            action: 'LEARNING_REVIEW_CANARY_EXECUTION',
+            entity: CANARY_EXECUTION_ENTITY,
+            entityId: review.id,
+            changes: { feedbackId },
+          },
+        });
+        reused = false;
+      }
+      if (!previous)
+        await tx.auditLog.create({
+          data: {
+            userId,
+            action: 'LEARNING_REVIEW_CANARY_REQUEST',
+            entity: 'learning_review_canary_request',
+            entityId: requestKey,
+            changes: { feedbackId },
+          },
+        });
+      return {
+        feedbackId,
+        reviewId: review.id,
+        status: review.status,
+        scheduled: review.status === ConversationReviewStatus.PENDING,
+        reused,
+      };
     });
-
-    const result = await this.scheduleBadFeedback(feedback);
-    if (!result)
-      throw new ServiceUnavailableException('La revisión no se pudo agendar');
+    if (result.scheduled) await this.enqueue(result.reviewId);
     return result;
   }
 
   private async enqueue(reviewId: string): Promise<void> {
+    const canary = await this.prisma.auditLog.findFirst({
+      where: { entity: CANARY_EXECUTION_ENTITY, entityId: reviewId },
+      select: { id: true },
+    });
     await this.queue.add(
       'review',
       { reviewId },
-      { jobId: `review-${reviewId}` },
+      { jobId: `review-${reviewId}`, ...(canary ? { attempts: 1 } : {}) },
     );
   }
 
@@ -299,21 +379,29 @@ export class ConversationReviewService implements OnModuleInit {
       !this.canary.isFeedbackAllowed(review.feedbackId)
     )
       return;
+    const manualCanary = Boolean(
+      await this.prisma.auditLog.findFirst({
+        where: { entity: CANARY_EXECUTION_ENTITY, entityId: reviewId },
+        select: { id: true },
+      }),
+    );
     const stale = new Date(Date.now() - 10 * 60_000);
     const claim = await this.prisma.conversationReview.updateMany({
       where: {
         id: reviewId,
         feedbackId: review.feedbackId,
         trigger: ConversationReviewTrigger.BAD_FEEDBACK,
-        attempts: { lt: 3 },
-        OR: [
-          { status: ConversationReviewStatus.PENDING },
-          { status: ConversationReviewStatus.FAILED },
-          {
-            status: ConversationReviewStatus.PROCESSING,
-            processingAt: { lt: stale },
-          },
-        ],
+        attempts: { lt: manualCanary ? 1 : 3 },
+        OR: manualCanary
+          ? [{ status: ConversationReviewStatus.PENDING }]
+          : [
+              { status: ConversationReviewStatus.PENDING },
+              { status: ConversationReviewStatus.FAILED },
+              {
+                status: ConversationReviewStatus.PROCESSING,
+                processingAt: { lt: stale },
+              },
+            ],
       },
       data: {
         status: ConversationReviewStatus.PROCESSING,
