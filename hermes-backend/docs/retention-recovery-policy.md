@@ -109,6 +109,8 @@ selects existing managed periodic dumps. A save does not delete them.
 5. In CRM, inspect disk and preview. Run a manual backup and isolated restore
    check with a synthetic/local environment first. The manual backup is
    protected and must be managed by an operator outside automatic rotation.
+   Manual API calls wait for completion; validate the VPS reverse-proxy timeouts
+   before using the CRM actions on a large database.
 6. The operator decides and records productive frequency, count, age, budget,
    and restore interval. Only then enable periodic work in CRM. A policy change
    is recorded in AuditLog.
