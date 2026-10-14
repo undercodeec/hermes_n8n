@@ -25,6 +25,7 @@ import { AdvertisingModule } from './advertising/advertising.module';
 import { GoogleCalendarModule } from './integrations/google-calendar/google-calendar.module';
 import { PaymentsModule } from './payments/payments.module';
 import { FeedbackModule } from './feedback/feedback.module';
+import { RetentionModule } from './retention/retention.module';
 import { parseReviewCanaryFeedbackIds } from './learning/review-canary.policy';
 
 @Module({
@@ -93,6 +94,7 @@ import { parseReviewCanaryFeedbackIds } from './learning/review-canary.policy';
     CampaignsModule,
     AdvertisingModule,
     FeedbackModule,
+    RetentionModule,
     // Analytics y métricas
     AnalyticsModule,
   ],
