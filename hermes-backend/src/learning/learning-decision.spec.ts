@@ -11,12 +11,14 @@ import { ReviewCanaryPolicy } from './review-canary.policy';
 
 describe('Fase 3: decisión auditada y recuperación en sombra', () => {
   const tx = {
+    $queryRaw: jest.fn(() => Promise.resolve([{ one: 1 }])),
     learningItem: {
       findUnique: jest.fn(),
       updateMany: jest.fn(),
       findUniqueOrThrow: jest.fn(),
     },
     auditLog: { create: jest.fn() },
+    learningEvidence: { count: jest.fn() },
   };
   const prisma = {
     $transaction: jest.fn((callback: (client: typeof tx) => unknown) =>
@@ -54,6 +56,7 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
       _count: { evidence: 1 },
     });
     tx.learningItem.updateMany.mockResolvedValue({ count: 1 });
+    tx.learningEvidence.count.mockResolvedValue(1);
     tx.learningItem.findUniqueOrThrow.mockResolvedValue({
       id: 'item-1',
       status: LearningItemStatus.ACTIVE,
@@ -96,6 +99,7 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
       version: 1,
       _count: { evidence: 0 },
     });
+    tx.learningEvidence.count.mockResolvedValueOnce(0);
     const dto = {
       action: LearningDecisionAction.APPROVE,
       reason: 'Pauta revisada con evidencia',

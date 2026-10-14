@@ -2,6 +2,7 @@ import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateContactDto } from './dto/create-contact.dto';
 import { UpdateContactDto } from './dto/update-contact.dto';
+import { deleteLearningSource } from '../learning/learning-source-deletion';
 
 @Injectable()
 export class ContactsService {
@@ -62,6 +63,6 @@ export class ContactsService {
 
   async remove(id: string) {
     await this.findOne(id);
-    return this.prisma.contact.delete({ where: { id } });
+    return deleteLearningSource(this.prisma, 'contact', id);
   }
 }
