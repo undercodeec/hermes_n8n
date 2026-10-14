@@ -1,6 +1,6 @@
 # Plan de desarrollo: memoria y mejora continua de Hermes
 
-Estado: Fases 1, 2 y la base de Fase 3 están desplegadas y validadas técnicamente según actas VPS del 08/10/2026. Fase 4 tiene una evaluación local inicial, sin ejecución del proveedor ni activación de resumen. Reviewer, sombra, recuperación y resumen siguen apagados; el harness aislado de Fase 2 está validado localmente, pero falta su ejecución independiente en VPS. Fases 0 y 0A continúan abiertas. Fecha: 2026-10-08 (America/Guayaquil). Fuente de la idea: [`../../ProyectMD/prompt.md`](../../ProyectMD/prompt.md). Este documento distingue lo comprobado en el checkout local, la evidencia reportada del VPS y las comprobaciones pendientes en producción.
+Estado vigente al 14/10/2026 (America/Guayaquil): F0 tiene línea base aprobada con seguimiento según el estado canónico posterior a las actas del 08/10; F0A está **CERRADA**; F1 está **CERRADA FUNCIONALMENTE** (`F1_CONVERSATION_FEEDBACK_VALIDATED_E2E`). F2 está en `F2_OPERATIONAL_VALIDATED_CLOSURE_GAPS_REMAIN`: reviewer, aislamiento del canary, re-canary explícito y contrato `json_schema` del gateway real validados en sus alcances reportados; el segundo canary terminó válidamente `NO_LEARNING`. La revisión humana sintética A–F está completada, incluida privacidad semántica, candidato B y comprensión de la ficha CRM confirmada por el operador. Solo quedan como puertas principales de cierre `F2_RETENTION_RECOVERY_GATE` y `F2_PROVIDER_EVALUATION_GATE`; F2 no está cerrada y el reviewer productivo permanece OFF. F3 conserva su implementación técnica histórica, sin activación ni continuación del canary/retrieval hasta decidir el cierre F2. F4 sigue abierta y el resumen OFF. `LEARNING_REVIEW_ENABLED=false`, `LEARNING_RETRIEVAL_ENABLED=false`, `LEARNING_SUMMARY_ENABLED=false`, `LEARNING_SHADOW_ENABLED=false`; allowlist de canary vacía y 0 `LearningItem.ACTIVE`, según el último corte VPS documentado, no por una consulta durante esta tarea. Esos valores productivos reportados se distinguen de los defaults locales. Fuente de la actualización: [`../../ProyectMD/prompt.md`](../../ProyectMD/prompt.md).
 
 ## 1. Resultado buscado y límites
 
@@ -154,7 +154,7 @@ Inventariar SHA/digest de backend, agente y frontend; confirmar motor efectivo, 
 
 **Salida:** acta fechada con evidencias sin secretos, riesgos de capacidad y decisión sobre dónde correr el reviewer. Si la VPS difiere del checkout, reconciliar arquitectura y revisar este plan antes de programar.
 
-### Fase 0A — caso real, corrección de etapa y atención humana en Inbox (prioridad inmediata)
+### Fase 0A — caso real, corrección de etapa y atención humana en Inbox
 
 Este trabajo se ejecuta **antes** del feedback general. El caso relatado: una clienta entró como lead nuevo, fue movida manualmente a `QUALIFIED`, la UI luego ofreció volver a `CONTACTED`/`NEW` y el backend respondió «Transición no permitida: QUALIFIED → CONTACTED». En el Inbox no aparece una acción para iniciar atención humana mientras Hermes controla la conversación. La conversación, según la observación del operador, muestra interés en seguir hablando, pero Hermes repite ideas, no concreta seguimiento ni explora una intención útil. **Esto es una hipótesis de calidad a comprobar turno por turno**, no una conclusión automática sobre la clienta. `ProyectMD/prompt.md` explica el learning loop, pero no contiene la transcripción identificada de este caso.
 
@@ -176,6 +176,8 @@ Este trabajo se ejecuta **antes** del feedback general. El caso relatado: una cl
 
 **Comprobación manual comunicada por el operador (08/10/2026).** En la release servida, los avances permitidos funcionan, los retrocesos quedan bloqueados visualmente y no se observaron regresiones visuales. La revisión local de `src/app/admin/crm/leads/[id]/page.jsx` confirmó que «Revisar transferencia en Inbox» y «Abrir comprobante en Inbox» enlazan a `/admin/crm/inbox?conversationId=…`; aún falta comprobar esos clics en la release servida. También falta mover un lead **de prueba** por una transición válida, recargar Pipeline/ficha y confirmar que la etapa persiste. Esta evidencia acota el bloque de UI de etapas, pero no cierra Fase 0A ni sustituye la auditoría del caso real y el recorrido de atención humana.
 
+**Corte vigente al 14/10/2026.** La consolidación posterior comunicada por el operador fija **F0A = CERRADA**. Las comprobaciones pendientes de las actas del 08/10 describen el estado de aquellas fechas; no se adoptan como estado actual ni se atribuye a este corte una verificación directa adicional de la VPS.
+
 ### Fase 1 — feedback útil sin IA adicional
 
 Migración de `ConversationFeedback`, endpoint JWT, botones en Inbox e identificadores exactos del mensaje evaluado. Permitir feedback positivo/negativo y corrección opcional. Añadir vistas simples de volumen y motivos. Es la fuente de ejemplos de calidad para no depender únicamente del juicio de otro modelo.
@@ -187,6 +189,8 @@ Migración de `ConversationFeedback`, endpoint JWT, botones en Inbox e identific
 **Implementación local de Fase 1.** La migración `20261008180000_conversation_feedback` agrega `ConversationFeedback` con FK a conversación, mensaje y operador, `requestKey` único, unicidad por mensaje/operador y borrado en cascada con las fuentes. `POST /api/feedback` recibe `conversationId`, `messageId`, `rating`, `reasonCode`/`suggestedReply` opcionales y `requestKey`; `GET /api/feedback/conversation/:conversationId` devuelve registros y totales por valoración/motivo. Ambos exigen JWT y rol ADMIN o SALES_AGENT; no existe ruta de aprobación en esta fase. La API acepta solo un outbound `HERMES` de la conversación con `wamid`, exige motivo para `BAD`, permite corrección de texto de hasta 2000 caracteres y devuelve el mismo registro ante reintento idéntico. Una clave reutilizada para otro contenido o una segunda valoración del mismo operador se rechaza; el mensaje original queda intacto. En Inbox, los botones «Útil»/«Corregir» aparecen junto al mensaje exacto, muestran la valoración propia y un resumen de volumen y motivos de la conversación. La sugerencia queda en el CRM y no se envía a Meta. Pasaron `prisma validate`, build NestJS, 9 pruebas dirigidas, ESLint dirigido y build Next.js. Rollback conductual: volver a las releases anteriores de API/web deshabilita las rutas y controles; la tabla aditiva puede permanecer aplicada hasta completar la retención de datos. La migración y el recorrido de operador en VPS siguen pendientes de validación antes de declarar cerrada Fase 1.
 
 **Despliegue técnico de Fase 1 reportado desde VPS (08/10/2026, 19:23 UTC).** El operador aportó un acta: backend `4118a3a`, frontend `849fe44`, migración `20261008180000_conversation_feedback` aplicada sin pendientes, `/api/docs` 200, app `running` con 0 reinicios y CRM HTTPS 200 con asset nuevo. El backup PostgreSQL previo al despliegue tiene checksum verificado y `pg_restore` puede leerlo; no se hizo restauración aislada. Los checkouts sucios originales quedaron preservados. No hubo prueba funcional de feedback ni UI con fixture, JWT y operador sintéticos autorizados. Por tanto la Fase 1 está **desplegada y validada técnicamente**, pero su criterio de cierre funcional sigue pendiente; Fases 0/0A no se cierran por este despliegue.
+
+**Corte vigente de F1 al 14/10/2026 — `F1_CONVERSATION_FEEDBACK_VALIDATED_E2E` (evidencia comunicada por el operador).** El operador marcó `GOOD` y `BAD` desde Inbox sobre mensajes Hermes confirmados; se corroboraron asociación y persistencia, también tras recargar. Contenido original, estado de delivery, `Message` y `AutomatedDelivery` permanecieron intactos. Una petición sin JWT devolvió 401; `requestKey`, conflictos y concurrencia quedaron cubiertos por pruebas y restricciones. F1 queda **CERRADA FUNCIONALMENTE**. La aprobación de candidatos pertenece a una fase posterior y no forma parte de este cierre.
 
 ### Fase 2 — reviewer asíncrono y candidatos
 
@@ -212,7 +216,47 @@ Crear cola separada, contrato de salida estricto, `ConversationReview` y `Learni
 | 4 | **VPS con autorización específica y límite de gasto:** ejecutar corpus sintético con proveedor real, medir formato, latencia, costo, CPU/RAM/swap, cola y errores por motor. | Resultados agregados por motor, presupuesto y umbrales propuestos; ninguna prueba envía mensajes a Meta. |
 | 5 | **Revisión humana:** evaluar utilidad, generalización, sesgo, contraejemplos y privacidad semántica de los candidatos; recorrer Fase 1 en Inbox con operador/JWT de prueba autorizado. | Decisiones registradas y capturas sin datos reales; el filtro automático de PII no sustituye esta revisión. |
 
-Los puntos 1 y 2 bloquean el cierre técnico funcional de Fase 2. Los puntos 3–5 bloquean la activación productiva del reviewer. También siguen abiertos la línea base de Fase 0 y el caso real de Fase 0A, que requiere acceso autorizado al `leadId`/`conversationId` y decisión comercial. Hasta entonces `LEARNING_REVIEW_ENABLED`, `LEARNING_RETRIEVAL_ENABLED` y `LEARNING_SUMMARY_ENABLED` permanecen apagados.
+**Estado al cierre del acta del 08/10/2026:** los puntos 1 y 2 bloqueaban entonces el cierre técnico funcional de Fase 2; los puntos 3–5 bloqueaban la activación productiva del reviewer. También constaban abiertas F0 y F0A. Los cortes posteriores que siguen sustituyen esos pendientes como estado vigente, sin borrar esta historia.
+
+#### Cortes F2 posteriores — resultados reportados hasta el 14/10/2026
+
+Esta cronología procede de la consolidación entregada por el operador. No asigna a cada hito una hora o día exacto que no conste en la evidencia; el corte documental es el **14/10/2026, America/Guayaquil**. Los dobles de prueba, las observaciones VPS, la llamada al gateway real y las decisiones humanas conservan alcances distintos.
+
+| Orden | Resultado | Alcance de la evidencia |
+| --- | --- | --- |
+| A | `F2_REVIEWER_OPERATIONAL_GATE_PASSED` | Reviewer, cola, idempotencia y recuperación operativos. |
+| B | `F2_CANARY_CONTROL_MISSING` | Bloqueo **histórico, superado**: activar reviewer aún no permitía acotar un solo feedback. |
+| C | `F2_CANARY_CONTROL_READY_FOR_VPS` | Se implementaron `LEARNING_REVIEW_CANARY_FEEDBACK_IDS`, control fail-closed, guardas de scheduler, recuperación de arranque y worker, exclusión de incidentes, disparo manual ADMIN e idempotencia. Implementación no equivale a activación. |
+| D | `F2_CANARY_FAIL_CLOSED_VALIDATED_READY_FOR_SINGLE_AUTHORIZED_CANARY` | Validación reportada en VPS con flags OFF y allowlist vacía. |
+| E | `F2_CANARY_SCOPE_VIOLATION` | Primer canary real fallido por contrato de provider: solo se procesó el `BAD` autorizado, con 1 review lógico y 1 job lógico. Hubo 3 llamadas por retries tras `REVIEW_PROVIDER_JSON`; el review terminó `FAILED`, con 0 `LearningItem`. Flags de nuevo OFF. **No falló el aislamiento por feedback.** |
+| F | `F2_CANARY_PROVIDER_CONTRACT_AND_BUDGET_READY_FOR_VPS` | Se corrigieron `json_schema` estricto, presupuesto de 2048 tokens, manejo de finish reason y telemetría segura. El canary admite 1 intento; repetir el mismo `requestKey` tras `FAILED` no vuelve a llamar al provider. El reviewer normal conserva 3 intentos. |
+| G | `F2_PROVIDER_FIX_DEPLOYED_SINGLE_CALL_VALIDATED_READY_FOR_REAL_GATEWAY_CHECK` | Despliegue y validación en VPS con dobles, flags OFF; no acredita aún una llamada real. |
+| H | `F2_REAL_GATEWAY_JSON_SCHEMA_VALIDATED` | Una llamada real **sintética** al reviewer Gemini/OpenAI-compatible obtuvo HTTP 200; `json_schema` aceptado, `JSON.parse`, schema y `ReviewOutputValidator` pasaron. Salida `NO_LEARNING`, con 0 persistencia productiva. HTTP 200 no demuestra calidad o comprensión humana. |
+| I | `F2_RECANARY_CONTROL_READY_FOR_VPS` | Re-canary explícito con nueva `requestKey` y `recanaryOfReviewId`; conserva el review histórico `FAILED`, crea review/job independientes, permite máximo 1 llamada y bloquea una tercera evaluación. |
+| J | `F2_RECANARY_DEPLOYED_VALIDATED_READY_FOR_SECOND_AUTHORIZATION` | Despliegue y validación VPS con provider doble; seguía pendiente la segunda autorización real. |
+| K | `F2_SECOND_REAL_CANARY_PASSED_NO_LEARNING` | Segundo y último canary real: solo el `BAD` autorizado; Review A histórico sigue `FAILED`, Review B nuevo terminó `NO_LEARNING`. Hubo 1 provider call y 1 attempt; la idempotencia reutilizó Review B. Se reportaron 0 `LearningItem`, 0 `LearningEvidence`, 0 otros reviews/jobs/incidents, 0 Nous, 0 Gemini conversacional y 0 Meta/WhatsApp. Flags OFF al terminar. `NO_LEARNING` es un resultado **válido** del contrato F2. |
+
+**Auditoría de cierre previa a la revisión humana — `F2_OPERATIONAL_VALIDATED_CLOSURE_GAPS_REMAIN`.** `F2_IDEMPOTENCY_GATE`, `F2_FAILURE_ISOLATION_GATE` y `F2_DEDUP_GATE` quedaron `PROVEN`. `F2_PRIVACY_GATE`, `F2_CANDIDATE_GATE`, `F2_CRM_REVIEW_GATE`, `F2_RETENTION_RECOVERY_GATE` y `F2_PROVIDER_EVALUATION_GATE` quedaron `PARTIALLY_PROVEN`; `F2_HUMAN_REVIEW_GATE`, `NOT_PROVEN`. La revisión sintética documentada en [el acta A–F](f2-human-review-synthetic-2026-10-13.md) actualiza algunas de esas puertas en el corte vigente siguiente.
+
+**Puertas vigentes tras la revisión humana sintética (14/10/2026).**
+
+| Puerta | Estado vigente | Evidencia y límite |
+| --- | --- | --- |
+| `F2_IDEMPOTENCY_GATE` | `PROVEN` | Reuso de Review B y controles de `requestKey` reportados. |
+| `F2_FAILURE_ISOLATION_GATE` | `PROVEN` | Primer fallo aislado; sin interferencia en chat, Meta ni otros feedback. |
+| `F2_DEDUP_GATE` | `PROVEN` | Cola/reviews y evidencia deduplicadas según auditoría operativa. |
+| `F2_PRIVACY_GATE` | `PROVEN` para revisión sintética | El acta detecta C como fuga semántica aunque no haya PII clásica; filtros automáticos siguen pasando y los candidatos aceptables no transfieren contexto individual. |
+| `F2_CANDIDATE_GATE` | `PROVEN_FOR_SYNTHETIC_CANDIDATE` | B resultó útil y generalizable en evaluación humana; no acredita calidad del provider real en un corpus. |
+| `F2_HUMAN_REVIEW_GATE` | `PROVEN` para revisión sintética | A–F documentan utilidad, generalización, privacidad, autoridad, sesgo, contraejemplos y aceptación de `NO_LEARNING` en A/F. No aprobaron un `LearningItem` real. |
+| `F2_CRM_REVIEW_GATE` | `PROVEN` | El operador confirmó `CRM_CARD_UNDERSTANDABLE` para la ficha B local con doble HTTP; acredita comprensión, no integración E2E CRM–backend–PostgreSQL. |
+| `F2_RETENTION_RECOVERY_GATE` | `PARTIALLY_PROVEN` | Faltan restauración **consultable** del backup F2 actual, recuperación real de Redis, política aprobada de retención/copia, procedimiento verificado de eliminación de fuentes, tratamiento de evidencia huérfana y retiro de `LearningItem` al perder soporte. |
+| `F2_PROVIDER_EVALUATION_GATE` | `PARTIALLY_PROVEN` | Falta correr el corpus sintético F2 con provider real y agregar por escenario calidad, errores, latencia, tokens y costo cuando se reporten, CPU/RAM/swap/disco, umbrales y revisión humana correspondiente. Las dos salidas reales `NO_LEARNING` no satisfacen esta puerta. |
+
+**Decisión vigente:** F2 sigue abierta (`F2_OPERATIONAL_VALIDATED_CLOSURE_GAPS_REMAIN`). Solo quedan como puertas principales `F2_RETENTION_RECOVERY_GATE` y `F2_PROVIDER_EVALUATION_GATE`; después corresponde la auditoría final `F2_CLOSURE_GATE`. No planificar más feedback real ni canaries y no reutilizar `b4e510dec473`. Reviewer productivo OFF, allowlist vacía y 0 `LearningItem.ACTIVE` según el reporte operativo; recuperación, sombra y resumen OFF.
+
+### F2 — revisión humana sintética completada (14/10/2026)
+
+El operador aprobó las decisiones de los seis casos **sintéticos** A–F y confirmó `CRM_CARD_UNDERSTANDABLE` para la ficha local B. B es un candidato sintético razonable para una fase posterior; C fue rechazado por fuga semántica de contexto ajeno, D por condición comercial inventada y E por inferir rechazo del silencio y modificar una oferta sin autoridad. `NO_LEARNING_HUMAN_ACCEPTED` en A y F evita memorias sin soporte o basadas en instrucciones del cliente. La [revisión detallada y comparación con fixtures, doble y validador](f2-human-review-synthetic-2026-10-13.md) conserva las discrepancias del paquete. El recorrido local usó 0 datos productivos; esta actualización documental hizo 0 llamadas a provider externo y 0 envíos a Meta/WhatsApp, no activó candidatos y mantuvo todos los flags OFF. La comprensión de la ficha queda probada dentro del alcance del doble HTTP, sin afirmar una integración E2E con PostgreSQL.
 
 ### Fase 3 — aprobación, recuperación y sombra
 
@@ -328,6 +372,8 @@ Fuente: respuesta de Codex en VPS entregada en `../../logs.log`. Es evidencia re
 
 **Pendientes de cierre al nuevo corte:** configurar y verificar backup automático, retención, copia externa y restauración de datos Redis; medir capacidad bajo carga aislada representativa; ejecutar el corpus de salida final con proveedores reales, cuota acotada, rúbrica, latencia y costo; vincular la imagen backend servida con su commit; completar el caso real autorizado de Fase 0A. **Fase 0 continúa abierta.**
 
+**Corte vigente al 14/10/2026.** La consolidación posterior del operador fija F0 como **línea base aprobada con seguimiento**. Las dos actas anteriores conservan las limitaciones observadas el 08/10; sus frases «Fase 0 continúa abierta» son históricas y no reabren F0A ni desplazan el estado actual de F0.
+
 ## 9. Seguridad, retención y operación
 
 - El reviewer lee solo el tramo necesario y redacta teléfonos, correos, referencias, comprobantes y datos de pago. Los nuevos registros guardan referencias y hallazgos breves, no copias completas del chat. Los medios de pago se quedan en el circuito actual de Meta/Inbox.
@@ -335,15 +381,14 @@ Fuente: respuesta de Codex en VPS entregada en `../../logs.log`. Es evidencia re
 - Todo contenido de cliente se trata como dato no confiable, incluso si aparece citado en una evidencia. El revisor y el recuperador no pueden ejecutar herramientas ni publicar política. Una corrección de operador tampoco debe convertir un precio escrito a mano en precio aprobado.
 - Respetar borrado/retención de conversaciones y revocación aplicable: al eliminar origen, borrar evidencias asociadas y retirar aprendizajes que queden sin soporte. Definir el plazo exacto con la política de datos operativa antes de encender revisión de conversaciones reales.
 - Reviewer separado en BullMQ con concurrencia y cuota propias; nunca compartir la cola de respuesta a WhatsApp ni permitir que un backlog de revisión retrase `auto-reply`. Al fallar Redis/modelo, el chat sigue su flujo normal y la revisión queda para recuperación.
-- Flags iniciales `LEARNING_REVIEW_ENABLED=false`, `LEARNING_RETRIEVAL_ENABLED=false`, `LEARNING_SUMMARY_ENABLED=false`. Desactivar recuperación es el rollback inmediato; retirar un candidato es el rollback por regla. La migración puede quedar aplicada sin que cambie el comportamiento.
+- Defaults locales y rollback: `LEARNING_REVIEW_ENABLED=false`, `LEARNING_RETRIEVAL_ENABLED=false`, `LEARNING_SUMMARY_ENABLED=false` y `LEARNING_SHADOW_ENABLED=false`. El corte VPS reportado al 14/10/2026 observa estos cuatro flags OFF, allowlist de canary vacía y 0 `LearningItem.ACTIVE`; no inferir esa configuración productiva solo de los defaults. Desactivar recuperación es el rollback inmediato; retirar un candidato es el rollback por regla. La migración puede quedar aplicada sin que cambie el comportamiento.
 
 ## 10. Guía de continuación para próximas sesiones
 
-1. Leer este plan, `ProyectMD/estado-proyecto.md`, `docs/nous-hermes-runbook.md`, `prisma/schema.prisma` y comprobar `git status --short` antes de editar. Los cambios actuales ajenos en documentos/Calendar pertenecen al usuario y no se mezclan.
-2. Registrar fecha, commit backend, release frontend, digest del agente, motor efectivo y migraciones **con evidencia nueva**. No promover una observación histórica a estado actual.
-3. Si se consigue acceso VPS, completar la sección 8 y actualizar **este mismo archivo** con un apartado de resultados fechados, sin crear estados paralelos ni pegar secretos. Ajustar primero decisiones de capacidad/ubicación del reviewer.
-4. La Fase 0A queda pendiente de las comprobaciones manuales del lead y de la toma humana con una conversación autorizada; la corrección de etapa depende de verificar el hito comercial/publicitario del caso concreto. Por instrucción del operador se adelantaron la implementación y el despliegue técnico de Fases 1–2 y la implementación local inicial de Fase 3, sin declarar cerradas Fases 0/0A/1/2. Antes de activar reviewer o recuperación, completar los pendientes de Fase 2 en el orden de la sección 6 y revalidar estas puertas. Cada PR debe incluir migración si cambia el esquema, rollback conductual, pruebas pertinentes, rutas de API y capturas de CRM sin datos reales. Mantener flags apagados hasta pasar la evaluación.
-5. Antes de activar recuperación, dejar constancia de corpus de evaluación, resultados por motor, aprobación responsable, porcentaje/allowlist de canary, métricas observables y procedimiento para apagar el flag.
+1. Leer este plan, el [acta humana A–F](f2-human-review-synthetic-2026-10-13.md), `ProyectMD/estado-proyecto.md`, `docs/nous-hermes-runbook.md` y `prisma/schema.prisma`; comprobar `git status --short` antes de editar y conservar los cambios ajenos.
+2. Atender **primero** `F2_RETENTION_RECOVERY_GATE`: restauración consultable del backup F2 actual, recuperación Redis, política aprobada de retención y copia, eliminación verificada de fuentes y conducta de evidencias huérfanas/items retirados. Registrar evidencia, entorno, fecha y responsable sin datos sensibles.
+3. Atender **después** `F2_PROVIDER_EVALUATION_GATE`: corpus sintético F2 con provider real, resultados agregados por escenario, calidad, errores, latencia, tokens/costo disponibles, CPU/RAM/swap/disco, umbrales y revisión humana. Mantener flags OFF; las dos salidas reales `NO_LEARNING` son validaciones acotadas, no sustituyen el corpus.
+4. Ejecutar **después** `F2_CLOSURE_GATE` con los resultados anteriores; decidir explícitamente el cierre F2 antes de continuar el canary o retrieval de F3. `F2_CRM_REVIEW_GATE` ya está `PROVEN` por confirmación humana de la ficha local, sin prueba E2E frontend–backend–BD. No recomendar más feedback real ni canaries; no volver a usar `b4e510dec473`. Registrar fecha, versiones y configuración servida solo con evidencia nueva. F0A y F1 permanecen cerradas según sus cortes posteriores; F3 y F4 no se activan por esa circunstancia.
 
 ### Preguntas que debe resolver la auditoría, no la intuición
 
