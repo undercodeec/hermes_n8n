@@ -5,6 +5,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  OnModuleDestroy,
   OnModuleInit,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -33,6 +34,7 @@ import { ReviewCanaryPolicy } from './review-canary.policy';
 import { ReviewCanaryTriggerDto } from './dto/review-canary-trigger.dto';
 import { sanitizeReviewInput, privacyFailure } from './review-privacy';
 import { parseReviewOutput } from './review-output.validator';
+import { effectiveEvidence } from './learning-evidence-support';
 import {
   LearningDecisionAction,
   LearningDecisionDto,
@@ -54,10 +56,20 @@ type ScheduledReview = {
 };
 
 const CANARY_EXECUTION_ENTITY = 'learning_review_canary_execution';
+const CANARY_CLAIM_ENTITY = 'learning_review_canary_claim_v2';
+const CANARY_CALL_ENTITY = 'learning_review_canary_provider_call';
+const PROCESSING_STALE_MS = 10 * 60_000;
+const RECOVERY_BATCH_SIZE = 100;
+const RECOVERY_INTERVAL_MS = 60_000;
 
 @Injectable()
-export class ConversationReviewService implements OnModuleInit {
+export class ConversationReviewService
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(ConversationReviewService.name);
+  private recoveryTimer?: ReturnType<typeof setInterval>;
+  private recoveryRunning = false;
+  private recoveryCursor?: { createdAt: Date; id: string };
 
   constructor(
     private readonly prisma: PrismaService,
@@ -93,23 +105,178 @@ export class ConversationReviewService implements OnModuleInit {
 
   async onModuleInit(): Promise<void> {
     if (!this.enabled() || this.canary.allowedIds().length === 0) return;
-    const pending = await this.prisma.conversationReview.findMany({
-      where: {
-        status: ConversationReviewStatus.PENDING,
-        trigger: ConversationReviewTrigger.BAD_FEEDBACK,
-        feedbackId: { in: this.canary.allowedIds() },
-      },
-      select: { id: true },
-      take: this.dailyLimit(),
-      orderBy: { createdAt: 'asc' },
-    });
-    for (const review of pending) {
-      try {
-        await this.enqueue(review.id);
-      } catch {
-        this.logger.warn('No se pudo reencolar una revisión pendiente');
+    await this.recoverBatch();
+    this.recoveryTimer = setInterval(() => {
+      void this.recoverBatch().catch(() =>
+        this.logger.warn('No se pudo completar el barrido de recovery'),
+      );
+    }, RECOVERY_INTERVAL_MS);
+    this.recoveryTimer.unref?.();
+  }
+
+  onModuleDestroy(): void {
+    if (this.recoveryTimer) clearInterval(this.recoveryTimer);
+  }
+
+  // Recovery is bounded by batch size, not by the daily provider scheduling quota.
+  async recoverBatch(): Promise<void> {
+    if (
+      this.recoveryRunning ||
+      !this.enabled() ||
+      this.canary.allowedIds().length === 0
+    )
+      return;
+    this.recoveryRunning = true;
+    try {
+      const stale = new Date(Date.now() - PROCESSING_STALE_MS);
+      const cursor = this.recoveryCursor;
+      const reviews = await this.prisma.conversationReview.findMany({
+        where: {
+          trigger: ConversationReviewTrigger.BAD_FEEDBACK,
+          feedbackId: { in: this.canary.allowedIds() },
+          AND: [
+            {
+              OR: [
+                { status: ConversationReviewStatus.PENDING },
+                {
+                  status: ConversationReviewStatus.PROCESSING,
+                  processingAt: { lt: stale },
+                },
+              ],
+            },
+            ...(cursor
+              ? [
+                  {
+                    OR: [
+                      { createdAt: { gt: cursor.createdAt } },
+                      { createdAt: cursor.createdAt, id: { gt: cursor.id } },
+                    ],
+                  },
+                ]
+              : []),
+          ],
+        },
+        select: {
+          id: true,
+          status: true,
+          attempts: true,
+          processingAt: true,
+          createdAt: true,
+        },
+        take: RECOVERY_BATCH_SIZE,
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+      });
+      for (const review of reviews) {
+        try {
+          if (review.status === ConversationReviewStatus.PROCESSING) {
+            const job = await this.queue.getJob(`review-${review.id}`);
+            if (job && (await job.getState()) === 'active') continue;
+            const manual = await this.isManualCanary(review.id);
+            const consumed =
+              manual &&
+              Boolean(
+                await this.prisma.auditLog.findFirst({
+                  where: { entity: CANARY_CALL_ENTITY, entityId: review.id },
+                  select: { id: true },
+                }),
+              );
+            const claimed =
+              manual &&
+              Boolean(
+                await this.prisma.auditLog.findFirst({
+                  where: { entity: CANARY_CLAIM_ENTITY, entityId: review.id },
+                  select: { id: true },
+                }),
+              );
+            // Old canaries without a claim marker are ambiguous: fail closed.
+            const exhausted = manual
+              ? consumed || !claimed || review.attempts !== 1
+              : review.attempts >= 3;
+            const changed = await this.prisma.conversationReview.updateMany({
+              where: {
+                id: review.id,
+                status: ConversationReviewStatus.PROCESSING,
+                processingAt: review.processingAt,
+                attempts: review.attempts,
+              },
+              data: {
+                status: exhausted
+                  ? ConversationReviewStatus.FAILED
+                  : ConversationReviewStatus.PENDING,
+              },
+            });
+            if (changed.count !== 1 || exhausted) continue;
+          } else if (review.attempts > 0) {
+            const manual = await this.isManualCanary(review.id);
+            const spent =
+              manual &&
+              Boolean(
+                await this.prisma.auditLog.findFirst({
+                  where: { entity: CANARY_CALL_ENTITY, entityId: review.id },
+                  select: { id: true },
+                }),
+              );
+            const claimed =
+              manual &&
+              Boolean(
+                await this.prisma.auditLog.findFirst({
+                  where: { entity: CANARY_CLAIM_ENTITY, entityId: review.id },
+                  select: { id: true },
+                }),
+              );
+            const exhausted = manual
+              ? spent || !claimed || review.attempts > 1
+              : review.attempts >= 3;
+            if (exhausted) {
+              await this.prisma.conversationReview.updateMany({
+                where: {
+                  id: review.id,
+                  status: ConversationReviewStatus.PENDING,
+                  attempts: review.attempts,
+                },
+                data: { status: ConversationReviewStatus.FAILED },
+              });
+              continue;
+            }
+          }
+          await this.enqueue(review.id);
+        } catch {
+          this.logger.warn('No se pudo reconciliar una revisión durable');
+        }
       }
+      const last = reviews.at(-1);
+      this.recoveryCursor =
+        reviews.length === RECOVERY_BATCH_SIZE && last?.createdAt
+          ? { createdAt: last.createdAt, id: last.id }
+          : undefined;
+    } finally {
+      this.recoveryRunning = false;
     }
+  }
+
+  private async isManualCanary(reviewId: string): Promise<boolean> {
+    return Boolean(
+      await this.prisma.auditLog.findFirst({
+        where: { entity: CANARY_EXECUTION_ENTITY, entityId: reviewId },
+        select: { id: true },
+      }),
+    );
+  }
+
+  private async finishClaim(
+    reviewId: string,
+    processingAt: Date,
+    data: Prisma.ConversationReviewUpdateManyMutationInput,
+  ): Promise<boolean> {
+    const updated = await this.prisma.conversationReview.updateMany({
+      where: {
+        id: reviewId,
+        status: ConversationReviewStatus.PROCESSING,
+        processingAt,
+      },
+      data,
+    });
+    return updated.count === 1;
   }
 
   async scheduleBadFeedback(
@@ -413,10 +580,13 @@ export class ConversationReviewService implements OnModuleInit {
   }
 
   private async enqueue(reviewId: string): Promise<void> {
-    const canary = await this.prisma.auditLog.findFirst({
-      where: { entity: CANARY_EXECUTION_ENTITY, entityId: reviewId },
-      select: { id: true },
-    });
+    const canary = await this.isManualCanary(reviewId);
+    const existing = await this.queue.getJob?.(`review-${reviewId}`);
+    if (existing) {
+      const state = await existing.getState();
+      if (state === 'failed' || state === 'completed') await existing.remove();
+      else return;
+    }
     await this.queue.add(
       'review',
       { reviewId },
@@ -435,46 +605,74 @@ export class ConversationReviewService implements OnModuleInit {
       !this.canary.isFeedbackAllowed(review.feedbackId)
     )
       return;
-    const manualCanary = Boolean(
-      await this.prisma.auditLog.findFirst({
-        where: { entity: CANARY_EXECUTION_ENTITY, entityId: reviewId },
-        select: { id: true },
-      }),
-    );
-    const stale = new Date(Date.now() - 10 * 60_000);
-    const claim = await this.prisma.conversationReview.updateMany({
-      where: {
-        id: reviewId,
-        feedbackId: review.feedbackId,
-        trigger: ConversationReviewTrigger.BAD_FEEDBACK,
-        attempts: { lt: manualCanary ? 1 : 3 },
-        OR: manualCanary
-          ? [{ status: ConversationReviewStatus.PENDING }]
-          : [
-              { status: ConversationReviewStatus.PENDING },
-              { status: ConversationReviewStatus.FAILED },
-              {
-                status: ConversationReviewStatus.PROCESSING,
-                processingAt: { lt: stale },
+    const manualCanary = await this.isManualCanary(reviewId);
+    let processingAt = new Date();
+    const claimed = manualCanary
+      ? await this.prisma.$transaction(async (tx) => {
+          const priorClaim = await tx.auditLog.findFirst({
+            where: { entity: CANARY_CLAIM_ENTITY, entityId: reviewId },
+            select: { id: true },
+          });
+          const priorCall = await tx.auditLog.findFirst({
+            where: { entity: CANARY_CALL_ENTITY, entityId: reviewId },
+            select: { id: true },
+          });
+          if (priorCall) return false;
+          const reuseSlot = Boolean(priorClaim && review.attempts === 1);
+          const claim = await tx.conversationReview.updateMany({
+            where: {
+              id: reviewId,
+              feedbackId: review.feedbackId,
+              trigger: ConversationReviewTrigger.BAD_FEEDBACK,
+              status: ConversationReviewStatus.PENDING,
+              attempts: reuseSlot ? 1 : { lt: 1 },
+            },
+            data: {
+              status: ConversationReviewStatus.PROCESSING,
+              processingAt,
+              ...(reuseSlot ? {} : { attempts: { increment: 1 } }),
+            },
+          });
+          if (claim.count !== 1) return false;
+          if (!priorClaim)
+            await tx.auditLog.create({
+              data: {
+                action: 'LEARNING_REVIEW_CANARY_CLAIM',
+                entity: CANARY_CLAIM_ENTITY,
+                entityId: reviewId,
+                changes: { budget: 1 },
               },
-            ],
-      },
-      data: {
-        status: ConversationReviewStatus.PROCESSING,
-        processingAt: new Date(),
-        attempts: { increment: 1 },
-      },
-    });
-    if (claim.count !== 1) return;
+            });
+          return true;
+        })
+      : (
+          await this.prisma.conversationReview.updateMany({
+            where: {
+              id: reviewId,
+              feedbackId: review.feedbackId,
+              trigger: ConversationReviewTrigger.BAD_FEEDBACK,
+              attempts: { lt: 3 },
+              OR: [
+                { status: ConversationReviewStatus.PENDING },
+                { status: ConversationReviewStatus.FAILED },
+              ],
+            },
+            data: {
+              status: ConversationReviewStatus.PROCESSING,
+              processingAt,
+              attempts: { increment: 1 },
+            },
+          })
+        ).count === 1;
+    if (!claimed) return;
 
     try {
       if (
         review.trigger === ConversationReviewTrigger.BAD_FEEDBACK &&
         (!review.feedback || review.feedback.rating !== FeedbackRating.BAD)
       ) {
-        await this.prisma.conversationReview.update({
-          where: { id: reviewId },
-          data: { status: ConversationReviewStatus.NO_LEARNING },
+        await this.finishClaim(reviewId, processingAt, {
+          status: ConversationReviewStatus.NO_LEARNING,
         });
         return;
       }
@@ -483,12 +681,9 @@ export class ConversationReviewService implements OnModuleInit {
         select: { createdAt: true },
       });
       if (!source) {
-        await this.prisma.conversationReview.update({
-          where: { id: reviewId },
-          data: {
-            status: ConversationReviewStatus.NO_LEARNING,
-            summary: 'Mensaje de origen no disponible',
-          },
+        await this.finishClaim(reviewId, processingAt, {
+          status: ConversationReviewStatus.NO_LEARNING,
+          summary: 'Mensaje de origen no disponible',
         });
         return;
       }
@@ -516,15 +711,56 @@ export class ConversationReviewService implements OnModuleInit {
         };
       });
       if (!ordered.some((message) => message.id === review.sourceMessageId)) {
-        await this.prisma.conversationReview.update({
-          where: { id: reviewId },
-          data: {
-            status: ConversationReviewStatus.NO_LEARNING,
-            summary: 'Sin ventana de evidencia suficiente',
-          },
+        await this.finishClaim(reviewId, processingAt, {
+          status: ConversationReviewStatus.NO_LEARNING,
+          summary: 'Sin ventana de evidencia suficiente',
         });
         return;
       }
+      // A marker is committed before the external call. A crashed canary with
+      // this marker can never spend its one-call budget again.
+      const providerCallAt = new Date(
+        Math.max(Date.now(), processingAt.getTime() + 1),
+      );
+      if (manualCanary) {
+        const permitted = await this.prisma.$transaction(async (tx) => {
+          const spent = await tx.auditLog.findFirst({
+            where: { entity: CANARY_CALL_ENTITY, entityId: reviewId },
+            select: { id: true },
+          });
+          if (spent) return false;
+          const current = await tx.conversationReview.updateMany({
+            where: {
+              id: reviewId,
+              status: ConversationReviewStatus.PROCESSING,
+              processingAt,
+            },
+            data: { processingAt: providerCallAt },
+          });
+          if (current.count !== 1) return false;
+          await tx.auditLog.create({
+            data: {
+              action: 'LEARNING_REVIEW_CANARY_PROVIDER_CALL',
+              entity: CANARY_CALL_ENTITY,
+              entityId: reviewId,
+              changes: { budget: 1 },
+            },
+          });
+          return true;
+        });
+        if (!permitted) return;
+      } else {
+        const current = await this.prisma.conversationReview.updateMany({
+          where: {
+            id: reviewId,
+            status: ConversationReviewStatus.PROCESSING,
+            processingAt,
+          },
+          data: { processingAt: providerCallAt },
+        });
+        if (current.count !== 1) return;
+      }
+      processingAt = providerCallAt;
       const output = parseReviewOutput(
         await this.model.review(
           input,
@@ -538,16 +774,13 @@ export class ConversationReviewService implements OnModuleInit {
         new Set(input.map((message) => message.id)),
       );
       if (!output.candidate) {
-        await this.prisma.conversationReview.update({
-          where: { id: reviewId },
-          data: {
-            status: ConversationReviewStatus.NO_LEARNING,
-            issueCode: output.issueCode,
-            summary: output.summary,
-            counterexample: output.counterexample,
-            confidence: output.confidence,
-            providerModel: this.model.modelName(),
-          },
+        await this.finishClaim(reviewId, processingAt, {
+          status: ConversationReviewStatus.NO_LEARNING,
+          issueCode: output.issueCode,
+          summary: output.summary,
+          counterexample: output.counterexample,
+          confidence: output.confidence,
+          providerModel: this.model.modelName(),
         });
         return;
       }
@@ -601,8 +834,12 @@ export class ConversationReviewService implements OnModuleInit {
           },
           update: {},
         });
-        await tx.conversationReview.update({
-          where: { id: reviewId },
+        const finished = await tx.conversationReview.updateMany({
+          where: {
+            id: reviewId,
+            status: ConversationReviewStatus.PROCESSING,
+            processingAt,
+          },
           data: {
             status: ConversationReviewStatus.PROPOSED,
             issueCode: output.issueCode,
@@ -612,17 +849,15 @@ export class ConversationReviewService implements OnModuleInit {
             providerModel: this.model.modelName(),
           },
         });
+        if (finished.count !== 1) throw new Error('REVIEW_CLAIM_LOST');
       });
     } catch (error) {
-      await this.prisma.conversationReview.update({
-        where: { id: reviewId },
-        data: {
-          status: ConversationReviewStatus.FAILED,
-          ...(error instanceof Error &&
-          /^(?:PRIVACY|COMMERCIAL)_VALIDATION_FAILED:/.test(error.message)
-            ? { summary: error.message }
-            : {}),
-        },
+      await this.finishClaim(reviewId, processingAt, {
+        status: ConversationReviewStatus.FAILED,
+        ...(error instanceof Error &&
+        /^(?:PRIVACY|COMMERCIAL)_VALIDATION_FAILED:/.test(error.message)
+          ? { summary: error.message }
+          : {}),
       });
       this.logger.warn(
         `Revisión fallida: ${error instanceof Error ? error.name : 'UNKNOWN'}`,
@@ -634,14 +869,19 @@ export class ConversationReviewService implements OnModuleInit {
   async listCandidates() {
     return this.prisma.learningItem.findMany({
       where: {
-        status: {
-          in: [
-            LearningItemStatus.PROPOSED,
-            LearningItemStatus.ACTIVE,
-            LearningItemStatus.RETIRED,
-            LearningItemStatus.REJECTED,
-          ],
-        },
+        OR: [
+          {
+            status: {
+              in: [LearningItemStatus.PROPOSED, LearningItemStatus.ACTIVE],
+            },
+            evidence: { some: effectiveEvidence },
+          },
+          {
+            status: {
+              in: [LearningItemStatus.RETIRED, LearningItemStatus.REJECTED],
+            },
+          },
+        ],
       },
       orderBy: { createdAt: 'desc' },
       take: 50,
@@ -713,6 +953,7 @@ export class ConversationReviewService implements OnModuleInit {
         'El vencimiento sólo corresponde a aprobación',
       );
     return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT 1 AS one FROM pg_advisory_xact_lock(hashtext('learning-item-evidence'), hashtext(${id}))`;
       const item = await tx.learningItem.findUnique({
         where: { id },
         select: {
@@ -733,7 +974,12 @@ export class ConversationReviewService implements OnModuleInit {
       if (!item) throw new NotFoundException('Candidato inexistente');
       if (item.status !== previous)
         throw new ConflictException('El candidato cambió de estado');
-      if (approval && item._count.evidence < 1)
+      if (
+        approval &&
+        (await tx.learningEvidence.count({
+          where: { learningItemId: id, ...effectiveEvidence },
+        })) < 1
+      )
         throw new BadRequestException('No existe evidencia para aprobar');
       if (approval) {
         try {
@@ -811,6 +1057,7 @@ export class ConversationReviewService implements OnModuleInit {
       where: {
         status: LearningItemStatus.ACTIVE,
         validUntil: { gt: now },
+        evidence: { some: effectiveEvidence },
         OR: [
           { serviceCode: null },
           ...(input.serviceCode ? [{ serviceCode: input.serviceCode }] : []),

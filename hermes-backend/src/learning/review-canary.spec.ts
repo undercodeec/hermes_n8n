@@ -241,7 +241,6 @@ function fixture(allowlist: string, enabled = true) {
           where,
         }: {
           where: {
-            status: ConversationReviewStatus;
             feedbackId: { in: string[] };
             trigger: ConversationReviewTrigger;
           };
@@ -249,7 +248,7 @@ function fixture(allowlist: string, enabled = true) {
           [...reviews.values()]
             .filter(
               (review) =>
-                review.status === where.status &&
+                review.status === ConversationReviewStatus.PENDING &&
                 review.trigger === where.trigger &&
                 !!review.feedbackId &&
                 where.feedbackId.in.includes(review.feedbackId),

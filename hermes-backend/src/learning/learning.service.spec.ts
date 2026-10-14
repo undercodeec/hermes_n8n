@@ -202,13 +202,15 @@ describe('Fase 2: revisión aislada', () => {
       'REPETITION',
       null,
     );
-    const updates = prisma.conversationReview.update.mock
+    const updates = prisma.conversationReview.updateMany.mock
       .calls as unknown as Array<
       [{ data: { status: ConversationReviewStatus } }]
     >;
-    expect(updates[0][0].data.status).toBe(
-      ConversationReviewStatus.NO_LEARNING,
-    );
+    expect(
+      updates.find(
+        ([value]) => value.data.status === ConversationReviewStatus.NO_LEARNING,
+      )?.[0].data.status,
+    ).toBe(ConversationReviewStatus.NO_LEARNING);
     expect(prisma.$transaction).not.toHaveBeenCalled();
   });
 
@@ -269,14 +271,15 @@ describe('Fase 2: revisión aislada', () => {
       }
       expect(prisma.$transaction).not.toHaveBeenCalled();
       expect(prisma.learningItem.upsert).not.toHaveBeenCalled();
-      const updates = prisma.conversationReview.update.mock
+      const updates = prisma.conversationReview.updateMany.mock
         .calls as unknown as Array<
         [{ data: { status: ConversationReviewStatus; summary?: string } }]
       >;
-      expect(updates.at(-1)?.[0].data.status).toBe(
-        ConversationReviewStatus.FAILED,
+      const failed = updates.findLast(
+        ([value]) => value.data.status === ConversationReviewStatus.FAILED,
       );
-      expect(updates.at(-1)?.[0].data.summary).toContain(code);
+      expect(failed?.[0].data.status).toBe(ConversationReviewStatus.FAILED);
+      expect(failed?.[0].data.summary).toContain(code);
       const reviewCalls = model.review.mock.calls as unknown as Array<
         [
           Array<{
@@ -298,7 +301,9 @@ describe('Fase 2: revisión aislada', () => {
     const tx = {
       learningItem: { upsert: jest.fn().mockResolvedValue({ id: 'item-1' }) },
       learningEvidence: { upsert: jest.fn().mockResolvedValue({}) },
-      conversationReview: { update: jest.fn().mockResolvedValue({}) },
+      conversationReview: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
     };
     prisma.$transaction.mockImplementation(
       (callback: (client: typeof tx) => unknown) => callback(tx),
@@ -318,7 +323,7 @@ describe('Fase 2: revisión aislada', () => {
     const evidenceCalls = tx.learningEvidence.upsert.mock
       .calls as unknown as Array<[{ create: { messageId: string } }]>;
     expect(evidenceCalls[0][0].create.messageId).toBe('inbound-1');
-    const reviewUpdates = tx.conversationReview.update.mock
+    const reviewUpdates = tx.conversationReview.updateMany.mock
       .calls as unknown as Array<
       [{ data: { status: ConversationReviewStatus } }]
     >;
@@ -356,7 +361,9 @@ describe('Fase 2: revisión aislada', () => {
     const tx = {
       learningItem: { upsert: jest.fn().mockResolvedValue({ id: 'item-1' }) },
       learningEvidence: { upsert: jest.fn().mockResolvedValue({}) },
-      conversationReview: { update: jest.fn().mockResolvedValue({}) },
+      conversationReview: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
     };
     prisma.$transaction.mockImplementation(
       (callback: (client: typeof tx) => unknown) => callback(tx),

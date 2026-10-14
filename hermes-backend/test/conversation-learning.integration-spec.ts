@@ -1,10 +1,12 @@
 import { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
 import {
   AutomatedDeliveryKind,
   AutomatedDeliveryStatus,
   ConversationReviewStatus,
   FeedbackRating,
   FeedbackReasonCode,
+  LearningItemStatus,
   MessageDirection,
   MessageSender,
   MessageType,
@@ -24,6 +26,12 @@ import { ReviewModelService } from '../src/learning/review-model.service';
 import { ReviewCanaryPolicy } from '../src/learning/review-canary.policy';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { LearningReviewProviderFixture } from './fixtures/learning-review-provider';
+import {
+  deleteLearningSource,
+  LearningSource,
+} from '../src/learning/learning-source-deletion';
+import { ContactsService } from '../src/contacts/contacts.service';
+import { LearningDecisionAction } from '../src/learning/dto/learning-decision.dto';
 
 type Seed = {
   conversationId: string;
@@ -133,9 +141,10 @@ describe('Conversation learning loop (isolated integration)', () => {
   let provider: LearningReviewProviderFixture;
   const allowlisted = new Set<string>();
 
-  const config = (dailyLimit = 10) =>
+  const config = (dailyLimit = 10, shadow = false) =>
     new ConfigService({
       LEARNING_REVIEW_ENABLED: 'true',
+      LEARNING_SHADOW_ENABLED: String(shadow),
       LEARNING_REVIEW_DAILY_LIMIT: String(dailyLimit),
       HERMES_API_KEY: 'synthetic-provider-key',
       HERMES_MODEL: 'synthetic-reviewer',
@@ -329,6 +338,60 @@ describe('Conversation learning loop (isolated integration)', () => {
     }
     expect(await job.getState()).toBe('failed');
     return review;
+  }
+
+  async function createRecoverableReview(
+    seedData: Seed,
+    status: ConversationReviewStatus,
+    attempts: number,
+    manual = false,
+    recanary = false,
+  ) {
+    const review = await prisma.conversationReview.create({
+      data: {
+        reviewKey: `${REVIEWER_VERSION}:BAD_FEEDBACK:${seedData.feedbackId}${recanary ? ':RECANARY:test' : ''}`,
+        conversationId: seedData.conversationId,
+        sourceMessageId: seedData.sourceMessageId,
+        feedbackId: seedData.feedbackId,
+        reviewerVersion: REVIEWER_VERSION,
+        trigger: 'BAD_FEEDBACK',
+        status,
+        attempts,
+        processingAt:
+          status === ConversationReviewStatus.PROCESSING
+            ? new Date(Date.now() - 60 * 60_000)
+            : null,
+      },
+    });
+    if (manual) {
+      await prisma.auditLog.create({
+        data: {
+          action: 'LEARNING_REVIEW_CANARY_EXECUTION',
+          entity: 'learning_review_canary_execution',
+          entityId: review.id,
+        },
+      });
+    }
+    return review;
+  }
+
+  async function createCandidate(label: string) {
+    provider.setResponse((request) => ({
+      issueCode: 'REPETITION',
+      summary: 'Pauta sintética segura',
+      counterexample: 'No aplica si cambia la necesidad',
+      confidence: 0.8,
+      candidate: {
+        kind: 'FOLLOW_UP',
+        trigger: 'cliente confirma que desea continuar',
+        guidance: 'Reconocer el avance y hacer una sola pregunta concreta',
+        evidenceMessageIds: [firstEvidenceMessageId(request)],
+      },
+    }));
+    const source = await seed(label);
+    await scheduleAndProcess(service(), source);
+    const item = await prisma.learningItem.findFirstOrThrow();
+    return { source, item };
   }
 
   beforeAll(async () => {
@@ -947,4 +1010,490 @@ describe('Conversation learning loop (isolated integration)', () => {
     expect(await prisma.conversationReview.count()).toBe(3);
     expect(await queue.count()).toBe(0);
   });
+
+  it('P1 leaves recent PROCESSING with an existing job untouched', async () => {
+    const source = await seed('recent-processing');
+    const review = await createRecoverableReview(
+      source,
+      ConversationReviewStatus.PROCESSING,
+      1,
+    );
+    await prisma.conversationReview.update({
+      where: { id: review.id },
+      data: { processingAt: new Date() },
+    });
+    await queue.add(
+      'review',
+      { reviewId: review.id },
+      { jobId: `review-${review.id}` },
+    );
+    await service().recoverBatch();
+    expect(
+      (
+        await prisma.conversationReview.findUniqueOrThrow({
+          where: { id: review.id },
+        })
+      ).status,
+    ).toBe(ConversationReviewStatus.PROCESSING);
+    expect(await queue.getJob(`review-${review.id}`)).toBeDefined();
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it('P2/P3 requeues stale normal PROCESSING from empty Redis without resetting attempts', async () => {
+    const source = await seed('stale-processing');
+    const review = await createRecoverableReview(
+      source,
+      ConversationReviewStatus.PROCESSING,
+      1,
+    );
+    const recovery = service();
+    await recovery.recoverBatch();
+    expect(await queue.getJob(`review-${review.id}`)).toBeDefined();
+    expect(
+      (
+        await prisma.conversationReview.findUniqueOrThrow({
+          where: { id: review.id },
+        })
+      ).status,
+    ).toBe(ConversationReviewStatus.PENDING);
+    provider.setResponse({
+      issueCode: 'REPETITION',
+      summary: 'Sin pauta general',
+      counterexample: null,
+      confidence: 0.4,
+      candidate: null,
+    });
+    await recovery.process(review.id);
+    const final = await prisma.conversationReview.findUniqueOrThrow({
+      where: { id: review.id },
+    });
+    expect(final.status).toBe(ConversationReviewStatus.NO_LEARNING);
+    expect(final.attempts).toBe(2);
+    expect(provider.requests).toHaveLength(1);
+  });
+
+  it('P4 terminates stale normal PROCESSING after three durable attempts', async () => {
+    const source = await seed('exhausted-processing');
+    const review = await createRecoverableReview(
+      source,
+      ConversationReviewStatus.PROCESSING,
+      3,
+    );
+    await service().recoverBatch();
+    expect(
+      (
+        await prisma.conversationReview.findUniqueOrThrow({
+          where: { id: review.id },
+        })
+      ).status,
+    ).toBe(ConversationReviewStatus.FAILED);
+    expect(await queue.getJob(`review-${review.id}`)).toBeUndefined();
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it.each([false, true])(
+    'P5/P7 recovers an unspent stale %s canary in its single slot',
+    async (recanary) => {
+      const source = await seed(`unspent-${recanary}`);
+      const review = await createRecoverableReview(
+        source,
+        ConversationReviewStatus.PROCESSING,
+        1,
+        true,
+        recanary,
+      );
+      await prisma.auditLog.create({
+        data: {
+          action: 'LEARNING_REVIEW_CANARY_CLAIM',
+          entity: 'learning_review_canary_claim_v2',
+          entityId: review.id,
+        },
+      });
+      const recovery = service();
+      await recovery.recoverBatch();
+      provider.setResponse({
+        issueCode: 'REPETITION',
+        summary: 'Sin pauta general',
+        counterexample: null,
+        confidence: 0.4,
+        candidate: null,
+      });
+      await recovery.process(review.id);
+      const final = await prisma.conversationReview.findUniqueOrThrow({
+        where: { id: review.id },
+      });
+      expect(final.status).toBe(ConversationReviewStatus.NO_LEARNING);
+      expect(final.attempts).toBe(1);
+      expect(provider.requests).toHaveLength(1);
+      await recovery.process(review.id);
+      expect(provider.requests).toHaveLength(1);
+    },
+  );
+
+  it.each([false, true])(
+    'P6/P7 fails closed for a spent stale %s canary',
+    async (recanary) => {
+      const source = await seed(`spent-${recanary}`);
+      const review = await createRecoverableReview(
+        source,
+        ConversationReviewStatus.PROCESSING,
+        1,
+        true,
+        recanary,
+      );
+      await prisma.auditLog.create({
+        data: {
+          action: 'LEARNING_REVIEW_CANARY_PROVIDER_CALL',
+          entity: 'learning_review_canary_provider_call',
+          entityId: review.id,
+        },
+      });
+      await service().recoverBatch();
+      expect(
+        (
+          await prisma.conversationReview.findUniqueOrThrow({
+            where: { id: review.id },
+          })
+        ).status,
+      ).toBe(ConversationReviewStatus.FAILED);
+      expect(provider.requests).toHaveLength(0);
+    },
+  );
+
+  it('fails closed for a legacy stale canary without an unspent claim marker', async () => {
+    const source = await seed('legacy-canary');
+    const review = await createRecoverableReview(
+      source,
+      ConversationReviewStatus.PROCESSING,
+      1,
+      true,
+    );
+    await service().recoverBatch();
+    expect(
+      (
+        await prisma.conversationReview.findUniqueOrThrow({
+          where: { id: review.id },
+        })
+      ).status,
+    ).toBe(ConversationReviewStatus.FAILED);
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it('reconciles a PENDING canary whose durable call marker is spent', async () => {
+    const source = await seed('pending-spent-canary');
+    const review = await createRecoverableReview(
+      source,
+      ConversationReviewStatus.PENDING,
+      1,
+      true,
+    );
+    await prisma.auditLog.create({
+      data: {
+        action: 'LEARNING_REVIEW_CANARY_CLAIM',
+        entity: 'learning_review_canary_claim_v2',
+        entityId: review.id,
+      },
+    });
+    await prisma.auditLog.create({
+      data: {
+        action: 'LEARNING_REVIEW_CANARY_PROVIDER_CALL',
+        entity: 'learning_review_canary_provider_call',
+        entityId: review.id,
+      },
+    });
+    await service().recoverBatch();
+    expect(
+      (
+        await prisma.conversationReview.findUniqueOrThrow({
+          where: { id: review.id },
+        })
+      ).status,
+    ).toBe(ConversationReviewStatus.FAILED);
+    expect(await queue.getJob(`review-${review.id}`)).toBeUndefined();
+  });
+
+  it('P8 concurrent recovery creates one durable job', async () => {
+    const source = await seed('concurrent-recovery');
+    const review = await createRecoverableReview(
+      source,
+      ConversationReviewStatus.PROCESSING,
+      1,
+    );
+    await Promise.all([service().recoverBatch(), service().recoverBatch()]);
+    expect(
+      (
+        await prisma.conversationReview.findUniqueOrThrow({
+          where: { id: review.id },
+        })
+      ).status,
+    ).toBe(ConversationReviewStatus.PENDING);
+    expect(await queue.getJob(`review-${review.id}`)).toBeDefined();
+    expect(await queue.count()).toBe(1);
+  });
+
+  it('P9 recovers more than dailyLimit in bounded continuation batches', async () => {
+    const source = await seed('recovery-backlog');
+    await prisma.conversationReview.createMany({
+      data: Array.from({ length: 101 }, (_, index) => ({
+        reviewKey: `backlog-${index}-${randomUUID()}`,
+        conversationId: source.conversationId,
+        sourceMessageId: source.sourceMessageId,
+        feedbackId: source.feedbackId,
+        reviewerVersion: REVIEWER_VERSION,
+        trigger: 'BAD_FEEDBACK' as const,
+      })),
+    });
+    const recovery = service(1);
+    await recovery.recoverBatch();
+    await recovery.recoverBatch();
+    expect(await queue.count()).toBe(101);
+    expect(provider.requests).toHaveLength(0);
+  });
+
+  it('E1/E2 keeps supported PROPOSED visible and rejects it with a safe audit on source loss', async () => {
+    const { source, item } = await createCandidate('proposed-evidence');
+    expect(
+      (await service().listCandidates()).some(
+        (candidate) => candidate.id === item.id,
+      ),
+    ).toBe(true);
+    await deleteLearningSource(
+      prisma as PrismaService,
+      'feedback',
+      source.feedbackId,
+    );
+    expect(
+      (await prisma.learningItem.findUniqueOrThrow({ where: { id: item.id } }))
+        .status,
+    ).toBe(LearningItemStatus.REJECTED);
+    expect(
+      (await service().listCandidates()).find(
+        (candidate) => candidate.id === item.id,
+      )?.status,
+    ).toBe(LearningItemStatus.REJECTED);
+    const audit = await prisma.auditLog.findFirstOrThrow({
+      where: { entityId: item.id, action: 'LEARNING_AUTOMATIC_EVIDENCE_LOSS' },
+    });
+    expect(audit.userId).toBeNull();
+    expect(JSON.stringify(audit.changes)).not.toMatch(
+      /synthetic@example|wamid|Necesito continuar/,
+    );
+  });
+
+  it('E3/E4 retires unsupported ACTIVE and shadow never selects it', async () => {
+    const { source, item } = await createCandidate('active-evidence');
+    await prisma.learningItem.update({
+      where: { id: item.id },
+      data: {
+        status: LearningItemStatus.ACTIVE,
+        validUntil: new Date(Date.now() + 86400_000),
+      },
+    });
+    const shadowConfig = config(10, true);
+    const shadow = new ConversationReviewService(
+      prisma as PrismaService,
+      shadowConfig,
+      new ReviewModelService(shadowConfig),
+      queue,
+      {} as ReviewCanaryPolicy,
+    );
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+    const shadowInput = {
+      conversationId: source.conversationId,
+      inboundMessageId: source.sourceMessageId,
+      customerMessage: 'cliente confirma que desea continuar',
+      engine: 'synthetic',
+    };
+    try {
+      await shadow.recordShadowMatches(shadowInput);
+      expect(
+        (
+          JSON.parse(log.mock.calls.at(-1)![0] as string) as {
+            matches: Array<{ id: string }>;
+          }
+        ).matches.map((match) => match.id),
+      ).toContain(item.id);
+    } finally {
+      log.mockRestore();
+    }
+    await deleteLearningSource(
+      prisma as PrismaService,
+      'review',
+      (await prisma.learningEvidence.findFirstOrThrow()).reviewId!,
+    );
+    expect(
+      (await prisma.learningItem.findUniqueOrThrow({ where: { id: item.id } }))
+        .status,
+    ).toBe(LearningItemStatus.RETIRED);
+    expect(
+      await prisma.auditLog.count({
+        where: {
+          entityId: item.id,
+          action: 'LEARNING_AUTOMATIC_EVIDENCE_LOSS',
+        },
+      }),
+    ).toBe(1);
+    const after = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+    try {
+      await shadow.recordShadowMatches(shadowInput);
+      expect(
+        (
+          JSON.parse(after.mock.calls.at(-1)![0] as string) as {
+            matches: unknown[];
+          }
+        ).matches,
+      ).toEqual([]);
+    } finally {
+      after.mockRestore();
+    }
+  });
+
+  it('E5 excludes unsupported ACTIVE even when automatic transition is bypassed', async () => {
+    const { source, item } = await createCandidate('guard-evidence');
+    await prisma.learningItem.update({
+      where: { id: item.id },
+      data: {
+        status: LearningItemStatus.ACTIVE,
+        validUntil: new Date(Date.now() + 86400_000),
+      },
+    });
+    await prisma.conversationFeedback.delete({
+      where: { id: source.feedbackId },
+    });
+    expect(
+      (await prisma.learningItem.findUniqueOrThrow({ where: { id: item.id } }))
+        .status,
+    ).toBe(LearningItemStatus.ACTIVE);
+    expect(
+      (await service().listCandidates()).some(
+        (candidate) => candidate.id === item.id,
+      ),
+    ).toBe(false);
+    const shadowConfig = config(10, true);
+    const shadow = new ConversationReviewService(
+      prisma as PrismaService,
+      shadowConfig,
+      new ReviewModelService(shadowConfig),
+      queue,
+      {} as ReviewCanaryPolicy,
+    );
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+    try {
+      await shadow.recordShadowMatches({
+        conversationId: source.conversationId,
+        inboundMessageId: source.sourceMessageId,
+        customerMessage: 'cliente confirma que desea continuar',
+        engine: 'synthetic',
+      });
+      expect(
+        (
+          JSON.parse(log.mock.calls.at(-1)![0] as string) as {
+            matches: unknown[];
+          }
+        ).matches,
+      ).toEqual([]);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('E2 blocks APPROVE for a PROPOSED item after an uncontrolled source deletion', async () => {
+    const { source, item } = await createCandidate('approve-guard');
+    await prisma.conversationFeedback.delete({
+      where: { id: source.feedbackId },
+    });
+    await expect(
+      service().decide(
+        item.id,
+        {
+          action: LearningDecisionAction.APPROVE,
+          reason: 'Pauta sintética revisada con suficiente cuidado',
+          validUntil: new Date(Date.now() + 86400_000).toISOString(),
+        },
+        source.userId,
+      ),
+    ).rejects.toThrow('No existe evidencia para aprobar');
+    expect(
+      (await prisma.learningItem.findUniqueOrThrow({ where: { id: item.id } }))
+        .status,
+    ).toBe(LearningItemStatus.PROPOSED);
+  });
+
+  it('E6/E7 preserves a candidate when one of two independent evidences remains', async () => {
+    const first = await createCandidate('evidence-first');
+    const second = await seed('evidence-second');
+    await scheduleAndProcess(service(), second);
+    expect(
+      await prisma.learningEvidence.count({
+        where: { learningItemId: first.item.id },
+      }),
+    ).toBe(2);
+    await deleteLearningSource(
+      prisma as PrismaService,
+      'feedback',
+      first.source.feedbackId,
+    );
+    expect(
+      (
+        await prisma.learningItem.findUniqueOrThrow({
+          where: { id: first.item.id },
+        })
+      ).status,
+    ).toBe(LearningItemStatus.PROPOSED);
+    expect(
+      (await service().listCandidates()).some(
+        (candidate) => candidate.id === first.item.id,
+      ),
+    ).toBe(true);
+  });
+
+  it.each([
+    'conversation',
+    'message',
+    'feedback',
+    'review',
+    'contact',
+  ] as LearningSource[])(
+    'E8-E11 invalidates an item after supported %s deletion',
+    async (sourceType) => {
+      const { source, item } = await createCandidate(`delete-${sourceType}`);
+      const evidence = await prisma.learningEvidence.findFirstOrThrow({
+        where: { learningItemId: item.id },
+      });
+      const outbound = await prisma.conversationFeedback.findUniqueOrThrow({
+        where: { id: source.feedbackId },
+      });
+      const contact = await prisma.conversation.findUniqueOrThrow({
+        where: { id: source.conversationId },
+      });
+      const id =
+        sourceType === 'conversation'
+          ? source.conversationId
+          : sourceType === 'message'
+            ? outbound.messageId
+            : sourceType === 'feedback'
+              ? source.feedbackId
+              : sourceType === 'review'
+                ? evidence.reviewId!
+                : contact.contactId;
+      if (sourceType === 'contact')
+        await new ContactsService(prisma as PrismaService).remove(id);
+      else await deleteLearningSource(prisma as PrismaService, sourceType, id);
+      expect(
+        (
+          await prisma.learningItem.findUniqueOrThrow({
+            where: { id: item.id },
+          })
+        ).status,
+      ).toBe(LearningItemStatus.REJECTED);
+      expect(
+        await prisma.auditLog.count({
+          where: {
+            entityId: item.id,
+            action: 'LEARNING_AUTOMATIC_EVIDENCE_LOSS',
+          },
+        }),
+      ).toBe(1);
+    },
+  );
 });
