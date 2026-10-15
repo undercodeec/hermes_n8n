@@ -1661,4 +1661,103 @@ describe('Conversation learning loop (isolated integration)', () => {
       provider: provider.requests.length,
     }).toEqual(before);
   });
+
+  it('F3 commercial precedence excludes active conflicts in the isolated database', async () => {
+    const { source, item: original } =
+      await createCandidate('f3-commercial-gate');
+    const validUntil = new Date(Date.now() + 86400_000);
+    await prisma.learningItem.update({
+      where: { id: original.id },
+      data: {
+        status: LearningItemStatus.ACTIVE,
+        riskLevel: LearningRiskLevel.LOW,
+        trigger: 'consulta sobre sitio web',
+        guidance: 'Hacer una pregunta pertinente',
+        validUntil,
+      },
+    });
+    const add = async (
+      fingerprint: string,
+      guidance: string,
+      riskLevel = LearningRiskLevel.LOW,
+    ) =>
+      prisma.learningItem.create({
+        data: {
+          fingerprint: `f3-commercial-${fingerprint}`,
+          version: 1,
+          kind: 'STYLE',
+          trigger: 'consulta sobre sitio web',
+          guidance,
+          status: LearningItemStatus.ACTIVE,
+          riskLevel,
+          validUntil,
+          evidence: {
+            create: {
+              conversationId: source.conversationId,
+              messageId: source.sourceMessageId,
+              feedbackId: source.feedbackId,
+              reviewId: original.sourceReviewId!,
+            },
+          },
+        },
+      });
+    const safe = await add('safe', 'Avanzar al siguiente paso');
+    const price = await add('price', 'Ofrecer el plan por USD 99');
+    const payment = await add('payment', 'Aceptar pago 50/50');
+    const ambiguous = await add(
+      'ambiguous',
+      'Flexibiliza la propuesta para cerrar',
+    );
+    const high = await add(
+      'high',
+      'Reconocer la confirmación del contacto',
+      LearningRiskLevel.HIGH,
+    );
+    const before = {
+      reviews: await prisma.conversationReview.count(),
+      items: await prisma.learningItem.count(),
+      evidence: await prisma.learningEvidence.count(),
+      deliveries: await prisma.automatedDelivery.count(),
+      provider: provider.requests.length,
+    };
+    const retrieval = new LearningRetrievalService(
+      prisma as PrismaService,
+      config(10, true),
+    );
+    const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+    let selected: Awaited<ReturnType<LearningRetrievalService['select']>> = [];
+    try {
+      selected = await retrieval.select({
+        customerMessage: 'consulta sobre sitio web',
+        serviceCode: 'WEBSITE',
+        market: 'EC',
+        approvedKnowledge: ['Plan Web: USD $360'],
+        traceId: source.sourceMessageId,
+      });
+      const event = log.mock.calls
+        .map(
+          ([message]) =>
+            JSON.parse(message as string) as {
+              event: string;
+              filteredCommercialCount?: number;
+            },
+        )
+        .find((entry) => entry.event === 'learning_retrieval');
+      expect(event?.filteredCommercialCount).toBe(3);
+    } finally {
+      log.mockRestore();
+    }
+    expect(selected.map(({ id }) => id).sort()).toEqual(
+      [original.id, safe.id].sort(),
+    );
+    for (const excluded of [price, payment, ambiguous, high])
+      expect(selected.map(({ id }) => id)).not.toContain(excluded.id);
+    expect({
+      reviews: await prisma.conversationReview.count(),
+      items: await prisma.learningItem.count(),
+      evidence: await prisma.learningEvidence.count(),
+      deliveries: await prisma.automatedDelivery.count(),
+      provider: provider.requests.length,
+    }).toEqual(before);
+  });
 });

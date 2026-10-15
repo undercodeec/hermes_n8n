@@ -97,6 +97,18 @@ export function requiresComplaintHandoff(content: string): boolean {
 @Injectable()
 export class CommercialPolicyService {
   /** Conserva información válida y retira condiciones que la instantánea CRM no respalda. */
+  repairCommercialClaims(
+    response: string,
+    approvedKnowledge: string[],
+    hasActivePromotion = false,
+  ): { response: string; reasons: string[] } {
+    return this.repairNousCommercialClaims(
+      response,
+      approvedKnowledge,
+      hasActivePromotion,
+    );
+  }
+
   repairNousCommercialClaims(
     response: string,
     approvedKnowledge: string[],
@@ -130,7 +142,9 @@ export class CommercialPolicyService {
         /\b(?:gratis|gratuito|sin costo|de por vida|ilimitad\w*)\b/.test(
           normalized,
         ) ||
-        (/\b(?:descuento|rebaja|promocion)\b/.test(normalized) &&
+        (/\b(?:descuento|rebaja|promocion|bonificacion|precio especial)\b/.test(
+          normalized,
+        ) &&
           (!hasActivePromotion || /\b\d+(?:[.,]\d+)?\s*%/.test(normalized)));
       if (unsupportedOffer) {
         reasons.push('UNAUTHORIZED_DISCOUNT');
@@ -168,6 +182,22 @@ export class CommercialPolicyService {
       }
       if (hasUnauthorizedPaymentTerms(normalized)) {
         reasons.push('UNAUTHORIZED_PAYMENT_TERMS');
+        return false;
+      }
+      if (
+        /\b(?:disponibilidad|disponible|cupo|agenda libre)\b.{0,40}\b(?:confirmad[ao]|garantizad[ao]|inmediata|asegurad[ao])\b|\b(?:tenemos|hay|confirmamos|garantizamos)\b.{0,40}\b(?:disponibilidad|disponible|cupo|agenda libre)\b/.test(
+          normalized,
+        )
+      ) {
+        reasons.push('UNAUTHORIZED_AVAILABILITY');
+        return false;
+      }
+      if (
+        /\b(?:reunion|cita|llamada|reserva|pago|cobro|mensaje|escalamiento|derivacion)\b.{0,45}\b(?:ya\s+)?(?:(?:esta|quedo|ha sido|fue)\s+)?(?:confirmad[ao]|agendad[ao]|reservad[ao]|enviad[ao]|aprobad[ao]|procesad[ao]|realizad[ao]|completad[ao])\b|\b(?:ya\s+)?(?:hemos|he|se ha|se)\s+(?:agendad[ao]|reservad[ao]|procesad[ao]|enviad[ao]|completad[ao]|escalad[ao])\b/.test(
+          normalized,
+        )
+      ) {
+        reasons.push('UNCONFIRMED_ACTION_CLAIM');
         return false;
       }
       const inclusion = normalized.match(

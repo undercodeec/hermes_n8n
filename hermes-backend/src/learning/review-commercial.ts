@@ -24,6 +24,20 @@ function normalize(text: string): string {
 export function commercialFailure(text: string): string | null {
   for (const clause of commercialClauses(text)) {
     const plain = normalize(clause);
+    // Ambiguous sales instructions cannot become retrieval guidance: the live
+    // authority has no way to prove what "flexible" conditions would mean.
+    if (
+      /\b(?:flexibiliz\w*|negoci\w*|mejor\w*|adapt\w*)\b.{0,65}\b(?:propuesta|oferta|condiciones|precio|pago|plazo)\b|\b(?:ofrec\w*|propon\w*)\b.{0,45}\b(?:condiciones atractivas|precio especial)\b|\b(?:confirm\w*|asegur\w*)\b.{0,45}\b(?:fecha concreta|disponibilidad)\b|\b(?:evit\w*|omit\w*)\b.{0,45}\b(?:escalar|derivar|handoff|humano)\b/i.test(
+        plain,
+      )
+    )
+      return 'COMMERCIAL_AMBIGUOUS_INSTRUCTION';
+    if (
+      /\b(?:reunion|cita|reserva|pago|cobro|mensaje|escalamiento|derivacion)\b.{0,45}\b(?:ya\s+)?(?:fue\s+)?(?:agendad[ao]|reservad[ao]|procesad[ao]|enviad[ao]|completad[ao]|confirmad[ao])\b|\b(?:hemos|he|ya)\s+(?:agendado|reservado|procesado|enviado|completado|escalado)\b/i.test(
+        plain,
+      )
+    )
+      return 'COMMERCIAL_UNVERIFIED_ACTION';
     if (monetaryValuesIn(clause).length) return 'COMMERCIAL_PRICE_CLAIM';
     if (
       /\b\d+(?:[.,]\d+)?\s*%\s*(?:de\s+)?(?:descuento|bonificacion|rebaja)/.test(

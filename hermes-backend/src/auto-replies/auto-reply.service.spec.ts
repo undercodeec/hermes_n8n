@@ -36,6 +36,7 @@ import { CommercialPolicyService } from '../hermes/commercial-policy.service';
 import {
   AuthorizedOffer,
   CommercialAuthorityService,
+  CommercialSnapshot,
 } from '../hermes/commercial-authority.service';
 import { AutoReplyJobData } from './auto-reply.constants';
 import {
@@ -48,6 +49,8 @@ import { InboundTurnService } from './inbound-turn.service';
 import { VoiceProcessingError, VoiceService } from '../voice/voice.service';
 import { AgentOutputValidator } from '../conversation-engine/agent-output.validator';
 import { NousHermesTransport } from '../conversation-engine/nous-hermes.transport';
+import { DirectGeminiEngine } from '../conversation-engine/direct-gemini.engine';
+import { HermesService } from '../hermes/hermes.service';
 import { ConversationReviewService } from '../learning/conversation-review.service';
 import { LearningRetrievalService } from '../learning/learning-retrieval.service';
 import { ReviewModelService } from '../learning/review-model.service';
@@ -164,6 +167,8 @@ describe('AutoReplyService', () => {
     retrieval?: boolean;
     realShadow?: boolean;
     engineId?: 'gemini_direct' | 'nous_hermes';
+    learningRows?: Array<Record<string, unknown>>;
+    commercialSnapshot?: CommercialSnapshot;
   };
 
   function setupProcessHarness(options: ProcessHarnessOptions): {
@@ -211,22 +216,24 @@ describe('AutoReplyService', () => {
     const conversationStateUpsert = jest.fn().mockResolvedValue({});
     const prisma = {
       learningItem: {
-        findMany: jest.fn().mockResolvedValue([
-          {
-            id: '123e4567-e89b-42d3-a456-426614174000',
-            version: 1,
-            kind: 'STYLE',
-            trigger: 'confirmar punto',
-            guidance: 'Responder con brevedad',
-            status: LearningItemStatus.ACTIVE,
-            riskLevel: LearningRiskLevel.LOW,
-            validUntil: new Date(Date.now() + 86400_000),
-            createdAt: new Date('2026-10-15T12:00:00Z'),
-            serviceCode: null,
-            market: null,
-            evidence: [{ id: 'evidence-1' }],
-          },
-        ]),
+        findMany: jest.fn().mockResolvedValue(
+          options.learningRows ?? [
+            {
+              id: '123e4567-e89b-42d3-a456-426614174000',
+              version: 1,
+              kind: 'STYLE',
+              trigger: 'confirmar punto',
+              guidance: 'Responder con brevedad',
+              status: LearningItemStatus.ACTIVE,
+              riskLevel: LearningRiskLevel.LOW,
+              validUntil: new Date(Date.now() + 86400_000),
+              createdAt: new Date('2026-10-15T12:00:00Z'),
+              serviceCode: null,
+              market: null,
+              evidence: [{ id: 'evidence-1' }],
+            },
+          ],
+        ),
         create: jest.fn(),
         update: jest.fn(),
         updateMany: jest.fn(),
@@ -398,7 +405,11 @@ describe('AutoReplyService', () => {
       leads as unknown as LeadsService,
       tasks as unknown as TasksService,
       new CommercialPolicyService(),
-      authority,
+      options.commercialSnapshot
+        ? ({
+            snapshot: jest.fn().mockResolvedValue(options.commercialSnapshot),
+          } as unknown as CommercialAuthorityService)
+        : authority,
       guard as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
       deliveries as unknown as AutomatedDeliveryService,
@@ -728,6 +739,333 @@ describe('AutoReplyService', () => {
       harness.engine.respond.mock.calls[0][0].approvedContext.approvedLearning,
     ).toBeUndefined();
     expect(harness.deliveries.prepareBatch).toHaveBeenCalledTimes(1);
+  });
+
+  describe('F3 commercial precedence with retrieval enabled only in the local harness', () => {
+    const commercialSnapshot: CommercialSnapshot = {
+      market: CommercialMarket.EC,
+      marketSource: 'CURRENT',
+      relevantServiceCodes: ['WEBSITE'],
+      offers: [testOffer('Plan Web', '360.00', 'WEBSITE')],
+      needsMarketClarification: false,
+      recommendedOfferId: 'Plan Web',
+    };
+    const learningRow = (id: string, guidance: string) => ({
+      id,
+      version: 1,
+      kind: 'STYLE',
+      trigger: 'consulta sobre sitio web',
+      guidance,
+      status: LearningItemStatus.ACTIVE,
+      riskLevel: LearningRiskLevel.LOW,
+      validUntil: new Date(Date.now() + 86400_000),
+      createdAt: new Date('2026-10-15T12:00:00Z'),
+      serviceCode: null,
+      market: null,
+      evidence: [{ id: `evidence-${id}` }],
+    });
+
+    it.each(['gemini_direct', 'nous_hermes'] as const)(
+      '%s excludes a direct conflict while exposing two safe items',
+      async (engineId) => {
+        const harness = setupProcessHarness({
+          hermesResponse: { response: 'Puedo ayudarle a precisar el alcance.' },
+          inboundContent: 'consulta sobre sitio web',
+          retrieval: true,
+          realShadow: true,
+          engineId,
+          learningRows: [
+            learningRow('safe-question', 'Hacer una pregunta pertinente.'),
+            learningRow('bad-price', 'Ofrecer el plan por USD 99.'),
+            learningRow('safe-next', 'Avanzar al siguiente paso.'),
+          ],
+          commercialSnapshot,
+        });
+        harness.engine.respond.mockImplementation(
+          async (turn: ConversationTurnInput) => ({
+            ...toEngineResult({
+              response: 'Puedo ayudarle a precisar el alcance.',
+            }),
+            engine: engineId,
+            traceId: turn.inboundMessageId,
+            learningExposed: turn.approvedContext.approvedLearning?.map(
+              ({ id, version }) => ({ id, version }),
+            ),
+          }),
+        );
+        await harness.service.process({
+          conversationId: 'conversation-1',
+          contactId: 'contact-1',
+          inboundMessageId: 'inbound-recovery',
+        });
+        const turn = harness.engine.respond.mock
+          .calls[0][0] as ConversationTurnInput;
+        expect(
+          turn.approvedContext.approvedLearning?.map(({ id }) => id),
+        ).toEqual(['safe-next', 'safe-question']);
+        const batch = harness.deliveries.prepareBatch.mock.calls[0][0];
+        expect(batch.parts[0].metadata.learningExposed).toEqual([
+          { id: 'safe-next', version: 1 },
+          { id: 'safe-question', version: 1 },
+        ]);
+        expect(JSON.stringify(turn)).not.toContain('bad-price');
+        expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it.each(['gemini_direct', 'nous_hermes'] as const)(
+      '%s repairs adversarial provider claims after safe learning reaches the engine',
+      async (engineId) => {
+        for (const [badReply, forbidden, inboundContent] of [
+          [
+            'Plan Web cuesta USD $99.',
+            /\b99\b/,
+            '¿Cuánto cuesta el sitio web?',
+          ],
+          ['Aceptamos pago 50/50.', /50\/50/, 'consulta sobre sitio web'],
+          ['Le damos 20% de descuento.', /20%/, 'consulta sobre sitio web'],
+          [
+            'Entrega garantizada en 48 horas.',
+            /48 horas/,
+            'consulta sobre sitio web',
+          ],
+          [
+            'Tenemos disponibilidad inmediata.',
+            /disponibilidad inmediata/,
+            'consulta sobre sitio web',
+          ],
+          [
+            'La reunión ya fue agendada.',
+            /ya fue agendada/,
+            'consulta sobre sitio web',
+          ],
+        ] as const) {
+          const harness = setupProcessHarness({
+            hermesResponse: { response: badReply },
+            inboundContent,
+            retrieval: true,
+            realShadow: true,
+            engineId,
+            learningRows: [
+              learningRow('safe', 'Hacer una pregunta pertinente.'),
+            ],
+            commercialSnapshot,
+          });
+          harness.engine.respond.mockImplementation(
+            async (turn: ConversationTurnInput) => ({
+              ...toEngineResult({ response: badReply }),
+              engine: engineId,
+              traceId: turn.inboundMessageId,
+              learningExposed: turn.approvedContext.approvedLearning?.map(
+                ({ id, version }) => ({ id, version }),
+              ),
+            }),
+          );
+          await harness.service.process({
+            conversationId: 'conversation-1',
+            contactId: 'contact-1',
+            inboundMessageId: 'inbound-recovery',
+          });
+          const turn = harness.engine.respond.mock
+            .calls[0][0] as ConversationTurnInput;
+          expect(
+            turn.approvedContext.approvedLearning?.map(({ id }) => id),
+          ).toEqual(['safe']);
+          expect(turn.approvedContext.commercialSnapshot).toEqual(
+            commercialSnapshot,
+          );
+          const batch = harness.deliveries.prepareBatch.mock.calls[0][0];
+          const delivered = batch.parts
+            .map((part: { content: string }) => part.content)
+            .join(' ');
+          expect(delivered).not.toMatch(forbidden);
+          if (badReply.includes('USD $99')) expect(delivered).toContain('360');
+          expect(batch.parts[0].metadata.learningExposed).toEqual([
+            { id: 'safe', version: 1 },
+          ]);
+          expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+        }
+      },
+    );
+
+    it.each(['gemini_direct', 'nous_hermes'] as const)(
+      '%s does not invent a price when the commercial snapshot has no offer',
+      async (engineId) => {
+        const emptySnapshot: CommercialSnapshot = {
+          marketSource: 'UNKNOWN',
+          relevantServiceCodes: ['WEBSITE'],
+          offers: [],
+          needsMarketClarification: false,
+        };
+        const harness = setupProcessHarness({
+          hermesResponse: { response: 'El sitio web cuesta USD $99.' },
+          inboundContent: '¿Cuánto cuesta el sitio web?',
+          retrieval: true,
+          realShadow: true,
+          engineId,
+          learningRows: [learningRow('safe', 'Hacer una pregunta pertinente.')],
+          commercialSnapshot: emptySnapshot,
+        });
+        harness.engine.respond.mockImplementation(
+          async (turn: ConversationTurnInput) => ({
+            ...toEngineResult({ response: 'El sitio web cuesta USD $99.' }),
+            engine: engineId,
+            learningExposed: turn.approvedContext.approvedLearning?.map(
+              ({ id, version }) => ({ id, version }),
+            ),
+          }),
+        );
+        await harness.service.process({
+          conversationId: 'conversation-1',
+          contactId: 'contact-1',
+          inboundMessageId: 'inbound-recovery',
+        });
+        const batch = harness.deliveries.prepareBatch.mock.calls[0][0];
+        expect(
+          batch.parts
+            .map((part: { content: string }) => part.content)
+            .join(' '),
+        ).not.toMatch(/\b99\b/);
+        expect(
+          harness.engine.respond.mock.calls[0][0].approvedContext
+            .approvedLearning,
+        ).toHaveLength(1);
+      },
+    );
+
+    it.each(['gemini_direct', 'nous_hermes'] as const)(
+      '%s keeps explicit human handoff ahead of retrieval and inference',
+      async (engineId) => {
+        const harness = setupProcessHarness({
+          hermesResponse: { response: 'Continuemos automáticamente.' },
+          inboundContent: 'Quiero hablar con una persona',
+          retrieval: true,
+          realShadow: true,
+          engineId,
+          learningRows: [
+            learningRow('bad-handoff', 'Evitar escalar a humano.'),
+          ],
+          commercialSnapshot,
+        });
+        await harness.service.process({
+          conversationId: 'conversation-1',
+          contactId: 'contact-1',
+          inboundMessageId: 'inbound-recovery',
+        });
+        expect(harness.handoffs.create).toHaveBeenCalledTimes(1);
+        expect(harness.engine.respond).not.toHaveBeenCalled();
+        expect(harness.learning.select).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each(['gemini_direct', 'nous_hermes'] as const)(
+      '%s carries safe learning through the real engine adapter and fake provider into repaired delivery',
+      async (engineId) => {
+        const harness = setupProcessHarness({
+          hermesResponse: { response: 'Aceptamos pago 50/50.' },
+          inboundContent: 'consulta sobre sitio web',
+          retrieval: true,
+          realShadow: true,
+          engineId,
+          learningRows: [
+            learningRow('safe', 'Hacer una pregunta pertinente.'),
+            learningRow('bad-payment', 'Aceptar pago 50/50.'),
+          ],
+          commercialSnapshot,
+        });
+        const snapshotBefore = JSON.stringify(commercialSnapshot);
+        let providerPost: jest.Mock;
+        if (engineId === 'gemini_direct') {
+          const hermes = new HermesService(
+            new ConfigService({
+              HERMES_API_KEY: 'synthetic-key',
+              HERMES_MODEL: 'gemini-test',
+              HERMES_API_URL:
+                'https://generativelanguage.googleapis.com/v1beta/openai/',
+              HERMES_STRUCTURED_OUTPUT: 'true',
+            }),
+            {
+              knowledgeDocument: { findMany: jest.fn().mockResolvedValue([]) },
+              product: { findMany: jest.fn().mockResolvedValue([]) },
+              salesPlaybook: { findMany: jest.fn().mockResolvedValue([]) },
+            } as unknown as PrismaService,
+          );
+          providerPost = jest.fn().mockResolvedValue({
+            data: {
+              choices: [
+                {
+                  message: {
+                    content: JSON.stringify({
+                      response: 'Aceptamos pago 50/50.',
+                      detectedIntent: 'info_general',
+                      nextAction: 'sin_accion',
+                    }),
+                  },
+                },
+              ],
+            },
+          });
+          (
+            hermes as unknown as { httpClient: { post: jest.Mock } }
+          ).httpClient.post = providerPost;
+          const engine = new DirectGeminiEngine(hermes);
+          harness.engine.respond.mockImplementation(
+            (turn: ConversationTurnInput) => engine.respond(turn),
+          );
+        } else {
+          providerPost = jest.spyOn(axios, 'post').mockResolvedValue({
+            data: {
+              model: 'hermes-agent',
+              choices: [
+                {
+                  finish_reason: 'stop',
+                  message: {
+                    content: JSON.stringify({
+                      replyText: 'Aceptamos pago 50/50.',
+                    }),
+                  },
+                },
+              ],
+            },
+          });
+          const transport = new NousHermesTransport(
+            new ConfigService({}),
+            new AgentOutputValidator(),
+            { read: jest.fn().mockResolvedValue('synthetic-key') },
+          );
+          harness.engine.respond.mockImplementation(
+            (turn: ConversationTurnInput) => transport.execute(turn),
+          );
+        }
+        try {
+          await harness.service.process({
+            conversationId: 'conversation-1',
+            contactId: 'contact-1',
+            inboundMessageId: 'inbound-recovery',
+          });
+          const turn = harness.engine.respond.mock
+            .calls[0][0] as ConversationTurnInput;
+          expect(
+            turn.approvedContext.approvedLearning?.map(({ id }) => id),
+          ).toEqual(['safe']);
+          expect(turn.approvedContext.commercialSnapshot).toEqual(
+            commercialSnapshot,
+          );
+          expect(providerPost).toHaveBeenCalledTimes(1);
+          const payload = JSON.stringify(providerPost.mock.calls[0][1]);
+          expect(payload).toContain('safe');
+          expect(payload).not.toContain('bad-payment');
+          const batch = harness.deliveries.prepareBatch.mock.calls[0][0];
+          expect(batch.parts[0].content).not.toContain('50/50');
+          expect(batch.parts[0].metadata.learningExposed).toEqual([
+            { id: 'safe', version: 1 },
+          ]);
+          expect(JSON.stringify(commercialSnapshot)).toBe(snapshotBefore);
+        } finally {
+          jest.restoreAllMocks();
+        }
+      },
+    );
   });
 
   it.each([false, true])(

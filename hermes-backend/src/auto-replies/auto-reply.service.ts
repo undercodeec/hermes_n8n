@@ -648,13 +648,6 @@ export class AutoReplyService {
           'Puedo ayudarle con la información disponible por este chat.';
         reviewedProposal.rejections.push('UNBACKED_FOLLOWUP_PROMISE');
       }
-      const safetyReview = this.commercialPolicy.repairNousCommercialClaims(
-        response.response,
-        approvedKnowledge,
-        commercialSnapshot.offers.some((offer) => offer.promotion),
-      );
-      response.response = safetyReview.response;
-      reviewedProposal.rejections.push(...safetyReview.reasons);
     }
     const acceptedProfile = response.diagnostic
       ? context.commercialProfile
@@ -673,6 +666,15 @@ export class AutoReplyService {
         this.commercialPolicy.enforceResponsePolicy(response, policy),
       );
     }
+    // This commercial repair applies after either engine, including provider
+    // output that ignored an otherwise safe learning item.
+    const policyReview = this.commercialPolicy.repairCommercialClaims(
+      response.response,
+      approvedKnowledge,
+      commercialSnapshot.offers.some((offer) => offer.promotion),
+    );
+    response.response = policyReview.response;
+    reviewedProposal?.rejections.push(...policyReview.reasons);
     const commercialReview = reviewCommercialClaims(
       response.response,
       commercialSnapshot,
@@ -1067,6 +1069,7 @@ export class AutoReplyService {
         recommendedOfferId: commercialSnapshot.recommendedOfferId,
         fallback: response.diagnostic?.code,
         claimRemoved:
+          policyReview.reasons.length > 0 ||
           commercialReview.reasons.length > 0 ||
           finalCommercialReview.reasons.length > 0 ||
           Boolean(reviewedProposal?.rejections.length),
