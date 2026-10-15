@@ -520,6 +520,7 @@ export class AutoReplyService {
             serviceCode: context.commercialProfile?.service,
             market: commercialSnapshot.market,
             approvedKnowledge,
+            traceId: inbound.id,
           })) ?? [];
       } catch {
         this.logger.warn(

@@ -29,6 +29,13 @@ export type LearningSelectionContext = {
   market?: string;
   approvedKnowledge: string[];
   now: Date;
+  /** Safe persisted inbound identifier for correlating retrieval and shadow telemetry. */
+  traceId?: string;
+};
+
+export type LearningFilterCounts = {
+  filteredUnsafeCount: number;
+  filteredCommercialCount: number;
 };
 
 /** The existing Nous context allocates 40% to approved commercial knowledge. */
@@ -47,16 +54,24 @@ export function learningContentBudget(
   );
 }
 
-export function learningItemSafe(
+function learningItemSafetyFailure(
   item: Pick<
     Candidate,
     'kind' | 'trigger' | 'guidance' | 'serviceCode' | 'market'
   >,
-): boolean {
+): 'UNSAFE' | 'COMMERCIAL' | null {
   try {
-    validateCandidateSafety(item);
-  } catch {
-    return false;
+    validateCandidateSafety({
+      kind: item.kind,
+      trigger: item.trigger,
+      guidance: item.guidance,
+      serviceCode: item.serviceCode,
+      market: item.market,
+    });
+  } catch (error) {
+    return error instanceof Error && error.message.startsWith('COMMERCIAL_')
+      ? 'COMMERCIAL'
+      : 'UNSAFE';
   }
   const text = `${item.trigger} ${item.guidance}`
     .normalize('NFD')
@@ -68,25 +83,25 @@ export function learningItemSafe(
       text,
     )
   )
-    return false;
+    return 'UNSAFE';
   if (
     /\b(?:se llama|mi nombre es|empresa|compania|negocio de|presupuesto|equipo de|usuarios exactos|prefiere|preferencia de|instrucciones del cliente)\b/i.test(
       text,
     )
   )
-    return false;
+    return 'UNSAFE';
   if (
     /\b(?:modificar|cambiar|anular|omitir|saltarse|evitar)\b.{0,55}\b(?:handoff|derivacion|transferencia humana|price\s*list|product|politica comercial)\b/i.test(
       text,
     )
   )
-    return false;
+    return 'COMMERCIAL';
   if (
     /\b(?:reservar|agendar|confirmar reunion|prometer disponibilidad|garantizar disponibilidad|crear devolucion|politica de devolucion)\b/i.test(
       text,
     )
   )
-    return false;
+    return 'COMMERCIAL';
   // Commercial claims are checked by the shared F2 validator above. Unknown
   // affirmative commercial instructions are excluded rather than reconciled.
   if (
@@ -97,8 +112,17 @@ export function learningItemSafe(
       text,
     )
   )
-    return false;
-  return true;
+    return 'COMMERCIAL';
+  return null;
+}
+
+export function learningItemSafe(
+  item: Pick<
+    Candidate,
+    'kind' | 'trigger' | 'guidance' | 'serviceCode' | 'market'
+  >,
+): boolean {
+  return learningItemSafetyFailure(item) === null;
 }
 
 function words(text: string): Set<string> {
@@ -110,6 +134,7 @@ export function selectApprovedLearning(
   candidates: Candidate[],
   context: LearningSelectionContext,
   maximumContextCharacters: number,
+  filterCounts?: LearningFilterCounts,
 ): ApprovedLearning[] {
   const messageWords = words(context.customerMessage);
   const ranked = candidates
@@ -121,10 +146,18 @@ export function selectApprovedLearning(
         !item.validUntil ||
         item.validUntil <= context.now ||
         (item.serviceCode && item.serviceCode !== context.serviceCode) ||
-        (item.market && item.market !== context.market) ||
-        !learningItemSafe(item)
+        (item.market && item.market !== context.market)
       )
         return [];
+      const failure = learningItemSafetyFailure(item);
+      if (failure) {
+        if (filterCounts) {
+          if (failure === 'COMMERCIAL')
+            filterCounts.filteredCommercialCount += 1;
+          else filterCounts.filteredUnsafeCount += 1;
+        }
+        return [];
+      }
       const score = [...words(item.trigger)].filter((word) =>
         messageWords.has(word),
       ).length;
@@ -229,6 +262,10 @@ export class LearningRetrievalService {
       phase = 'SELECTOR_ERROR';
       const maxChars =
         Number.isSafeInteger(configured) && configured > 0 ? configured : 12000;
+      const filterCounts: LearningFilterCounts = {
+        filteredUnsafeCount: 0,
+        filteredCommercialCount: 0,
+      };
       const selected = selectApprovedLearning(
         candidates.map((item) => ({
           ...item,
@@ -238,12 +275,15 @@ export class LearningRetrievalService {
         })),
         { ...context, now },
         maxChars,
+        filterCounts,
       );
       this.logger.log(
         JSON.stringify({
           event: 'learning_retrieval',
           consideredCount: candidates.length,
           selectedCount: selected.length,
+          ...filterCounts,
+          ...(context.traceId ? { traceId: context.traceId } : {}),
           elapsedMs: Date.now() - started,
         }),
       );
@@ -253,6 +293,7 @@ export class LearningRetrievalService {
         JSON.stringify({
           event: 'learning_retrieval',
           fallbackReason: phase,
+          ...(context.traceId ? { traceId: context.traceId } : {}),
           elapsedMs: Date.now() - started,
         }),
       );

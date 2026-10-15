@@ -15,6 +15,8 @@ import {
   CommercialTaxMode,
   ConversationStatus,
   HandoffReason,
+  LearningItemStatus,
+  LearningRiskLevel,
   MessageDirection,
 } from '@prisma/client';
 import { Queue } from 'bullmq';
@@ -22,6 +24,7 @@ import { AutoReplyService } from './auto-reply.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MetaMediaUploadError, MetaService } from '../meta/meta.service';
 import { ConversationEngineService } from '../conversation-engine/conversation-engine.service';
+import type { ConversationTurnInput } from '../conversation-engine/conversation-engine.types';
 import { HandoffService } from '../handoff/handoff.service';
 import { LeadsService } from '../leads/leads.service';
 import {
@@ -47,6 +50,8 @@ import { AgentOutputValidator } from '../conversation-engine/agent-output.valida
 import { NousHermesTransport } from '../conversation-engine/nous-hermes.transport';
 import { ConversationReviewService } from '../learning/conversation-review.service';
 import { LearningRetrievalService } from '../learning/learning-retrieval.service';
+import { ReviewModelService } from '../learning/review-model.service';
+import { ReviewCanaryPolicy } from '../learning/review-canary.policy';
 
 describe('AutoReplyService', () => {
   const testOffer = (
@@ -157,6 +162,8 @@ describe('AutoReplyService', () => {
     persistedProfile?: CommercialProfile;
     shadow?: boolean;
     retrieval?: boolean;
+    realShadow?: boolean;
+    engineId?: 'gemini_direct' | 'nous_hermes';
   };
 
   function setupProcessHarness(options: ProcessHarnessOptions): {
@@ -203,6 +210,29 @@ describe('AutoReplyService', () => {
     const conversationUpdate = jest.fn().mockResolvedValue({});
     const conversationStateUpsert = jest.fn().mockResolvedValue({});
     const prisma = {
+      learningItem: {
+        findMany: jest.fn().mockResolvedValue([
+          {
+            id: '123e4567-e89b-42d3-a456-426614174000',
+            version: 1,
+            kind: 'STYLE',
+            trigger: 'confirmar punto',
+            guidance: 'Responder con brevedad',
+            status: LearningItemStatus.ACTIVE,
+            riskLevel: LearningRiskLevel.LOW,
+            validUntil: new Date(Date.now() + 86400_000),
+            createdAt: new Date('2026-10-15T12:00:00Z'),
+            serviceCode: null,
+            market: null,
+            evidence: [{ id: 'evidence-1' }],
+          },
+        ]),
+        create: jest.fn(),
+        update: jest.fn(),
+        updateMany: jest.fn(),
+      },
+      conversationReview: { create: jest.fn() },
+      learningEvidence: { create: jest.fn() },
       message: {
         findUnique: jest.fn().mockResolvedValue(inbound),
         findMany: jest
@@ -269,7 +299,9 @@ describe('AutoReplyService', () => {
       create: jest.fn().mockResolvedValue({ id: 'handoff-1' }),
     };
     const engine = {
-      selectedEngine: jest.fn().mockReturnValue('gemini_direct'),
+      selectedEngine: jest
+        .fn()
+        .mockReturnValue(options.engineId ?? 'gemini_direct'),
       respond: jest
         .fn()
         .mockResolvedValue(toEngineResult(options.hermesResponse)),
@@ -313,31 +345,52 @@ describe('AutoReplyService', () => {
         };
       }),
     };
-    const learning = {
-      select: jest.fn().mockResolvedValue([
-        {
-          id: 'learning-safe',
-          version: 2,
-          kind: 'STYLE',
-          trigger: 'pregunta',
-          guidance: 'Responder brevemente',
-        },
-      ]),
-      recordShadowMatches: jest.fn().mockResolvedValue(undefined),
-    };
+    const config = {
+      get: jest.fn((key: string, fallback?: string) =>
+        key === 'LEARNING_SHADOW_ENABLED'
+          ? String(Boolean(options.shadow))
+          : key === 'LEARNING_RETRIEVAL_ENABLED'
+            ? String(Boolean(options.retrieval))
+            : key === 'AI_MESSAGE_PART_DELAY_MS' ||
+                key === 'HERMES_CONVERSATION_MESSAGE_DELAY_MS'
+              ? 0
+              : fallback,
+      ),
+    } as unknown as ConfigService;
+    const realRetrieval = new LearningRetrievalService(prisma, config);
+    const realReview = new ConversationReviewService(
+      prisma,
+      config,
+      {} as ReviewModelService,
+      {} as Queue,
+      {} as ReviewCanaryPolicy,
+      realRetrieval,
+    );
+    const learning = options.realShadow
+      ? {
+          select: jest
+            .fn()
+            .mockImplementation((input) => realRetrieval.select(input)),
+          recordShadowMatches: jest
+            .fn()
+            .mockImplementation((input) =>
+              realReview.recordShadowMatches(input),
+            ),
+        }
+      : {
+          select: jest.fn().mockResolvedValue([
+            {
+              id: 'learning-safe',
+              version: 2,
+              kind: 'STYLE',
+              trigger: 'pregunta',
+              guidance: 'Responder brevemente',
+            },
+          ]),
+          recordShadowMatches: jest.fn().mockResolvedValue(undefined),
+        };
     const service = new AutoReplyService(
-      {
-        get: jest.fn((key: string, fallback?: string) =>
-          key === 'LEARNING_SHADOW_ENABLED'
-            ? String(Boolean(options.shadow))
-            : key === 'LEARNING_RETRIEVAL_ENABLED'
-              ? String(Boolean(options.retrieval))
-              : key === 'AI_MESSAGE_PART_DELAY_MS' ||
-                  key === 'HERMES_CONVERSATION_MESSAGE_DELAY_MS'
-                ? 0
-                : fallback,
-        ),
-      } as unknown as ConfigService,
+      config,
       prisma,
       meta as unknown as MetaService,
       engine as unknown as ConversationEngineService,
@@ -431,6 +484,231 @@ describe('AutoReplyService', () => {
       { id: 'learning-safe', version: 2 },
     ]);
     expect(JSON.stringify(metadata)).not.toContain('Responder brevemente');
+  });
+
+  it.each(['gemini_direct', 'nous_hermes'] as const)(
+    'keeps the %s turn, output and delivery identical with shadow only',
+    async (engineId) => {
+      for (const inboundContent of [
+        'Necesito confirmar este punto',
+        '¿Cuánto cuesta el sitio web?',
+        '¿Cómo funciona el pago?',
+        '¿Puede avisar al equipo humano?',
+      ]) {
+        const run = async (shadow: boolean) => {
+          const harness = setupProcessHarness({
+            hermesResponse: {
+              response: inboundContent.includes('cuesta')
+                ? 'Cuesta USD 99.'
+                : 'Con gusto le ayudo.',
+            },
+            inboundContent,
+            shadow,
+            retrieval: false,
+            realShadow: true,
+            engineId,
+          });
+          if (engineId === 'nous_hermes')
+            harness.engine.respond.mockResolvedValue({
+              ...toEngineResult({
+                response: inboundContent.includes('cuesta')
+                  ? 'Cuesta USD 99.'
+                  : 'Con gusto le ayudo.',
+              }),
+              engine: 'nous_hermes',
+              providerModel: 'hermes-agent',
+            });
+          await harness.service.process({
+            conversationId: 'conversation-1',
+            contactId: 'contact-1',
+            inboundMessageId: 'inbound-recovery',
+          });
+          const batch = harness.deliveries.prepareBatch.mock.calls[0]?.[0];
+          const cleanMetadata = batch?.parts.map(
+            (part: { metadata?: Record<string, unknown> }) => {
+              const metadata = { ...part.metadata };
+              delete metadata.latencyMs;
+              return metadata;
+            },
+          );
+          return {
+            turn: (
+              harness.engine.respond.mock.calls as Array<
+                [ConversationTurnInput]
+              >
+            ).map(([turn]) => turn),
+            output: batch?.parts.map(
+              (part: { content: string }) => part.content,
+            ),
+            metadata: cleanMetadata,
+            providerCalls: harness.engine.respond.mock.calls.length,
+            deliveryCalls: harness.deliveries.prepareBatch.mock.calls.length,
+            sendCalls: harness.meta.sendTextMessage.mock.calls.length,
+            selectorCalls: (harness.prisma.learningItem.findMany as jest.Mock)
+              .mock.calls.length,
+            shadowCalls: harness.learning.recordShadowMatches.mock.calls.length,
+            learningWrites: [
+              harness.prisma.learningItem.create,
+              harness.prisma.learningItem.update,
+              harness.prisma.learningItem.updateMany,
+              harness.prisma.conversationReview.create,
+              harness.prisma.learningEvidence.create,
+            ].map((mock) => (mock as jest.Mock).mock.calls.length),
+          };
+        };
+        const control = await run(false);
+        const shadow = await run(true);
+        expect(shadow.turn).toEqual(control.turn);
+        expect(shadow.output).toEqual(control.output);
+        expect(shadow.metadata).toEqual(control.metadata);
+        expect(shadow.providerCalls).toBe(control.providerCalls);
+        expect(shadow.deliveryCalls).toBe(control.deliveryCalls);
+        expect(shadow.sendCalls).toBe(control.sendCalls);
+        expect(control.selectorCalls).toBe(0);
+        expect(shadow.selectorCalls).toBe(1);
+        expect(shadow.shadowCalls).toBe(1);
+        expect(shadow.learningWrites).toEqual([0, 0, 0, 0, 0]);
+        expect(JSON.stringify(shadow.turn)).not.toMatch(
+          /approvedLearning|123e4567|Responder con brevedad/,
+        );
+        expect(JSON.stringify(shadow.metadata)).not.toContain(
+          'learningExposed',
+        );
+      }
+    },
+  );
+
+  it('preserves an explicit human handoff with shadow enabled', async () => {
+    const run = async (shadow: boolean) => {
+      const harness = setupProcessHarness({
+        hermesResponse: { response: 'Con gusto le ayudo.' },
+        inboundContent: 'Quiero hablar con una persona',
+        shadow,
+        retrieval: false,
+        realShadow: true,
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      return {
+        handoffs: harness.handoffs.create.mock.calls,
+        engineCalls: harness.engine.respond.mock.calls.length,
+        selectorCalls: (harness.prisma.learningItem.findMany as jest.Mock).mock
+          .calls.length,
+        prepared: harness.deliveries.prepareBatch.mock.calls.map(
+          ([batch]) => batch as unknown,
+        ),
+      };
+    };
+    const control = await run(false);
+    const shadow = await run(true);
+    expect(shadow.handoffs).toEqual(control.handoffs);
+    expect(shadow.engineCalls).toBe(control.engineCalls);
+    expect(shadow.prepared).toEqual(control.prepared);
+    expect(shadow.selectorCalls).toBeLessThanOrEqual(1);
+  });
+
+  it('shares one selector result when shadow and retrieval are both simulated on', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'Le ayudo.' },
+      shadow: true,
+      retrieval: true,
+      realShadow: true,
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.learning.select).toHaveBeenCalledTimes(1);
+    expect(harness.learning.recordShadowMatches).toHaveBeenCalledTimes(1);
+    expect(
+      (harness.prisma.learningItem.findMany as jest.Mock).mock.calls,
+    ).toHaveLength(1);
+    expect(
+      harness.engine.respond.mock.calls[0][0].approvedContext.approvedLearning,
+    ).toEqual([
+      expect.objectContaining({ id: '123e4567-e89b-42d3-a456-426614174000' }),
+    ]);
+  });
+
+  it.each(['postgres error', 'query timeout', 'malformed item'])(
+    'keeps normal output when shadow encounters %s',
+    async (failure) => {
+      const harness = setupProcessHarness({
+        hermesResponse: { response: 'Le ayudo.' },
+        shadow: true,
+        retrieval: false,
+        realShadow: true,
+      });
+      const findMany = harness.prisma.learningItem.findMany as jest.Mock;
+      if (failure === 'malformed item')
+        findMany.mockResolvedValue([
+          {
+            id: 'bad',
+            version: 1,
+            status: LearningItemStatus.ACTIVE,
+            riskLevel: LearningRiskLevel.LOW,
+            validUntil: new Date(Date.now() + 86400_000),
+            createdAt: new Date(),
+            trigger: null,
+            guidance: 'pauta',
+            kind: 'STYLE',
+            evidence: [{ id: 'e' }],
+          },
+        ]);
+      else findMany.mockRejectedValue(new Error(failure));
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+      expect(
+        harness.engine.respond.mock.calls[0][0].approvedContext
+          .approvedLearning,
+      ).toBeUndefined();
+      expect(
+        harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
+      ).toBe('Le ayudo.');
+      expect(
+        harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].metadata
+          .learningExposed,
+      ).toBeUndefined();
+    },
+  );
+
+  it('isolates a shadow telemetry write failure from the reply', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'Le ayudo.' },
+      shadow: true,
+      retrieval: false,
+      realShadow: true,
+    });
+    const log = jest
+      .spyOn(Logger.prototype, 'log')
+      .mockImplementation((message: unknown) => {
+        if (
+          typeof message === 'string' &&
+          message.includes('learning_shadow_retrieval')
+        )
+          throw new Error('synthetic telemetry failure');
+      });
+    try {
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+    } finally {
+      log.mockRestore();
+    }
+    expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+    expect(
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
+    ).toBe('Le ayudo.');
   });
 
   it('continues the conversation when the retrieval selector throws', async () => {

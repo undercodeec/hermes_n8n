@@ -1059,6 +1059,7 @@ export class ConversationReviewService
         serviceCode: input.serviceCode,
         market: input.market,
         approvedKnowledge: input.approvedKnowledge ?? [],
+        traceId: input.inboundMessageId,
       })) ??
       []
     ).map(({ id, version }) => ({ id, version }));
@@ -1069,6 +1070,7 @@ export class ConversationReviewService
         inboundMessageId: input.inboundMessageId,
         engine: input.engine,
         matches,
+        selectedCount: matches.length,
         elapsedMs: Date.now() - started,
       }),
     );
