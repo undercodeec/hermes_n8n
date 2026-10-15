@@ -54,8 +54,23 @@ describe('retention scheduler and audit', () => {
   });
 
   it('does no scheduled work before an operator saves a policy', async () => {
+    const initial = await service.get();
+    expect(initial.policy).toEqual(DEFAULT_POLICY);
+    expect(initial.limits.backupIntervalHours).toEqual({ min: 6, max: 720 });
+    expect(initial.limits.maximumBackupStorageGiB).toEqual({
+      min: 1,
+      max: 1024,
+    });
     await service.tick(new Date('2026-10-20T00:00:00Z'));
     expect(runner.backup).not.toHaveBeenCalled();
+    expect(runner.restoreCheck).not.toHaveBeenCalled();
+  });
+
+  it('does no scheduled work when a saved policy has both toggles off', async () => {
+    policy.findUnique.mockResolvedValue(row);
+    await service.tick(new Date('2027-01-01T00:00:00Z'));
+    expect(runner.backup).not.toHaveBeenCalled();
+    expect(runner.rotate).not.toHaveBeenCalled();
     expect(runner.restoreCheck).not.toHaveBeenCalled();
   });
 
@@ -72,6 +87,22 @@ describe('retention scheduler and audit', () => {
     expect(runner.backup).toHaveBeenCalledWith('PERIODIC', {
       updatedAt: row.updatedAt,
       intervalMs: 21_600_000,
+    });
+  });
+
+  it('respects a 720 hour backup interval with a controlled clock', async () => {
+    policy.findUnique.mockResolvedValue({
+      ...row,
+      backupEnabled: true,
+      backupIntervalHours: 720,
+    });
+    await service.tick(new Date('2026-11-12T23:59:59Z'));
+    expect(runner.backup).not.toHaveBeenCalled();
+    await service.tick(new Date('2026-11-13T00:00:00Z'));
+    expect(runner.backup).toHaveBeenCalledTimes(1);
+    expect(runner.backup).toHaveBeenCalledWith('PERIODIC', {
+      updatedAt: row.updatedAt,
+      intervalMs: 720 * 3_600_000,
     });
   });
 

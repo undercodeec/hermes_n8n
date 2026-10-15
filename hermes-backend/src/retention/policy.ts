@@ -12,19 +12,19 @@ export type PolicyValues = {
 
 export const DEFAULT_POLICY: PolicyValues = Object.freeze({
   backupEnabled: false,
-  backupIntervalHours: 24,
-  maximumBackupCount: 7,
+  backupIntervalHours: 72,
+  maximumBackupCount: 5,
   maximumBackupAgeDays: 30,
-  maximumBackupStorageGiB: 50,
+  maximumBackupStorageGiB: 2,
   restoreCheckEnabled: false,
-  restoreCheckIntervalDays: 30,
+  restoreCheckIntervalDays: 60,
 });
 
 export const POLICY_LIMITS = Object.freeze({
-  backupIntervalHours: { min: 6, max: 168 },
+  backupIntervalHours: { min: 6, max: 720 },
   maximumBackupCount: { min: 1, max: 365 },
   maximumBackupAgeDays: { min: 1, max: 3650 },
-  maximumBackupStorageGiB: { min: 10, max: 1024 },
+  maximumBackupStorageGiB: { min: 1, max: 1024 },
   restoreCheckIntervalDays: { min: 30, max: 365 },
   minimumFreeGiB: 8,
   maximumDiskUsagePercent: 85,

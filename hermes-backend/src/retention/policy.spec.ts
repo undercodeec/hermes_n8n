@@ -24,15 +24,38 @@ describe('retention policy', () => {
   it('starts with all periodic work disabled', () => {
     expect(DEFAULT_POLICY.backupEnabled).toBe(false);
     expect(DEFAULT_POLICY.restoreCheckEnabled).toBe(false);
+    expect(DEFAULT_POLICY).toEqual({
+      backupEnabled: false,
+      backupIntervalHours: 72,
+      maximumBackupCount: 5,
+      maximumBackupAgeDays: 30,
+      maximumBackupStorageGiB: 2,
+      restoreCheckEnabled: false,
+      restoreCheckIntervalDays: 60,
+    });
   });
 
   it('accepts typed values within safe bounds and rejects unsafe settings', () => {
     expect(validatePolicy(DEFAULT_POLICY)).toEqual(DEFAULT_POLICY);
+    for (const backupIntervalHours of [6, 12, 24, 48, 72, 168, 336, 504, 720]) {
+      expect(
+        validatePolicy({ ...DEFAULT_POLICY, backupIntervalHours })
+          .backupIntervalHours,
+      ).toBe(backupIntervalHours);
+    }
+    for (const maximumBackupStorageGiB of [1, 2, 3, 5, 10, 1024]) {
+      expect(
+        validatePolicy({ ...DEFAULT_POLICY, maximumBackupStorageGiB })
+          .maximumBackupStorageGiB,
+      ).toBe(maximumBackupStorageGiB);
+    }
     for (const candidate of [
       { backupIntervalHours: 5 },
+      { backupIntervalHours: 721 },
       { maximumBackupCount: 0 },
       { maximumBackupAgeDays: 0 },
-      { maximumBackupStorageGiB: 2 },
+      { maximumBackupStorageGiB: 0 },
+      { maximumBackupStorageGiB: 1025 },
       { restoreCheckIntervalDays: 1 },
       { minimumFreeGiB: 2 },
       { backupEnabled: 'true' },

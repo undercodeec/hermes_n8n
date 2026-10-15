@@ -47,6 +47,7 @@ describe('isolated retention policy persistence', () => {
   const userId = randomUUID();
 
   beforeAll(async () => {
+    await db.backupOperation.deleteMany();
     await db.retentionRecoveryPolicy.deleteMany();
     await db.user.create({
       data: {
@@ -61,6 +62,7 @@ describe('isolated retention policy persistence', () => {
 
   afterAll(async () => {
     await db.backupArtifact.deleteMany();
+    await db.backupOperation.deleteMany();
     await db.auditLog.deleteMany({ where: { userId } });
     await db.retentionRecoveryPolicy.deleteMany();
     await db.user.delete({ where: { id: userId } });
@@ -71,21 +73,51 @@ describe('isolated retention policy persistence', () => {
     const initial = await service.get();
     expect(initial.status.configured).toBe(false);
     expect(initial.policy).toEqual(DEFAULT_POLICY);
-    await service.update({ ...DEFAULT_POLICY, maximumBackupCount: 11 }, userId);
+    const sample = {
+      ...DEFAULT_POLICY,
+      backupIntervalHours: 336,
+      maximumBackupCount: 4,
+      maximumBackupAgeDays: 45,
+      maximumBackupStorageGiB: 2,
+    };
+    const saved = await service.update(sample, userId);
+    expect(saved.policy).toEqual(sample);
+    expect(saved.limits.backupIntervalHours).toEqual({ min: 6, max: 720 });
+    expect(saved.limits.maximumBackupStorageGiB).toEqual({ min: 1, max: 1024 });
     const fresh = await db.retentionRecoveryPolicy.findUniqueOrThrow({
       where: { id: 'global' },
     });
-    expect(fresh.maximumBackupCount).toBe(11);
+    expect(fresh.maximumBackupCount).toBe(4);
+    expect(fresh.backupIntervalHours).toBe(336);
+    expect(fresh.maximumBackupAgeDays).toBe(45);
+    expect(fresh.maximumBackupStorageGiB).toBe(2);
     expect(fresh.backupEnabled).toBe(false);
     const audit = await db.auditLog.findFirstOrThrow({
       where: { userId, action: 'RETENTION_POLICY_UPDATED' },
     });
     expect(audit.changes).toEqual({
       before: DEFAULT_POLICY,
-      after: { ...DEFAULT_POLICY, maximumBackupCount: 11 },
+      after: sample,
     });
     await service.tick(new Date(Date.now() + 10 * 86_400_000));
     expect(runner.backup).not.toHaveBeenCalled();
+    expect(runner.restoreCheck).not.toHaveBeenCalled();
+    expect(await db.backupOperation.count()).toBe(0);
+
+    // Enable only inside this isolated test and advance a synthetic clock.
+    const enabledAt = new Date('2026-10-14T00:00:00Z');
+    await db.retentionRecoveryPolicy.update({
+      where: { id: 'global' },
+      data: { backupEnabled: true, updatedAt: enabledAt },
+    });
+    await service.tick(new Date(enabledAt.getTime() + 336 * 3_600_000 - 1));
+    expect(runner.backup).not.toHaveBeenCalled();
+    await service.tick(new Date(enabledAt.getTime() + 336 * 3_600_000));
+    expect(runner.backup).toHaveBeenCalledWith('PERIODIC', {
+      updatedAt: enabledAt,
+      intervalMs: 336 * 3_600_000,
+    });
+    expect(await db.backupOperation.count()).toBe(0);
   });
 
   it('commits eligible index removal and deletes only eligible managed files', async () => {

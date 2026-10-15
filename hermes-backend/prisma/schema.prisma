@@ -1213,12 +1213,12 @@ model AuditLog {
 model RetentionRecoveryPolicy {
   id                       String   @id @default("global")
   backupEnabled            Boolean  @default(false)
-  backupIntervalHours      Int      @default(24)
-  maximumBackupCount       Int      @default(7)
+  backupIntervalHours      Int      @default(72)
+  maximumBackupCount       Int      @default(5)
   maximumBackupAgeDays     Int      @default(30)
-  maximumBackupStorageGiB  Int      @default(50)
+  maximumBackupStorageGiB  Int      @default(2)
   restoreCheckEnabled      Boolean  @default(false)
-  restoreCheckIntervalDays Int      @default(30)
+  restoreCheckIntervalDays Int      @default(60)
   updatedBy                String?
   updatedAt                DateTime @updatedAt
 

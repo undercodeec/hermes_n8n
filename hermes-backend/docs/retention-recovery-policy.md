@@ -34,17 +34,21 @@ operational error; an operator must inspect the isolated instance.
 | Field | Range | Initial value |
 | --- | --- | --- |
 | `backupEnabled` | Boolean | `false` |
-| `backupIntervalHours` | 6–168 | 24, inactive |
-| `maximumBackupCount` | 1–365 | 7, inactive |
+| `backupIntervalHours` | 6–720 | 72, inactive |
+| `maximumBackupCount` | 1–365 | 5, inactive |
 | `maximumBackupAgeDays` | 1–3650 | 30, inactive |
-| `maximumBackupStorageGiB` | 10–1024 | 50, inactive |
+| `maximumBackupStorageGiB` | 1–1024 | 2, inactive |
 | `restoreCheckEnabled` | Boolean | `false` |
-| `restoreCheckIntervalDays` | 30–365 | 30, inactive |
+| `restoreCheckIntervalDays` | 30–365 | 60, inactive |
 
 These initial numbers are software placeholders, not an approved productive
 policy. Saving a policy never runs backup, rotation, or restore check. The
 operator must explicitly enable periodic work. The scheduler waits at least
 one configured interval from the policy update or last attempt.
+
+The new retention policy migration has not been deployed to the VPS. Its
+initial table definition is adjusted in place before the first deployment,
+so this feature still adds one migration relative to the productive backend.
 
 ## Fixed safety rules
 
