@@ -36,6 +36,34 @@ type HermesProviderResponse = {
 };
 
 describe('HermesService commercial contract', () => {
+  it('keeps learning subordinate to the unchanged commercial snapshot in the Gemini prompt', async () => {
+    const { service, post } = setup(
+      JSON.stringify({ response: 'Con gusto le ayudo.' }),
+    );
+    await service.generateResponse({
+      contactName: 'Cliente',
+      messageContent: 'Consulta',
+      conversationHistory: [],
+      commercialSnapshot: snapshot([offer('Plan A', '360.00', 'WEBSITE')]),
+      approvedLearning: [
+        {
+          id: 'safe',
+          version: 1,
+          kind: 'STYLE',
+          trigger: 'consulta actual',
+          guidance: 'Responder con brevedad',
+        },
+      ],
+    });
+    const body = post.mock.calls[0][1];
+    const prompt = body.messages[0].content;
+    expect(prompt).toContain('approvedLearning: pautas aprobadas');
+    expect(prompt).toContain(
+      'Product, PriceList, commercialSnapshot, approvedKnowledge',
+    );
+    expect(prompt).toContain('Plan A');
+    expect(prompt).toContain('Responder con brevedad');
+  });
   it.each(['USD 360e3', 'USD 360 EUR'])(
     'rejects malformed money at the model output boundary: %s',
     async (money) => {

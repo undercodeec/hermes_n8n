@@ -1,6 +1,7 @@
 import { HermesService } from '../hermes/hermes.service';
 import { DirectGeminiEngine } from './direct-gemini.engine';
 import type { ConversationTurnInput } from './conversation-engine.types';
+import type { HermesRequestDto } from '../hermes/dto/hermes-request.dto';
 
 describe('DirectGeminiEngine', () => {
   it('preserves the existing Hermes request and response semantics', async () => {
@@ -42,6 +43,10 @@ describe('DirectGeminiEngine', () => {
         commercialProfile: { sector: 'reparación' },
       }),
     );
+    expect(
+      (generateResponse.mock.calls as Array<[HermesRequestDto]>)[0][0]
+        .approvedLearning,
+    ).toBeUndefined();
     expect(result).toEqual(
       expect.objectContaining({
         replyText: '¿En qué podemos ayudarle?',
@@ -77,6 +82,52 @@ describe('DirectGeminiEngine', () => {
 
     expect(generateResponse).toHaveBeenCalledWith(
       expect.objectContaining({ commercialProfile: undefined }),
+    );
+  });
+
+  it('passes approved learning separately and reports exposure without guidance', async () => {
+    const generateResponse = jest
+      .fn()
+      .mockResolvedValue({ response: 'Respuesta.' });
+    const engine = new DirectGeminiEngine({
+      generateResponse,
+      getProviderModel: () => 'fake',
+    } as unknown as HermesService);
+    const approvedLearning = [
+      {
+        id: 'safe',
+        version: 3,
+        kind: 'STYLE',
+        trigger: 'pregunta actual',
+        guidance: 'Responder primero la pregunta',
+      },
+    ];
+    const result = await engine.respond({
+      conversationId: 'c',
+      inboundMessageId: 'm',
+      customerMessage: 'pregunta actual',
+      approvedContext: {
+        recentMessages: [],
+        approvedKnowledge: ['Precio oficial'],
+        approvedLearning,
+        commercialSnapshot: {
+          marketSource: 'UNKNOWN',
+          relevantServiceCodes: [],
+          offers: [],
+          needsMarketClarification: false,
+        },
+        handoffActive: false,
+        contactName: 'Cliente',
+      },
+    });
+    const request = (
+      generateResponse.mock.calls as Array<[HermesRequestDto]>
+    )[0][0];
+    expect(request.approvedLearning).toEqual(approvedLearning);
+    expect(request.commercialSnapshot?.offers).toEqual([]);
+    expect(result.learningExposed).toEqual([{ id: 'safe', version: 3 }]);
+    expect(JSON.stringify(result.learningExposed)).not.toContain(
+      'Responder primero',
     );
   });
 });

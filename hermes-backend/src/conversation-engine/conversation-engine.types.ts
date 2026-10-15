@@ -4,6 +4,7 @@ import type {
 } from '../hermes/dto/hermes-request.dto';
 import type { HermesDiagnostic } from '../hermes/hermes-diagnostics';
 import type { CommercialSnapshot } from '../hermes/commercial-authority.service';
+import type { ApprovedLearning } from '../learning/learning-retrieval.service';
 
 export type ConversationEngineId = 'gemini_direct' | 'nous_hermes';
 
@@ -29,6 +30,7 @@ export interface ConversationTurnInput {
     commercialProfile?: CommercialProfile;
     recentProfileChanges?: Array<Record<string, string>>;
     approvedKnowledge: string[];
+    approvedLearning?: ApprovedLearning[];
     commercialSnapshot?: CommercialSnapshot;
     handoffActive: boolean;
     contactName: string;
@@ -71,6 +73,8 @@ export interface ConversationTurnResult {
   providerModel: string;
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
   traceId: string;
+  /** Items exposed to the engine request, not items causally used in the answer. */
+  learningExposed?: Array<{ id: string; version: number }>;
   costEstimate?: number;
   business?: {
     suggestedTags?: string[];

@@ -4,6 +4,7 @@ import {
   ConflictException,
   Injectable,
   Logger,
+  Optional,
   NotFoundException,
   OnModuleDestroy,
   OnModuleInit,
@@ -36,6 +37,10 @@ import { ReviewCanaryTriggerDto } from './dto/review-canary-trigger.dto';
 import { sanitizeReviewInput, privacyFailure } from './review-privacy';
 import { parseReviewOutput } from './review-output.validator';
 import { effectiveEvidence } from './learning-evidence-support';
+import {
+  ApprovedLearning,
+  LearningRetrievalService,
+} from './learning-retrieval.service';
 import {
   LearningDecisionAction,
   LearningDecisionDto,
@@ -79,6 +84,7 @@ export class ConversationReviewService
     @InjectQueue(LEARNING_REVIEW_QUEUE)
     private readonly queue: Queue<ReviewJobData>,
     private readonly canary: ReviewCanaryPolicy,
+    @Optional() private readonly retrieval?: LearningRetrievalService,
   ) {}
 
   private enabled(): boolean {
@@ -1040,47 +1046,22 @@ export class ConversationReviewService
     serviceCode?: string;
     market?: string;
     engine: string;
+    approvedKnowledge?: string[];
+    selectedLearning?: ApprovedLearning[];
   }): Promise<void> {
     if (this.config.get<string>('LEARNING_SHADOW_ENABLED', 'false') !== 'true')
       return;
     const started = Date.now();
-    const now = new Date();
-    const items = await this.prisma.learningItem.findMany({
-      where: {
-        status: LearningItemStatus.ACTIVE,
-        validUntil: { gt: now },
-        evidence: { some: effectiveEvidence },
-        OR: [
-          { serviceCode: null },
-          ...(input.serviceCode ? [{ serviceCode: input.serviceCode }] : []),
-        ],
-        AND: [
-          {
-            OR: [
-              { market: null },
-              ...(input.market ? [{ market: input.market }] : []),
-            ],
-          },
-        ],
-      },
-      select: { id: true, version: true, trigger: true },
-      take: 100,
-    });
-    const tokens = new Set(
-      input.customerMessage.toLocaleLowerCase('es').match(/[\p{L}]{4,}/gu) ||
-        [],
-    );
-    const matches = items
-      .map((item) => ({
-        id: item.id,
-        version: item.version,
-        score: (
-          item.trigger.toLocaleLowerCase('es').match(/[\p{L}]{4,}/gu) || []
-        ).filter((word) => tokens.has(word)).length,
-      }))
-      .filter((item) => item.score > 0)
-      .sort((a, b) => b.score - a.score || a.id.localeCompare(b.id))
-      .slice(0, 3);
+    const matches = (
+      input.selectedLearning ??
+      (await this.retrieval?.select({
+        customerMessage: input.customerMessage,
+        serviceCode: input.serviceCode,
+        market: input.market,
+        approvedKnowledge: input.approvedKnowledge ?? [],
+      })) ??
+      []
+    ).map(({ id, version }) => ({ id, version }));
     this.logger.log(
       JSON.stringify({
         event: 'learning_shadow_retrieval',

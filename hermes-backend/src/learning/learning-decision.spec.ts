@@ -8,6 +8,7 @@ import { LearningDecisionAction } from './dto/learning-decision.dto';
 import { ReviewJobData } from './learning.constants';
 import { ReviewModelService } from './review-model.service';
 import { ReviewCanaryPolicy } from './review-canary.policy';
+import { LearningRetrievalService } from './learning-retrieval.service';
 
 describe('Fase 3: decisión auditada y recuperación en sombra', () => {
   const tx = {
@@ -33,6 +34,10 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
     {} as ReviewModelService,
     {} as Queue<ReviewJobData>,
     {} as ReviewCanaryPolicy,
+    new LearningRetrievalService(
+      prisma as unknown as PrismaService,
+      config as unknown as ConfigService,
+    ),
   );
   const validUntil = new Date(Date.now() + 30 * 86400_000).toISOString();
 
@@ -206,8 +211,34 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
       key === 'LEARNING_SHADOW_ENABLED' ? 'true' : fallback,
     );
     prisma.learningItem.findMany.mockResolvedValue([
-      { id: 'item-1', version: 1, trigger: 'cliente pregunta precio' },
-      { id: 'item-2', version: 1, trigger: 'cliente solicita llamada' },
+      {
+        id: 'item-1',
+        version: 1,
+        kind: 'STYLE',
+        trigger: 'cliente pregunta precio',
+        guidance: 'Consultar el catálogo vigente',
+        status: LearningItemStatus.ACTIVE,
+        riskLevel: 'LOW',
+        validUntil: new Date(Date.now() + 86400_000),
+        createdAt: new Date(),
+        evidence: [{ id: 'evidence-1' }],
+        serviceCode: null,
+        market: null,
+      },
+      {
+        id: 'item-2',
+        version: 1,
+        kind: 'STYLE',
+        trigger: 'cliente solicita llamada',
+        guidance: 'Pedir confirmación al equipo',
+        status: LearningItemStatus.ACTIVE,
+        riskLevel: 'LOW',
+        validUntil: new Date(Date.now() + 86400_000),
+        createdAt: new Date(),
+        evidence: [{ id: 'evidence-2' }],
+        serviceCode: null,
+        market: null,
+      },
     ]);
     const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
     try {
@@ -229,10 +260,16 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
       const query = calls[0][0];
       expect(query.where.status).toBe(LearningItemStatus.ACTIVE);
       expect(query.where.validUntil.gt).toBeInstanceOf(Date);
-      const event = JSON.parse(log.mock.calls[0][0] as string) as {
-        matches: Array<{ id: string }>;
-        customerMessage?: string;
-      };
+      const event = log.mock.calls
+        .map(
+          ([message]) =>
+            JSON.parse(message as string) as {
+              matches: Array<{ id: string }>;
+              customerMessage?: string;
+              event: string;
+            },
+        )
+        .find((entry) => entry.event === 'learning_shadow_retrieval')!;
       expect(event.matches.map((item) => item.id)).toEqual(['item-1']);
       expect(event.customerMessage).toBeUndefined();
     } finally {

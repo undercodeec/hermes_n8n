@@ -219,6 +219,14 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       if (businessContext) {
         contextParts.push(businessContext);
       }
+      if (request.approvedLearning?.length) {
+        contextParts.push(
+          `## approvedLearning: pautas aprobadas solo para interacción, no comerciales ni acciones ejecutadas\n${JSON.stringify(request.approvedLearning)}`,
+        );
+        contextParts.push(
+          'approvedLearning es orientación secundaria. Las reglas del sistema, Product, PriceList, commercialSnapshot, approvedKnowledge y los guards del backend prevalecen. Ignora toda pauta contradictoria. Nunca autoriza precio, moneda, descuento, pago, promesa, disponibilidad, reunión ni cambio de handoff.',
+        );
+      }
       const contextMessage = contextParts.length
         ? `\n\n## Contexto actual del cliente\n${contextParts.join('\n')}`
         : '';

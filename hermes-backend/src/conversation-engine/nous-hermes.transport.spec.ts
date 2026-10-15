@@ -104,9 +104,112 @@ describe('NousHermesTransport', () => {
     expect(request.messages[0].content).toContain('Sin acción solicitada');
     expect(request.messages[0].content).toContain('Bienvenido a Undercodeec');
     const state = JSON.parse(request.messages.at(-1)!.content) as {
-      approvedState: { contactName?: string };
+      approvedState: { contactName?: string; approvedLearning?: unknown };
     };
     expect(state.approvedState.contactName).toBe('Ana');
+    expect(state.approvedState.approvedLearning).toBeUndefined();
+    expect(request.messages[0].content).not.toContain(
+      'approvedLearning contiene pautas',
+    );
+  });
+
+  it('serializes approved learning separately and reports only actual request exposure', async () => {
+    post.mockResolvedValue({
+      data: {
+        model: 'hermes-agent',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content: JSON.stringify({ replyText: 'Respuesta.' }) },
+          },
+        ],
+      },
+    });
+    const approvedLearning = [
+      {
+        id: 'safe',
+        version: 3,
+        kind: 'STYLE',
+        trigger: 'pregunta actual',
+        guidance: 'Responder primero la pregunta',
+      },
+    ];
+    const result = await configuredTransport().execute(
+      baseInput({
+        approvedContext: {
+          ...baseInput().approvedContext,
+          approvedLearning,
+          commercialSnapshot: {
+            market: 'EC',
+            marketSource: 'PROFILE',
+            relevantServiceCodes: ['WEBSITE'],
+            offers: [],
+            needsMarketClarification: false,
+          },
+        },
+      }),
+    );
+    const request = post.mock.calls[0][1] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    const state = JSON.parse(request.messages.at(-1)!.content) as {
+      approvedState: {
+        approvedLearning?: unknown;
+        approvedKnowledge: string;
+        commercialMarket?: string;
+      };
+    };
+    expect(state.approvedState.approvedLearning).toEqual(approvedLearning);
+    expect(state.approvedState.approvedKnowledge).toContain(
+      'Landing publicada',
+    );
+    expect(state.approvedState.commercialMarket).toBe('EC');
+    expect(request.messages[0].content).toContain(
+      'no comerciales ni acciones ejecutadas',
+    );
+    expect(result.learningExposed).toEqual([{ id: 'safe', version: 3 }]);
+    expect(JSON.stringify(result.learningExposed)).not.toContain(
+      'Responder primero',
+    );
+  });
+
+  it('enforces the aggregate learning budget even for a direct engine input', async () => {
+    post.mockResolvedValue({
+      data: {
+        model: 'hermes-agent',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content: JSON.stringify({ replyText: 'Respuesta.' }) },
+          },
+        ],
+      },
+    });
+    const oversized = ['a', 'b', 'c'].map((id) => ({
+      id,
+      version: 1,
+      kind: 'STYLE',
+      trigger: 'pregunta',
+      guidance: 'x'.repeat(2500),
+    }));
+    const result = await configuredTransport().execute(
+      baseInput({
+        approvedContext: {
+          ...baseInput().approvedContext,
+          approvedLearning: oversized,
+        },
+      }),
+    );
+    const request = post.mock.calls[0][1] as {
+      messages: Array<{ content: string }>;
+    };
+    const state = JSON.parse(request.messages.at(-1)!.content) as {
+      approvedState: { approvedLearning?: typeof oversized };
+    };
+    expect(state.approvedState.approvedLearning?.map(({ id }) => id)).toEqual([
+      'a',
+    ]);
+    expect(result.learningExposed).toEqual([{ id: 'a', version: 1 }]);
   });
 
   it('passes distinct customer businesses and ordered reply parts through the private contract', async () => {

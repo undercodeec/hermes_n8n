@@ -24,6 +24,9 @@ export class DirectGeminiEngine implements ConversationEngine {
       conversationSummary: input.approvedContext.conversationSummary,
       commercialProfile: input.approvedContext.commercialProfile,
       commercialSnapshot: input.approvedContext.commercialSnapshot,
+      ...(input.approvedContext.approvedLearning?.length
+        ? { approvedLearning: input.approvedContext.approvedLearning }
+        : {}),
       contact: input.approvedContext.contact,
       conversationId: input.conversationId,
       correlationId: input.inboundMessageId,
@@ -45,6 +48,13 @@ export class DirectGeminiEngine implements ConversationEngine {
           ? undefined
           : { totalTokens: response.tokensUsed },
       traceId: input.inboundMessageId,
+      ...(input.approvedContext.approvedLearning?.length
+        ? {
+            learningExposed: input.approvedContext.approvedLearning.map(
+              ({ id, version }) => ({ id, version }),
+            ),
+          }
+        : {}),
       costEstimate: response.costEstimate,
       business: {
         suggestedTags: response.suggestedTags,

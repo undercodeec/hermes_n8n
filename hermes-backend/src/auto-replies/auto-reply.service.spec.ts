@@ -45,6 +45,8 @@ import { InboundTurnService } from './inbound-turn.service';
 import { VoiceProcessingError, VoiceService } from '../voice/voice.service';
 import { AgentOutputValidator } from '../conversation-engine/agent-output.validator';
 import { NousHermesTransport } from '../conversation-engine/nous-hermes.transport';
+import { ConversationReviewService } from '../learning/conversation-review.service';
+import { LearningRetrievalService } from '../learning/learning-retrieval.service';
 
 describe('AutoReplyService', () => {
   const testOffer = (
@@ -153,6 +155,8 @@ describe('AutoReplyService', () => {
     outputDecision?: GeneratedResponseDecision;
     reviewTask?: { id: string } | Error;
     persistedProfile?: CommercialProfile;
+    shadow?: boolean;
+    retrieval?: boolean;
   };
 
   function setupProcessHarness(options: ProcessHarnessOptions): {
@@ -184,6 +188,7 @@ describe('AutoReplyService', () => {
     conversationUpdate: jest.Mock;
     conversationStateUpsert: jest.Mock;
     prisma: PrismaService;
+    learning: { select: jest.Mock; recordShadowMatches: jest.Mock };
   } {
     const inbound = {
       id: 'inbound-recovery',
@@ -308,13 +313,29 @@ describe('AutoReplyService', () => {
         };
       }),
     };
+    const learning = {
+      select: jest.fn().mockResolvedValue([
+        {
+          id: 'learning-safe',
+          version: 2,
+          kind: 'STYLE',
+          trigger: 'pregunta',
+          guidance: 'Responder brevemente',
+        },
+      ]),
+      recordShadowMatches: jest.fn().mockResolvedValue(undefined),
+    };
     const service = new AutoReplyService(
       {
         get: jest.fn((key: string, fallback?: string) =>
-          key === 'AI_MESSAGE_PART_DELAY_MS' ||
-          key === 'HERMES_CONVERSATION_MESSAGE_DELAY_MS'
-            ? 0
-            : fallback,
+          key === 'LEARNING_SHADOW_ENABLED'
+            ? String(Boolean(options.shadow))
+            : key === 'LEARNING_RETRIEVAL_ENABLED'
+              ? String(Boolean(options.retrieval))
+              : key === 'AI_MESSAGE_PART_DELAY_MS' ||
+                  key === 'HERMES_CONVERSATION_MESSAGE_DELAY_MS'
+                ? 0
+                : fallback,
         ),
       } as unknown as ConfigService,
       prisma,
@@ -328,10 +349,17 @@ describe('AutoReplyService', () => {
       guard as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
       deliveries as unknown as AutomatedDeliveryService,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      learning as unknown as ConversationReviewService,
+      learning as unknown as LearningRetrievalService,
     );
     return {
       service,
       prisma,
+      learning,
       meta,
       tasks,
       leads,
@@ -344,6 +372,85 @@ describe('AutoReplyService', () => {
       conversationStateUpsert,
     };
   }
+
+  it.each([
+    [false, false, 0, 0],
+    [true, false, 1, 0],
+    [false, true, 0, 1],
+    [true, true, 1, 1],
+  ])(
+    'separates shadow=%s and retrieval=%s',
+    async (shadow, retrieval, shadowCalls, retrievalCalls) => {
+      const harness = setupProcessHarness({
+        hermesResponse: { response: 'Con gusto le ayudo.' },
+        shadow: Boolean(shadow),
+        retrieval: Boolean(retrieval),
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      expect(harness.learning.recordShadowMatches).toHaveBeenCalledTimes(
+        Number(shadowCalls),
+      );
+      expect(harness.learning.select).toHaveBeenCalledTimes(
+        Number(retrievalCalls),
+      );
+      const turn = harness.engine.respond.mock.calls[0][0];
+      expect(turn.approvedContext.approvedLearning).toEqual(
+        retrieval
+          ? [expect.objectContaining({ id: 'learning-safe' })]
+          : undefined,
+      );
+      expect(turn.approvedContext.approvedKnowledge).toEqual(expect.any(Array));
+      const metadata =
+        harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].metadata;
+      expect(metadata.learningExposed).toBeUndefined(); // Engine double did not report exposure.
+      expect(JSON.stringify(metadata)).not.toContain('Responder brevemente');
+    },
+  );
+
+  it('records only exposed IDs and versions in delivery metadata', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'Le ayudo.' },
+      retrieval: true,
+    });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({ response: 'Le ayudo.' }),
+      learningExposed: [{ id: 'learning-safe', version: 2 }],
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const metadata =
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].metadata;
+    expect(metadata.learningExposed).toEqual([
+      { id: 'learning-safe', version: 2 },
+    ]);
+    expect(JSON.stringify(metadata)).not.toContain('Responder brevemente');
+  });
+
+  it('continues the conversation when the retrieval selector throws', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'Le ayudo.' },
+      retrieval: true,
+    });
+    harness.learning.select.mockRejectedValue(
+      new Error('synthetic selector failure'),
+    );
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(
+      harness.engine.respond.mock.calls[0][0].approvedContext.approvedLearning,
+    ).toBeUndefined();
+    expect(harness.deliveries.prepareBatch).toHaveBeenCalledTimes(1);
+  });
 
   it.each([false, true])(
     'preserves a newer profile and intent when an older normal delivery finishes (equal provider timestamp: %s)',

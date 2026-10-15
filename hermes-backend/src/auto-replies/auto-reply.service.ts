@@ -59,6 +59,7 @@ import { InboundTurnService } from './inbound-turn.service';
 import { MeetingsService } from '../integrations/google-calendar/meetings.service';
 import { PaymentsService } from '../payments/payments.service';
 import { ConversationReviewService } from '../learning/conversation-review.service';
+import { LearningRetrievalService } from '../learning/learning-retrieval.service';
 import { redactPaymentMessageForAi } from '../payments/payment-message-redaction';
 import {
   VoiceProcessingError,
@@ -89,6 +90,7 @@ export class AutoReplyService {
     @Optional() private readonly meetings?: MeetingsService,
     @Optional() private readonly payments?: PaymentsService,
     @Optional() private readonly learningReviews?: ConversationReviewService,
+    @Optional() private readonly learningRetrieval?: LearningRetrievalService,
   ) {}
 
   async enqueue(data: AutoReplyJobData, messageLength: number): Promise<void> {
@@ -505,6 +507,29 @@ export class AutoReplyService {
     const startedAt = Date.now();
     await this.showTypingIndicator(inbound.wamid);
     const approvedKnowledge = commercialSnapshotKnowledge(commercialSnapshot);
+    const retrievalEnabled =
+      this.config.get<string>('LEARNING_RETRIEVAL_ENABLED', 'false') === 'true';
+    let approvedLearning: Awaited<
+      ReturnType<LearningRetrievalService['select']>
+    > = [];
+    if (retrievalEnabled) {
+      try {
+        approvedLearning =
+          (await this.learningRetrieval?.select({
+            customerMessage,
+            serviceCode: context.commercialProfile?.service,
+            market: commercialSnapshot.market,
+            approvedKnowledge,
+          })) ?? [];
+      } catch {
+        this.logger.warn(
+          JSON.stringify({
+            event: 'learning_retrieval_fallback',
+            reason: 'SELECTOR_ERROR',
+          }),
+        );
+      }
+    }
     if (
       this.config.get<string>('LEARNING_SHADOW_ENABLED', 'false') === 'true'
     ) {
@@ -515,6 +540,8 @@ export class AutoReplyService {
           customerMessage,
           serviceCode: context.commercialProfile?.service,
           market: commercialSnapshot.market,
+          approvedKnowledge,
+          ...(retrievalEnabled ? { selectedLearning: approvedLearning } : {}),
           engine: this.conversationEngine.selectedEngine(data.conversationId),
         });
       } catch {
@@ -536,6 +563,7 @@ export class AutoReplyService {
         commercialProfile: context.commercialProfile,
         recentProfileChanges: context.recentProfileChanges,
         approvedKnowledge,
+        ...(approvedLearning.length ? { approvedLearning } : {}),
         commercialSnapshot,
         handoffActive: false,
         leadStage: context.leadStage,
@@ -1190,6 +1218,9 @@ export class AutoReplyService {
                   : {}),
                 providerModel: engineResult.providerModel,
                 traceId: engineResult.traceId,
+                ...(engineResult.learningExposed?.length
+                  ? { learningExposed: engineResult.learningExposed }
+                  : {}),
                 tokensUsed: response.tokensUsed,
                 latencyMs: Date.now() - startedAt,
                 ...(isNous
