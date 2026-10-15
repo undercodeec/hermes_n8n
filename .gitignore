@@ -53,6 +53,7 @@ logs/
 # Coverage
 coverage/
 .nyc_output/
+hermes-backend/artifacts/f2-provider-evaluation/
 
 # Docker
 *.local.yml

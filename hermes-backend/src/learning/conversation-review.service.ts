@@ -30,6 +30,7 @@ import {
 } from './learning.constants';
 import { ReviewModelService } from './review-model.service';
 import { validateCandidateSafety } from './review-candidate-safety';
+import { prepareReviewInput } from './review-input';
 import { ReviewCanaryPolicy } from './review-canary.policy';
 import { ReviewCanaryTriggerDto } from './dto/review-canary-trigger.dto';
 import { sanitizeReviewInput, privacyFailure } from './review-privacy';
@@ -700,16 +701,7 @@ export class ConversationReviewService
         select: { id: true, sender: true, content: true },
       });
       const ordered = messages.reverse();
-      const evidenceIds = new Map<string, string>();
-      const input = ordered.map((message, index) => {
-        const alias = `m${index + 1}`;
-        evidenceIds.set(alias, message.id);
-        return {
-          id: alias,
-          sender: message.sender,
-          content: sanitizeReviewInput(message.content || ''),
-        };
-      });
+      const { input, evidenceIds } = prepareReviewInput(ordered);
       if (!ordered.some((message) => message.id === review.sourceMessageId)) {
         await this.finishClaim(reviewId, processingAt, {
           status: ConversationReviewStatus.NO_LEARNING,
