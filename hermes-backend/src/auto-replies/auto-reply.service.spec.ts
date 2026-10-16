@@ -166,6 +166,7 @@ describe('AutoReplyService', () => {
     persistedProfile?: CommercialProfile;
     shadow?: boolean;
     retrieval?: boolean;
+    retrievalValue?: string;
     realShadow?: boolean;
     engineId?: 'gemini_direct' | 'nous_hermes';
     learningRows?: Array<Record<string, unknown>>;
@@ -203,6 +204,7 @@ describe('AutoReplyService', () => {
     conversationStateUpsert: jest.Mock;
     prisma: PrismaService;
     learning: { select: jest.Mock; recordShadowMatches: jest.Mock };
+    config: { get: jest.Mock };
   } {
     const inbound = {
       id: 'inbound-recovery',
@@ -360,7 +362,7 @@ describe('AutoReplyService', () => {
         key === 'LEARNING_SHADOW_ENABLED'
           ? String(Boolean(options.shadow))
           : key === 'LEARNING_RETRIEVAL_ENABLED'
-            ? String(Boolean(options.retrieval))
+            ? (options.retrievalValue ?? String(Boolean(options.retrieval)))
             : key === 'AI_MESSAGE_PART_DELAY_MS' ||
                 key === 'HERMES_CONVERSATION_MESSAGE_DELAY_MS'
               ? 0
@@ -427,6 +429,7 @@ describe('AutoReplyService', () => {
       service,
       prisma,
       learning,
+      config,
       meta,
       tasks,
       leads,
@@ -4449,5 +4452,269 @@ describe('AutoReplyService', () => {
     expect(messageCreate).toHaveBeenCalledTimes(sentParts.length);
     expect(sentParts.every((part) => part.length <= 1000)).toBe(true);
     expect(sentParts.join(' ')).toBe(longResponse);
+  });
+  describe('F3 retrieval rollback at the turn boundary', () => {
+    const job = {
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    };
+    const active = {
+      id: '123e4567-e89b-42d3-a456-426614174000',
+      version: 4,
+      kind: 'STYLE',
+      trigger: 'confirmar punto',
+      guidance: 'Hacer una pregunta pertinente.',
+      status: LearningItemStatus.ACTIVE,
+      riskLevel: LearningRiskLevel.LOW,
+      validUntil: new Date('2030-01-01T00:00:00Z'),
+      createdAt: new Date('2026-10-15T12:00:00Z'),
+      serviceCode: null,
+      market: null,
+      evidence: [{ id: 'evidence-active' }],
+    };
+    const snapshot: CommercialSnapshot = {
+      market: CommercialMarket.EC,
+      marketSource: 'CURRENT',
+      relevantServiceCodes: ['WEBSITE'],
+      offers: [testOffer('Plan Web', '360.00', 'WEBSITE')],
+      needsMarketClarification: false,
+    };
+
+    it.each(['gemini_direct', 'nous_hermes'] as const)(
+      '%s restores the baseline after ON and reselects the same ACTIVE item after re-enable',
+      async (engineId) => {
+        const options: ProcessHarnessOptions = {
+          hermesResponse: { response: 'Le ayudo con el siguiente paso.' },
+          retrieval: false,
+          realShadow: true,
+          engineId,
+          learningRows: [
+            active,
+            { ...active, id: 'high', riskLevel: LearningRiskLevel.HIGH },
+            { ...active, id: 'proposed', status: LearningItemStatus.PROPOSED },
+            { ...active, id: 'rejected', status: LearningItemStatus.REJECTED },
+            { ...active, id: 'retired', status: LearningItemStatus.RETIRED },
+            { ...active, id: 'expired', validUntil: new Date('2020-01-01') },
+            {
+              ...active,
+              id: 'private',
+              guidance: 'Enviar datos a priv@example.invalid',
+            },
+            { ...active, id: 'commercial', guidance: 'Ofrecer USD 99.' },
+          ],
+          commercialSnapshot: snapshot,
+        };
+        const harness = setupProcessHarness(options);
+        harness.engine.respond.mockImplementation(
+          async (turn: ConversationTurnInput) => ({
+            ...toEngineResult({ response: 'Le ayudo con el siguiente paso.' }),
+            engine: engineId,
+            traceId: turn.inboundMessageId,
+            learningExposed: turn.approvedContext.approvedLearning?.map(
+              ({ id, version }) => ({ id, version }),
+            ),
+          }),
+        );
+        const requests: ConversationTurnInput[] = [];
+        const metadata: Array<Record<string, unknown>> = [];
+        for (const enabled of [false, true, false, true, false, false]) {
+          options.retrieval = enabled;
+          await harness.service.process(job);
+          requests.push(harness.engine.respond.mock.calls.at(-1)?.[0]);
+          metadata.push(
+            harness.deliveries.prepareBatch.mock.calls.at(-1)?.[0].parts[0]
+              .metadata,
+          );
+        }
+        const selected = [{ id: active.id, version: active.version }];
+        expect(
+          requests.map(
+            (request) => request.approvedContext.approvedLearning?.length ?? 0,
+          ),
+        ).toEqual([0, 1, 0, 1, 0, 0]);
+        expect(metadata.map((part) => part.learningExposed ?? [])).toEqual([
+          [],
+          selected,
+          [],
+          selected,
+          [],
+          [],
+        ]);
+        expect(
+          requests.every(
+            (request) =>
+              request.approvedContext.commercialSnapshot === snapshot,
+          ),
+        ).toBe(true);
+        expect(
+          requests.every(
+            (request) => request.approvedContext.approvedKnowledge?.length,
+          ),
+        ).toBe(true);
+        expect(
+          requests.every(
+            (request) =>
+              JSON.stringify(request.approvedContext.recentMessages) ===
+              JSON.stringify(requests[0].approvedContext.recentMessages),
+          ),
+        ).toBe(true);
+        expect(
+          harness.engine.selectedEngine.mock.results.every(
+            (result) => result.value === engineId,
+          ),
+        ).toBe(true);
+        const normalize = (request: ConversationTurnInput) => ({
+          customerMessage: request.customerMessage,
+          approvedContext: request.approvedContext,
+        });
+        expect(normalize(requests[2])).toEqual(normalize(requests[0]));
+        expect(normalize(requests[4])).toEqual(normalize(requests[0]));
+        expect(normalize(requests[5])).toEqual(normalize(requests[0]));
+        expect(metadata[1].learningExposed).toEqual(selected);
+        expect(harness.learning.select).toHaveBeenCalledTimes(2);
+        expect(harness.prisma.learningItem.update).not.toHaveBeenCalled();
+        expect(harness.prisma.learningItem.updateMany).not.toHaveBeenCalled();
+        expect(harness.prisma.learningEvidence.create).not.toHaveBeenCalled();
+        expect(harness.prisma.conversationReview.create).not.toHaveBeenCalled();
+      },
+    );
+
+    it.each([false, true])(
+      'shadow=%s remains independent when retrieval is OFF',
+      async (shadow) => {
+        const harness = setupProcessHarness({
+          hermesResponse: { response: 'Le ayudo.' },
+          retrieval: false,
+          shadow,
+          realShadow: true,
+          learningRows: [active],
+        });
+        await harness.service.process(job);
+        expect(harness.learning.select).not.toHaveBeenCalled();
+        expect(harness.learning.recordShadowMatches).toHaveBeenCalledTimes(
+          shadow ? 1 : 0,
+        );
+        expect(
+          harness.engine.respond.mock.calls[0][0].approvedContext
+            .approvedLearning,
+        ).toBeUndefined();
+        expect(
+          harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].metadata
+            .learningExposed,
+        ).toBeUndefined();
+      },
+    );
+
+    it.each([undefined, '', 'TRUE', '1', 'unexpected'])(
+      'invalid retrieval flag %s fails closed',
+      async (value) => {
+        const harness = setupProcessHarness({
+          hermesResponse: { response: 'Le ayudo.' },
+          retrievalValue: value,
+        });
+        await harness.service.process(job);
+        expect(harness.learning.select).not.toHaveBeenCalled();
+        expect(
+          harness.engine.respond.mock.calls[0][0].approvedContext
+            .approvedLearning,
+        ).toBeUndefined();
+      },
+    );
+
+    it('does not need the learning selector or its database when OFF', async () => {
+      const harness = setupProcessHarness({
+        hermesResponse: { response: 'Le ayudo.' },
+        retrieval: false,
+      });
+      harness.learning.select.mockRejectedValue(
+        new Error('learning DB unavailable'),
+      );
+      await harness.service.process(job);
+      expect(harness.learning.select).not.toHaveBeenCalled();
+      expect(harness.deliveries.prepareBatch).toHaveBeenCalledTimes(1);
+    });
+
+    it.each(['gemini_direct', 'nous_hermes'] as const)(
+      '%s keeps an in-flight ON request while a later OFF request has no learning',
+      async (engineId) => {
+        const options: ProcessHarnessOptions = {
+          hermesResponse: { response: 'Le ayudo.' },
+          retrieval: true,
+          realShadow: true,
+          engineId,
+          learningRows: [active],
+        };
+        const harness = setupProcessHarness(options);
+        (harness.prisma.message.findUnique as jest.Mock).mockImplementation(
+          ({ where }: { where: { id: string } }) =>
+            Promise.resolve({
+              id: where.id,
+              wamid: `wamid.${where.id}`,
+              conversationId: job.conversationId,
+              contactId: job.contactId,
+              content: 'Necesito confirmar este punto',
+              createdAt: new Date('2026-10-15T12:00:00Z'),
+              rawPayload: null,
+            }),
+        );
+        let release: (() => void) | undefined;
+        const blocked = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        let entered: (() => void) | undefined;
+        const sent = new Promise<void>((resolve) => {
+          entered = resolve;
+        });
+        harness.engine.respond.mockImplementation(
+          async (turn: ConversationTurnInput) => {
+            if (harness.engine.respond.mock.calls.length === 1) {
+              entered?.();
+              await blocked;
+            }
+            return {
+              ...toEngineResult({ response: 'Le ayudo.' }),
+              engine: engineId,
+              traceId: turn.inboundMessageId,
+              learningExposed: turn.approvedContext.approvedLearning?.map(
+                ({ id, version }) => ({ id, version }),
+              ),
+            };
+          },
+        );
+        const first = harness.service.process({
+          ...job,
+          inboundMessageId: 'synthetic-on',
+        });
+        await sent;
+        options.retrieval = false;
+        await harness.service.process({
+          ...job,
+          inboundMessageId: 'synthetic-off',
+        });
+        expect(
+          harness.engine.respond.mock.calls[0][0].approvedContext
+            .approvedLearning,
+        ).toHaveLength(1);
+        expect(
+          harness.engine.respond.mock.calls[1][0].approvedContext
+            .approvedLearning,
+        ).toBeUndefined();
+        release?.();
+        await first;
+        expect(harness.deliveries.prepareBatch).toHaveBeenCalledTimes(2);
+        const batches = harness.deliveries.prepareBatch.mock.calls.map(
+          ([batch]) => batch as PrepareAutomatedDeliveryBatch,
+        );
+        expect(
+          batches.find((batch) => batch.sourceMessageId === 'synthetic-on')
+            ?.parts[0].metadata.learningExposed,
+        ).toEqual([{ id: active.id, version: active.version }]);
+        expect(
+          batches.find((batch) => batch.sourceMessageId === 'synthetic-off')
+            ?.parts[0].metadata.learningExposed,
+        ).toBeUndefined();
+      },
+    );
   });
 });
