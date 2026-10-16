@@ -52,6 +52,7 @@ for (const command of [
       './test/jest-integration.json',
       '--runInBand',
       'test/conversation-learning.integration-spec.ts',
+      'test/f3-approval.integration-spec.ts',
     ],
   ],
 ]) {

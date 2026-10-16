@@ -378,12 +378,12 @@ describe('Conversation learning loop (isolated integration)', () => {
     return review;
   }
 
-  async function createCandidate(label: string) {
+  async function createCandidate(label: string, confidence = 0.8) {
     provider.setResponse((request) => ({
       issueCode: 'REPETITION',
       summary: 'Pauta sintética segura',
       counterexample: 'No aplica si cambia la necesidad',
-      confidence: 0.8,
+      confidence,
       candidate: {
         kind: 'FOLLOW_UP',
         trigger: 'cliente confirma que desea continuar',
@@ -446,6 +446,31 @@ describe('Conversation learning loop (isolated integration)', () => {
       'synthetic@example.test',
     );
     expect(provider.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
+  });
+
+  it('keeps reviewer confidence 1.0 and two source conversations PROPOSED until human decision', async () => {
+    await createCandidate('approval-confidence-a', 1);
+    await createCandidate('approval-confidence-b', 1);
+    const items = await prisma.learningItem.findMany({
+      include: { evidence: true },
+    });
+    expect(items).toHaveLength(1);
+    expect(items[0].status).toBe(LearningItemStatus.PROPOSED);
+    expect(items[0].evidence).toHaveLength(2);
+    expect(
+      await prisma.conversationReview.count({ where: { confidence: 1 } }),
+    ).toBe(2);
+    const selected = await new LearningRetrievalService(
+      prisma as PrismaService,
+      new ConfigService({}),
+    ).select({
+      customerMessage: 'cliente confirma que desea continuar',
+      approvedKnowledge: [],
+    });
+    expect(selected).toEqual([]);
+    expect(
+      await prisma.auditLog.count({ where: { action: 'LEARNING_APPROVE' } }),
+    ).toBe(0);
   });
 
   it('schedules the same bad feedback idempotently in the isolated Redis queue', async () => {

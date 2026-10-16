@@ -120,6 +120,25 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
     expect(tx.auditLog.create).not.toHaveBeenCalled();
   });
 
+  it('no actualiza ni audita si falla la consulta de evidencia', async () => {
+    tx.learningEvidence.count.mockRejectedValueOnce(
+      new Error('synthetic evidence lookup failure'),
+    );
+    await expect(
+      service.decide(
+        'item-1',
+        {
+          action: LearningDecisionAction.APPROVE,
+          reason: 'Pauta revisada con evidencia suficiente',
+          validUntil,
+        },
+        'admin-1',
+      ),
+    ).rejects.toThrow('synthetic evidence lookup failure');
+    expect(tx.learningItem.updateMany).not.toHaveBeenCalled();
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
   it('bloquea la activación de candidatos históricos inseguros', async () => {
     const dto = {
       action: LearningDecisionAction.APPROVE,

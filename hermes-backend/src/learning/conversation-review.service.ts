@@ -981,7 +981,13 @@ export class ConversationReviewService
         throw new BadRequestException('No existe evidencia para aprobar');
       if (approval) {
         try {
-          validateCandidateSafety(item);
+          validateCandidateSafety({
+            kind: item.kind,
+            trigger: item.trigger,
+            guidance: item.guidance,
+            serviceCode: item.serviceCode,
+            market: item.market,
+          });
           for (const value of [
             item.sourceReview?.issueCode,
             item.sourceReview?.summary,

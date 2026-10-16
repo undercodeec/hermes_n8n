@@ -1,0 +1,260 @@
+{
+  "result": "F3_APPROVAL_GATE_PROVEN_OFFLINE",
+  "baseCommit": "a2a6cc4b0faaefd764f2f36fbc4b8fe6abc05c22",
+  "finalCommitReference": "CONTAINING_GIT_COMMIT",
+  "fixture": {
+    "version": 1,
+    "sha256": "29bcccc997ee5b8a138b5a34aabbdb675df9d9a2fdbc1942e0e3c3a56993fc08",
+    "paths": [
+      "src/learning/f3-approval-controller.spec.ts",
+      "src/learning/learning-decision.spec.ts",
+      "src/auto-replies/auto-reply.service.spec.ts",
+      "test/f3-approval.integration-spec.ts",
+      "test/conversation-learning.integration-spec.ts"
+    ],
+    "syntheticOnly": true
+  },
+  "stateMatrix": [
+    {
+      "before": "PROPOSED",
+      "action": "APPROVE",
+      "after": "ACTIVE",
+      "http": 201
+    },
+    {
+      "before": "PROPOSED",
+      "action": "REJECT",
+      "after": "REJECTED",
+      "http": 201
+    },
+    {
+      "before": "ACTIVE",
+      "action": "RETIRE",
+      "after": "RETIRED",
+      "http": 201
+    },
+    {
+      "before": "PROPOSED",
+      "action": "RETIRE",
+      "after": "PROPOSED",
+      "http": 409
+    },
+    {
+      "before": "ACTIVE",
+      "action": "APPROVE",
+      "after": "ACTIVE",
+      "http": 409
+    },
+    {
+      "before": "ACTIVE",
+      "action": "REJECT",
+      "after": "ACTIVE",
+      "http": 409
+    },
+    {
+      "before": "REJECTED",
+      "action": "APPROVE",
+      "after": "REJECTED",
+      "http": 409
+    },
+    {
+      "before": "REJECTED",
+      "action": "RETIRE",
+      "after": "REJECTED",
+      "http": 409
+    },
+    {
+      "before": "RETIRED",
+      "action": "APPROVE",
+      "after": "RETIRED",
+      "http": 409
+    },
+    {
+      "before": "RETIRED",
+      "action": "REJECT",
+      "after": "RETIRED",
+      "http": 409
+    },
+    {
+      "before": "RETIRED",
+      "action": "RETIRE",
+      "after": "RETIRED",
+      "http": 409
+    }
+  ],
+  "authority": {
+    "endpoint": "POST /api/learning/candidates/:id/decision",
+    "actorFrom": "validated JWT user loaded from DB",
+    "allowedRole": "ADMIN",
+    "unauthorizedHttp": 401,
+    "insufficientRoleHttp": 403,
+    "rejectedBodyActorHttp": 400
+  },
+  "reviewer": {
+    "creates": "PROPOSED",
+    "confidence": 1,
+    "sourceConversationCount": 2,
+    "evidenceCount": 2,
+    "automaticActiveTransitions": 0
+  },
+  "validDecision": {
+    "actorPersisted": true,
+    "reasonAudited": true,
+    "beforeAfterAudited": true,
+    "versionAudited": true,
+    "approvedAtPersisted": true,
+    "validUntilPersisted": true,
+    "guidanceAndFingerprintUnchanged": true,
+    "evidencePreserved": true
+  },
+  "evidence": {
+    "absent": "APPROVE_REJECTED",
+    "deleted": "APPROVE_REJECTED",
+    "ineffectiveReview": "APPROVE_REJECTED",
+    "ineffectiveFeedback": "APPROVE_REJECTED",
+    "missingMessage": "APPROVE_REJECTED",
+    "invalidatedAfterApproval": "NOT_RETRIEVABLE"
+  },
+  "expiry": {
+    "past": "APPROVE_REJECTED",
+    "moreThan180Days": "APPROVE_REJECTED",
+    "at180Days": "APPROVE_ACCEPTED",
+    "expiredActive": "NOT_RETRIEVABLE"
+  },
+  "concurrency": {
+    "approveVsReject": "ONE_WINNER_ONE_409_ONE_AUDIT",
+    "approveVsApprove": "ONE_WINNER_ONE_409_ONE_AUDIT",
+    "rejectVsReject": "ONE_WINNER_ONE_409_ONE_AUDIT",
+    "retireVsRetire": "ONE_WINNER_ONE_409",
+    "staleDecision": "409_NO_OVERWRITE",
+    "replay": "409_NO_SECOND_EFFECT"
+  },
+  "retrieval": {
+    "beforeApproval": false,
+    "activeEligible": true,
+    "rejected": false,
+    "retired": false,
+    "expired": false,
+    "afterEvidenceLoss": false
+  },
+  "engines": {
+    "gemini_direct": {
+      "proposed": false,
+      "activeEligible": true,
+      "rejected": false,
+      "retired": false,
+      "expired": false,
+      "fakeHttp": true
+    },
+    "nous_hermes": {
+      "proposed": false,
+      "activeEligible": true,
+      "rejected": false,
+      "retired": false,
+      "expired": false,
+      "fakeHttp": true
+    }
+  },
+  "learningExposed": {
+    "activeEligible": "ID_AND_VERSION_ONLY",
+    "proposed": "ABSENT",
+    "rejected": "ABSENT",
+    "retired": "ABSENT",
+    "expired": "ABSENT"
+  },
+  "guards": {
+    "privacy": "APPROVE_REJECTED",
+    "commercial": "APPROVE_REJECTED",
+    "highRisk": "ACTIVE_BUT_NOT_RETRIEVABLE",
+    "coreShadowRegression": "PASS"
+  },
+  "failures": {
+    "auditInsertFailure": "TRANSACTION_ROLLED_BACK",
+    "evidenceLookupFailure": "NO_UPDATE_NO_AUDIT",
+    "stateConflict": "409_NO_PARTIAL_ACTIVATION",
+    "missingItem": "404"
+  },
+  "tests": {
+    "unitSuites": 75,
+    "unitCases": 1241,
+    "isolatedIntegrationSuites": 2,
+    "isolatedIntegrationCases": 72,
+    "build": "PASS",
+    "productionTypecheck": "PASS",
+    "eslintDirected": "PASS",
+    "prettierDirected": "PASS",
+    "prismaValidate": "PASS",
+    "diffCheck": "PASS"
+  },
+  "performance": {
+    "timings": {
+      "APPROVE": {
+        "unit": "ms",
+        "samples": 20,
+        "min": 8.062300000000505,
+        "max": 16.965900000000147,
+        "mean": 8.926794999999993,
+        "median": 8.412149999999656,
+        "p50": 8.406299999999646,
+        "p95": 9.420000000000073
+      },
+      "REJECT": {
+        "unit": "ms",
+        "samples": 16,
+        "min": 6.569100000000617,
+        "max": 12.050900000000183,
+        "mean": 7.291106250000155,
+        "median": 6.784850000000461,
+        "p50": 6.782600000000457,
+        "p95": 12.050900000000183
+      },
+      "RETIRE": {
+        "unit": "ms",
+        "samples": 16,
+        "min": 6.539199999999255,
+        "max": 8.710799999999836,
+        "mean": 6.94488124999998,
+        "median": 6.807900000000245,
+        "p50": 6.7862999999997555,
+        "p95": 8.710799999999836
+      },
+      "SELECT_ACTIVE": {
+        "unit": "ms",
+        "samples": 18,
+        "min": 2.679800000000796,
+        "max": 6.281500000000051,
+        "mean": 3.2740999999999882,
+        "median": 2.95595000000003,
+        "p50": 2.9495999999999185,
+        "p95": 6.281500000000051
+      },
+      "SELECT_INELIGIBLE": {
+        "unit": "ms",
+        "samples": 42,
+        "min": 1.8009999999994761,
+        "max": 8.149699999999939,
+        "mean": 2.2467904761904807,
+        "median": 2.05495000000019,
+        "p50": 2.0536000000001877,
+        "p95": 2.818500000000313
+      }
+    },
+    "threshold": "THRESHOLD_NOT_DEFINED"
+  },
+  "migrations": {
+    "prismaSchemaChanged": false,
+    "newMigrationDirectories": 0,
+    "migrationsRequired": false,
+    "existingMigrationDirectories": 23
+  },
+  "externalTraffic": {
+    "geminiReviewer": 0,
+    "geminiConversational": 0,
+    "nous": 0,
+    "meta": 0,
+    "whatsapp": 0
+  },
+  "productionChanges": "NONE",
+  "flagsChanged": "NONE",
+  "f3State": "OPEN"
+}

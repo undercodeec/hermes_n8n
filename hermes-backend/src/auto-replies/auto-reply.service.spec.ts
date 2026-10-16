@@ -1166,6 +1166,76 @@ describe('AutoReplyService', () => {
     },
   );
 
+  it.each(
+    (['gemini_direct', 'nous_hermes'] as const).flatMap((engineId) =>
+      (
+        [
+          [LearningItemStatus.PROPOSED, false],
+          [LearningItemStatus.ACTIVE, true],
+          [LearningItemStatus.REJECTED, false],
+          [LearningItemStatus.RETIRED, false],
+          [LearningItemStatus.ACTIVE, false],
+        ] as const
+      ).map(([status, current]) => ({ engineId, status, current })),
+    ),
+  )(
+    'F3 approval: $engineId delivery exposes only selected $status item (current=$current)',
+    async ({ engineId, status, current }) => {
+      const itemId = '123e4567-e89b-42d3-a456-426614174000';
+      const harness = setupProcessHarness({
+        hermesResponse: { response: 'Le ayudo con el siguiente paso.' },
+        retrieval: true,
+        realShadow: true,
+        engineId,
+        learningRows: [
+          {
+            id: itemId,
+            version: 1,
+            kind: 'STYLE',
+            trigger: 'confirmar punto',
+            guidance: 'Hacer una pregunta pertinente',
+            status,
+            riskLevel: LearningRiskLevel.LOW,
+            validUntil: new Date(
+              Date.now() +
+                (status === LearningItemStatus.ACTIVE && !current
+                  ? -1000
+                  : 86400_000),
+            ),
+            createdAt: new Date('2026-10-15T12:00:00Z'),
+            serviceCode: null,
+            market: null,
+            evidence: [{ id: 'synthetic-evidence' }],
+          },
+        ],
+      });
+      harness.engine.respond.mockImplementation(
+        async (turn: ConversationTurnInput) => ({
+          ...toEngineResult({ response: 'Le ayudo con el siguiente paso.' }),
+          engine: engineId,
+          traceId: turn.inboundMessageId,
+          learningExposed: turn.approvedContext.approvedLearning?.map(
+            ({ id, version }) => ({ id, version }),
+          ),
+        }),
+      );
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      const turn = harness.engine.respond.mock
+        .calls[0][0] as ConversationTurnInput;
+      const batch = harness.deliveries.prepareBatch.mock.calls[0][0];
+      expect(
+        turn.approvedContext.approvedLearning?.map(({ id }) => id) ?? [],
+      ).toEqual(current ? [itemId] : []);
+      expect(batch.parts[0].metadata.learningExposed).toEqual(
+        current ? [{ id: itemId, version: 1 }] : undefined,
+      );
+    },
+  );
+
   it.each([false, true])(
     'preserves a newer profile and intent when an older normal delivery finishes (equal provider timestamp: %s)',
     async (equalTimestamp) => {
