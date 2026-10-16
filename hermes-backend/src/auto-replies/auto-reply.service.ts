@@ -60,6 +60,7 @@ import { MeetingsService } from '../integrations/google-calendar/meetings.servic
 import { PaymentsService } from '../payments/payments.service';
 import { ConversationReviewService } from '../learning/conversation-review.service';
 import { LearningRetrievalService } from '../learning/learning-retrieval.service';
+import { retrievalEnabledForConversation } from '../learning/retrieval-canary-scope';
 import { redactPaymentMessageForAi } from '../payments/payment-message-redaction';
 import {
   VoiceProcessingError,
@@ -507,14 +508,16 @@ export class AutoReplyService {
     const startedAt = Date.now();
     await this.showTypingIndicator(inbound.wamid);
     const approvedKnowledge = commercialSnapshotKnowledge(commercialSnapshot);
-    const retrievalEnabled =
-      this.config.get<string>('LEARNING_RETRIEVAL_ENABLED', 'false') === 'true';
+    const retrievalEnabled = retrievalEnabledForConversation(
+      this.config,
+      data.conversationId,
+    );
     let approvedLearning: Awaited<
       ReturnType<LearningRetrievalService['select']>
     > = [];
     if (retrievalEnabled) {
       try {
-        approvedLearning =
+        const selectedLearning =
           (await this.learningRetrieval?.select({
             customerMessage,
             serviceCode: context.commercialProfile?.service,
@@ -522,6 +525,16 @@ export class AutoReplyService {
             approvedKnowledge,
             traceId: inbound.id,
           })) ?? [];
+        // The first live canary permits at most one eligible item. Multiple
+        // matches fail closed rather than silently choosing an arbitrary one.
+        if (selectedLearning.length === 1) approvedLearning = selectedLearning;
+        else if (selectedLearning.length > 1)
+          this.logger.warn(
+            JSON.stringify({
+              event: 'learning_retrieval_canary_multiple_matches',
+              selectedCount: selectedLearning.length,
+            }),
+          );
       } catch {
         this.logger.warn(
           JSON.stringify({

@@ -167,6 +167,7 @@ describe('AutoReplyService', () => {
     shadow?: boolean;
     retrieval?: boolean;
     retrievalValue?: string;
+    retrievalAllowlist?: string;
     realShadow?: boolean;
     engineId?: 'gemini_direct' | 'nous_hermes';
     learningRows?: Array<Record<string, unknown>>;
@@ -363,10 +364,12 @@ describe('AutoReplyService', () => {
           ? String(Boolean(options.shadow))
           : key === 'LEARNING_RETRIEVAL_ENABLED'
             ? (options.retrievalValue ?? String(Boolean(options.retrieval)))
-            : key === 'AI_MESSAGE_PART_DELAY_MS' ||
-                key === 'HERMES_CONVERSATION_MESSAGE_DELAY_MS'
-              ? 0
-              : fallback,
+            : key === 'LEARNING_RETRIEVAL_CONVERSATION_ALLOWLIST'
+              ? (options.retrievalAllowlist ?? 'conversation-1')
+              : key === 'AI_MESSAGE_PART_DELAY_MS' ||
+                  key === 'HERMES_CONVERSATION_MESSAGE_DELAY_MS'
+                ? 0
+                : fallback,
       ),
     } as unknown as ConfigService;
     const realRetrieval = new LearningRetrievalService(prisma, config);
@@ -807,7 +810,7 @@ describe('AutoReplyService', () => {
     });
 
     it.each(['gemini_direct', 'nous_hermes'] as const)(
-      '%s excludes a direct conflict while exposing two safe items',
+      '%s excludes a direct conflict and fails closed on two safe canary matches',
       async (engineId) => {
         const harness = setupProcessHarness({
           hermesResponse: { response: 'Puedo ayudarle a precisar el alcance.' },
@@ -842,13 +845,13 @@ describe('AutoReplyService', () => {
         const turn = harness.engine.respond.mock
           .calls[0][0] as ConversationTurnInput;
         expect(
-          turn.approvedContext.approvedLearning?.map(({ id }) => id),
+          (await harness.learning.select.mock.results[0].value).map(
+            ({ id }: { id: string }) => id,
+          ),
         ).toEqual(['safe-next', 'safe-question']);
+        expect(turn.approvedContext.approvedLearning).toBeUndefined();
         const batch = harness.deliveries.prepareBatch.mock.calls[0][0];
-        expect(batch.parts[0].metadata.learningExposed).toEqual([
-          { id: 'safe-next', version: 1 },
-          { id: 'safe-question', version: 1 },
-        ]);
+        expect(batch.parts[0].metadata.learningExposed).toBeUndefined();
         expect(JSON.stringify(turn)).not.toContain('bad-price');
         expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(1);
       },
@@ -4714,6 +4717,101 @@ describe('AutoReplyService', () => {
           batches.find((batch) => batch.sourceMessageId === 'synthetic-off')
             ?.parts[0].metadata.learningExposed,
         ).toBeUndefined();
+      },
+    );
+  });
+
+  describe('F3 retrieval canary scope before selector', () => {
+    const job = {
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    };
+    it.each([
+      ['conversation-1', 1],
+      ['', 0],
+      ['conversation-2', 0],
+      ['conversation-10', 0],
+      [' conversation-1', 0],
+      ['conversation-1 ', 0],
+      ['conversation-1,conversation-1', 0],
+      ['*', 0],
+      ['malformed.id', 0],
+    ] as const)(
+      'global ON with allowlist=%s calls selector %s times',
+      async (retrievalAllowlist, expectedCalls) => {
+        const harness = setupProcessHarness({
+          hermesResponse: { response: 'Le ayudo.' },
+          retrieval: true,
+          retrievalAllowlist,
+        });
+        if (!expectedCalls)
+          harness.learning.select.mockRejectedValue(
+            new Error('selector must not be called'),
+          );
+        await harness.service.process(job);
+        expect(harness.learning.select).toHaveBeenCalledTimes(expectedCalls);
+        expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+        expect(
+          harness.engine.respond.mock.calls[0][0].approvedContext
+            .approvedLearning?.length ?? 0,
+        ).toBe(expectedCalls);
+      },
+    );
+
+    it('permits only the QA turn when QA and non-QA turns run concurrently', async () => {
+      const qa = setupProcessHarness({
+        hermesResponse: { response: 'QA.' },
+        retrieval: true,
+        retrievalAllowlist: 'conversation-1',
+      });
+      const other = setupProcessHarness({
+        hermesResponse: { response: 'Normal.' },
+        retrieval: true,
+        retrievalAllowlist: 'conversation-2',
+      });
+      await Promise.all([qa.service.process(job), other.service.process(job)]);
+      expect(qa.learning.select).toHaveBeenCalledTimes(1);
+      expect(other.learning.select).not.toHaveBeenCalled();
+      expect(
+        other.engine.respond.mock.calls[0][0].approvedContext.approvedLearning,
+      ).toBeUndefined();
+    });
+
+    it.each(['gemini_direct', 'nous_hermes'] as const)(
+      '%s keeps non-QA requests and delivery metadata free of learning',
+      async (engineId) => {
+        const harness = setupProcessHarness({
+          hermesResponse: { response: 'Le ayudo.' },
+          retrieval: true,
+          retrievalAllowlist: 'conversation-2',
+          engineId,
+        });
+        harness.engine.respond.mockImplementation(
+          async (turn: ConversationTurnInput) => ({
+            ...toEngineResult({ response: 'Le ayudo.' }),
+            engine: engineId,
+            traceId: turn.inboundMessageId,
+            learningExposed: turn.approvedContext.approvedLearning?.map(
+              ({ id, version }) => ({ id, version }),
+            ),
+          }),
+        );
+        await harness.service.process(job);
+        expect(harness.learning.select).not.toHaveBeenCalled();
+        expect(
+          harness.engine.respond.mock.calls[0][0].approvedContext
+            .approvedLearning,
+        ).toBeUndefined();
+        expect(
+          harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].metadata
+            .learningExposed,
+        ).toBeUndefined();
+        expect(
+          harness.engine.selectedEngine.mock.results.every(
+            (result) => result.value === engineId,
+          ),
+        ).toBe(true);
       },
     );
   });

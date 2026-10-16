@@ -1,0 +1,90 @@
+{
+  "gate": "F3_RETRIEVAL_CANARY_GATE",
+  "result": "BLOCKED_F3_RETRIEVAL_CANARY_QA_CONVERSATION_MISSING",
+  "baseSha": "66cd47722372f8252d0df49610b21403b6171d5f",
+  "preparationReference": "refs/heads/f3-retrieval-canary-gate",
+  "timestampUtc": "2026-10-16T14:36:59.500Z",
+  "canaryScopeControl": {
+    "flag": "LEARNING_RETRIEVAL_ENABLED",
+    "allowlist": "LEARNING_RETRIEVAL_CONVERSATION_ALLOWLIST",
+    "default": "empty",
+    "exactConversationCount": 1,
+    "malformedOrMultiple": "fail_closed",
+    "appliedBeforeSelector": true,
+    "multipleSelectedLearningItems": "fail_closed",
+    "independentOfNousRouting": true,
+    "restartRequired": true
+  },
+  "qaScope": {
+    "designatedConversationIdProvided": false,
+    "operatorOwnedDeliveryAuthorizationProvided": false,
+    "conversationCount": 0
+  },
+  "authorizedLearning": {
+    "idAndVersionProvided": false,
+    "productionEligibilityChecked": false
+  },
+  "operator": {
+    "canaryOwnerProvided": false,
+    "authorizationVerified": false
+  },
+  "localValidation": {
+    "unit": {
+      "suites": 79,
+      "passedSuites": 79,
+      "cases": 1300,
+      "passedCases": 1300,
+      "failedCases": 0,
+      "success": true
+    },
+    "relevantPostgresRedisIntegration": {
+      "suites": 9,
+      "passedSuites": 9,
+      "cases": 101,
+      "passedCases": 101,
+      "failedCases": 0,
+      "success": true
+    },
+    "build": "PASS",
+    "productionTypecheck": "PASS",
+    "directedEslint": "PASS",
+    "directedPrettier": "PASS",
+    "prismaValidate": "PASS",
+    "diffCheck": "PASS",
+    "unrelatedFullIntegrationAtBase": {
+      "advertisingFlow": "SETUP_BLOCKED_ADS_D_TEST_DATABASE_URL_MISSING",
+      "advertisingOutbox": "SETUP_BLOCKED_ADS_E_TEST_DATABASE_URL_MISSING",
+      "evidence": "Observed in the prior full integration attempt on the immediate base; excluded from this F3 relevant run and not rerun here."
+    }
+  },
+  "migrations": {
+    "prismaSchemaChanged": false,
+    "newMigrationDirectories": 0,
+    "required": false
+  },
+  "vpsPreflight": "NOT_STARTED_MISSING_QA_CONVERSATION",
+  "lineage": "NOT_VERIFIED_ON_VPS",
+  "deployedRelease": null,
+  "previousRelease": null,
+  "rollbackRelease": "NOT_VERIFIED_ON_VPS",
+  "finalProductionFlags": "NOT_VERIFIED_ON_VPS",
+  "finalProductionRetrievalAllowlistCount": "NOT_VERIFIED_ON_VPS",
+  "localIsolatedHarnessStopped": true,
+  "canaryTurnsExecuted": 0,
+  "liveNonQaExposureCount": "NOT_MEASURED_NO_LIVE_WINDOW",
+  "externalTraffic": {
+    "geminiReviewer": 0,
+    "geminiConversational": 0,
+    "nous": 0,
+    "metaOutbound": 0,
+    "whatsappQaOutbound": 0,
+    "nonQaOutboundAttributableToGate": 0
+  },
+  "productionChanges": "NONE",
+  "f3State": "OPEN",
+  "nextRequiredInputs": [
+    "previously designated QA/operator-owned conversation ID and live delivery authorization",
+    "authorized ACTIVE LearningItem ID/version with effective evidence",
+    "named canary owner/operator authorization"
+  ]
+}
