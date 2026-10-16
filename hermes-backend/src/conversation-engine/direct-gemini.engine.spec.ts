@@ -16,6 +16,7 @@ describe('DirectGeminiEngine', () => {
     const hermes = {
       generateResponse,
       getProviderModel: jest.fn().mockReturnValue('gemini-3.8-flash'),
+      getPromptVersion: jest.fn().mockReturnValue('prompt-digest-a'),
     } as unknown as HermesService;
     const engine = new DirectGeminiEngine(hermes);
     const input: ConversationTurnInput = {
@@ -52,6 +53,7 @@ describe('DirectGeminiEngine', () => {
         replyText: '¿En qué podemos ayudarle?',
         engine: 'gemini_direct',
         providerModel: 'gemini-3.8-flash',
+        promptVersion: 'prompt-digest-a',
         traceId: 'inbound-1',
         proposedActions: [{ type: 'none' }],
         usage: { totalTokens: 12 },
@@ -66,6 +68,7 @@ describe('DirectGeminiEngine', () => {
     const engine = new DirectGeminiEngine({
       generateResponse,
       getProviderModel: jest.fn().mockReturnValue('gemini-3.8-flash'),
+      getPromptVersion: jest.fn().mockReturnValue('prompt-digest-a'),
     } as unknown as HermesService);
 
     await engine.respond({
@@ -86,12 +89,14 @@ describe('DirectGeminiEngine', () => {
   });
 
   it('passes approved learning separately and reports exposure without guidance', async () => {
-    const generateResponse = jest
-      .fn()
-      .mockResolvedValue({ response: 'Respuesta.' });
+    const generateResponse = jest.fn().mockResolvedValue({
+      response: 'Respuesta.',
+      learningExposed: [{ id: 'safe', version: 3 }],
+    });
     const engine = new DirectGeminiEngine({
       generateResponse,
       getProviderModel: () => 'fake',
+      getPromptVersion: () => 'prompt-digest-a',
     } as unknown as HermesService);
     const approvedLearning = [
       {
@@ -129,5 +134,37 @@ describe('DirectGeminiEngine', () => {
     expect(JSON.stringify(result.learningExposed)).not.toContain(
       'Responder primero',
     );
+  });
+
+  it('does not turn selected learning into exposure after a pre-provider failure', async () => {
+    const engine = new DirectGeminiEngine({
+      generateResponse: jest.fn().mockResolvedValue({
+        response: 'No se pudo completar.',
+        diagnostic: { code: 'PROVIDER_UNAVAILABLE' },
+      }),
+      getProviderModel: () => 'fake',
+      getPromptVersion: () => 'digest',
+    } as unknown as HermesService);
+    const result = await engine.respond({
+      conversationId: 'c',
+      inboundMessageId: 'm',
+      customerMessage: 'pregunta actual',
+      approvedContext: {
+        recentMessages: [],
+        approvedKnowledge: [],
+        approvedLearning: [
+          {
+            id: 'selected-only',
+            version: 1,
+            kind: 'STYLE',
+            trigger: 'pregunta actual',
+            guidance: 'Responder primero',
+          },
+        ],
+        handoffActive: false,
+        contactName: 'Cliente',
+      },
+    });
+    expect(result.learningExposed).toBeUndefined();
   });
 });

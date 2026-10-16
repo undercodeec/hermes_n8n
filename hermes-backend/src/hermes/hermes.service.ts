@@ -162,6 +162,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
   ): Promise<HermesResponseDto> {
     const conversationRepair = this.conversationRepairResponse(request);
     if (conversationRepair) return conversationRepair;
+    let providerReached = false;
     try {
       const businessContext = await this.loadBusinessContext(request);
       const contextParts: string[] = [];
@@ -288,6 +289,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
                 attempt === 1 ? maxOutputTokens : retryMaxOutputTokens,
             },
           );
+          providerReached = true;
           const choice = response.data.choices?.[0];
           finishReason = choice?.finish_reason;
           promptTokens += response.data.usage?.prompt_tokens || 0;
@@ -360,6 +362,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           parsedResponse = candidate;
           break;
         } catch (error) {
+          if (axios.isAxiosError(error) && error.response)
+            providerReached = true;
           if (attempt === maxAttempts) throw error;
           this.logger.warn(
             JSON.stringify({
@@ -397,6 +401,16 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       );
       return {
         ...constrainedResponse,
+        ...(providerReached && request.approvedLearning?.length
+          ? {
+              learningExposed: request.approvedLearning.map(
+                ({ id, version }) => ({
+                  id,
+                  version,
+                }),
+              ),
+            }
+          : {}),
         tokensUsed,
         costEstimate: this.costEstimate(promptTokens, completionTokens),
       };
@@ -415,6 +429,16 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         );
       return {
         response: 'Disculpe, no pude completar la respuesta en este momento.',
+        ...(providerReached && request.approvedLearning?.length
+          ? {
+              learningExposed: request.approvedLearning.map(
+                ({ id, version }) => ({
+                  id,
+                  version,
+                }),
+              ),
+            }
+          : {}),
         tokensUsed: 0,
         costEstimate: 0,
         detectedIntent: 'error',

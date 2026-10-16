@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError } from 'axios';
+import { createHash } from 'crypto';
 import { readFile } from 'fs/promises';
 import type { HermesDiagnostic } from '../hermes/hermes-diagnostics';
 import {
@@ -31,8 +32,15 @@ type NousRequestMessage = {
 export class NousHermesRateLimitError extends Error {
   readonly status = 429;
 
-  constructor() {
-    super('Nous Hermes rate limit');
+  constructor(
+    readonly learningExposed?: Array<{ id: string; version: number }>,
+    readonly promptVersion?: string,
+  ) {
+    super(
+      learningExposed?.length || promptVersion
+        ? `Nous Hermes rate limit|${JSON.stringify({ learningExposed, promptVersion })}`
+        : 'Nous Hermes rate limit',
+    );
     this.name = 'NousHermesRateLimitError';
   }
 }
@@ -66,6 +74,9 @@ export class NousHermesTransport {
       });
     }
 
+    let submittedLearning: Array<{ id: string; version: number }> | undefined;
+    let submittedPromptVersion: string | undefined;
+    let receivedProviderResponse = false;
     try {
       const configuration = await this.configuration();
       const messages = this.messages(
@@ -79,6 +90,11 @@ export class NousHermesTransport {
         submittedState.approvedState.approvedLearning?.map(
           ({ id, version }) => ({ id, version }),
         );
+      submittedLearning = learningExposed;
+      submittedPromptVersion = createHash('sha256')
+        .update(messages[0].content)
+        .digest('hex')
+        .slice(0, 12);
       const response = await axios.post(
         NOUS_HERMES_ENDPOINT,
         {
@@ -98,6 +114,7 @@ export class NousHermesTransport {
           validateStatus: (status) => status >= 200 && status < 300,
         },
       );
+      receivedProviderResponse = true;
       const validated = this.outputValidator.validate(
         response.data,
         configuration.maximumReplyCharacters,
@@ -116,6 +133,7 @@ export class NousHermesTransport {
           validated.providerModel === NOUS_HERMES_MODEL
             ? NOUS_HERMES_MODEL
             : 'unknown',
+        promptVersion: submittedPromptVersion,
         usage: validated.usage,
         traceId: input.inboundMessageId,
         ...(learningExposed?.length ? { learningExposed } : {}),
@@ -129,7 +147,10 @@ export class NousHermesTransport {
       };
     } catch (error) {
       if (this.httpStatus(error) === 429) {
-        throw new NousHermesRateLimitError();
+        throw new NousHermesRateLimitError(
+          submittedLearning,
+          submittedPromptVersion,
+        );
       }
       const diagnostic = this.diagnostic(error);
       this.logger.warn(
@@ -139,7 +160,14 @@ export class NousHermesTransport {
           code: diagnostic.code,
         }),
       );
-      return this.failureResult(input, diagnostic);
+      return this.failureResult(
+        input,
+        diagnostic,
+        receivedProviderResponse || Boolean(this.httpStatus(error))
+          ? submittedLearning
+          : undefined,
+        submittedPromptVersion,
+      );
     }
   }
 
@@ -498,13 +526,17 @@ export class NousHermesTransport {
   private failureResult(
     input: ConversationTurnInput,
     diagnostic: HermesDiagnostic,
+    learningExposed?: Array<{ id: string; version: number }>,
+    promptVersion?: string,
   ): ConversationTurnResult {
     return {
       replyText: 'Disculpe, no pude completar la respuesta en este momento.',
       proposedActions: [{ type: 'none' }],
       engine: 'nous_hermes',
       providerModel: 'unknown',
+      ...(promptVersion ? { promptVersion } : {}),
       traceId: input.inboundMessageId,
+      ...(learningExposed?.length ? { learningExposed } : {}),
       business: {
         detectedIntent: 'error',
         nextAction: 'sin_accion',

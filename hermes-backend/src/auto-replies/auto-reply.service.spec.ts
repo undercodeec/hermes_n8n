@@ -128,6 +128,7 @@ describe('AutoReplyService', () => {
       prepareBatch: jest.fn().mockImplementation(async (input) => {
         prepared = input;
       }),
+      recordSuppressedInference: jest.fn().mockResolvedValue(undefined),
       deliverPreparedBatch: jest.fn().mockImplementation(async () => {
         if (!prepared) throw new Error('delivery batch was not prepared');
         for (const part of prepared.parts) {
@@ -194,6 +195,7 @@ describe('AutoReplyService', () => {
       recoverBatch: jest.Mock;
       getBatchProgress: jest.Mock;
       prepareBatch: jest.Mock;
+      recordSuppressedInference: jest.Mock;
       deliverPreparedBatch: jest.Mock;
     };
     messageCreate: jest.Mock;
@@ -323,6 +325,7 @@ describe('AutoReplyService', () => {
       }),
       recoverBatch: jest.fn().mockResolvedValue(null),
       prepareBatch: jest.fn().mockResolvedValue(undefined),
+      recordSuppressedInference: jest.fn().mockResolvedValue(undefined),
       deliverPreparedBatch: jest.fn().mockImplementation(async () => {
         const prepared = deliveries.prepareBatch.mock.calls.at(-1)?.[0];
         if (!prepared) return { handled: false, confirmed: 0, terminal: false };
@@ -483,6 +486,7 @@ describe('AutoReplyService', () => {
     harness.engine.respond.mockResolvedValue({
       ...toEngineResult({ response: 'Le ayudo.' }),
       learningExposed: [{ id: 'learning-safe', version: 2 }],
+      promptVersion: 'prompt-digest-a',
     });
     await harness.service.process({
       conversationId: 'conversation-1',
@@ -494,7 +498,41 @@ describe('AutoReplyService', () => {
     expect(metadata.learningExposed).toEqual([
       { id: 'learning-safe', version: 2 },
     ]);
+    expect(metadata.promptVersion).toBe('prompt-digest-a');
     expect(JSON.stringify(metadata)).not.toContain('Responder brevemente');
+  });
+
+  it('persists a compact exposure trace when post-inference policy suppresses a reply', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'Respuesta breve.' },
+      engineId: 'nous_hermes',
+    });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({ response: 'Respuesta breve.' }),
+      engine: 'nous_hermes',
+      replyParts: Array(10).fill('Respuesta breve.'),
+      learningExposed: [{ id: 'synthetic-learning', version: 1 }],
+      promptVersion: 'digest-a',
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.deliveries.prepareBatch).not.toHaveBeenCalled();
+    expect(harness.deliveries.recordSuppressedInference).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceMessageId: 'inbound-recovery',
+        reasonCode: 'TOO_MANY_REPLY_PARTS',
+        metadata: expect.objectContaining({
+          conversationEngine: 'nous_hermes',
+          traceId: 'inbound-recovery',
+          promptVersion: 'digest-a',
+          learningExposed: [{ id: 'synthetic-learning', version: 1 }],
+        }),
+      }),
+    );
+    expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
   });
 
   it.each(['gemini_direct', 'nous_hermes'] as const)(

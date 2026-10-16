@@ -72,6 +72,21 @@ describe('NousHermesEngine queue routing', () => {
     );
   });
 
+  it('keeps request exposure when a terminal rate limit crosses the queue boundary', async () => {
+    const { engine, waitUntilFinished } = harness();
+    const queued = new NousHermesRateLimitError(
+      [{ id: 'synthetic-learning', version: 2 }],
+      'prompt-digest',
+    );
+    waitUntilFinished.mockRejectedValue(new Error(queued.message));
+    const result = await engine.respond(baseInput());
+    expect(result.diagnostic?.code).toBe('NOUS_HERMES_RATE_LIMITED');
+    expect(result.learningExposed).toEqual([
+      { id: 'synthetic-learning', version: 2 },
+    ]);
+    expect(result.promptVersion).toBe('prompt-digest');
+  });
+
   it('short-circuits an active handoff before Redis', async () => {
     const { engine, queue } = harness();
     const input = baseInput({

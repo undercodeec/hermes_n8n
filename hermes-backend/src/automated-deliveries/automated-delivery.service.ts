@@ -59,25 +59,57 @@ export class AutomatedDeliveryService
   ) {}
 
   async prepareBatch(input: PrepareAutomatedDeliveryBatch): Promise<void> {
-    for (const part of input.parts) {
-      const operationKey = `${input.sourceMessageId}:${input.deliveryKind}:${part.partIndex}`;
-      await this.prisma.automatedDelivery.upsert({
-        where: { operationKey },
-        create: {
-          operationKey,
-          deliveryKind: input.deliveryKind,
-          partIndex: part.partIndex,
-          conversationId: input.conversationId,
-          contactId: input.contactId,
-          sourceMessageId: input.sourceMessageId,
-          sender: input.sender,
-          content: part.content,
-          allowHandedOff: input.allowHandedOff,
-          metadata: part.metadata as Prisma.InputJsonValue | undefined,
-        },
-        update: {},
-      });
-    }
+    await this.prisma.$transaction(async (tx) => {
+      for (const part of input.parts) {
+        const operationKey = `${input.sourceMessageId}:${input.deliveryKind}:${part.partIndex}`;
+        await tx.automatedDelivery.upsert({
+          where: { operationKey },
+          create: {
+            operationKey,
+            deliveryKind: input.deliveryKind,
+            partIndex: part.partIndex,
+            conversationId: input.conversationId,
+            contactId: input.contactId,
+            sourceMessageId: input.sourceMessageId,
+            sender: input.sender,
+            content: part.content,
+            allowHandedOff: input.allowHandedOff,
+            metadata: part.metadata as Prisma.InputJsonValue | undefined,
+          },
+          update: {},
+        });
+      }
+    });
+  }
+
+  /** Persist an inference stopped after generation without creating a dispatchable reply. */
+  async recordSuppressedInference(input: {
+    conversationId: string;
+    contactId: string;
+    sourceMessageId: string;
+    reasonCode: string;
+    metadata: Record<string, unknown>;
+  }): Promise<void> {
+    const operationKey = `${input.sourceMessageId}:HERMES_REPLY:0`;
+    await this.prisma.automatedDelivery.upsert({
+      where: { operationKey },
+      create: {
+        operationKey,
+        deliveryKind: 'HERMES_REPLY',
+        partIndex: 0,
+        conversationId: input.conversationId,
+        contactId: input.contactId,
+        sourceMessageId: input.sourceMessageId,
+        sender: 'HERMES',
+        content: '',
+        allowHandedOff: false,
+        status: AutomatedDeliveryStatus.SUPPRESSED,
+        suppressedAt: new Date(),
+        reasonCode: input.reasonCode,
+        metadata: input.metadata as Prisma.InputJsonValue,
+      },
+      update: {},
+    });
   }
 
   async recoverBatch(

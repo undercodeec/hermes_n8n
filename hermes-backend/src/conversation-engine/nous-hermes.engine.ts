@@ -72,6 +72,7 @@ export class NousHermesEngine implements ConversationEngine {
           'PROVIDER_ERROR',
           attempts,
           true,
+          this.rateLimitTrace(error),
         );
       }
       return this.queueUnavailable(input);
@@ -95,8 +96,47 @@ export class NousHermesEngine implements ConversationEngine {
     return (
       error instanceof NousHermesRateLimitError ||
       (error instanceof Error &&
-        error.message === new NousHermesRateLimitError().message)
+        (error.message === 'Nous Hermes rate limit' ||
+          error.message.startsWith('Nous Hermes rate limit|')))
     );
+  }
+
+  private rateLimitTrace(error: unknown): {
+    learningExposed?: Array<{ id: string; version: number }>;
+    promptVersion?: string;
+  } {
+    if (!(error instanceof Error)) return {};
+    const encoded = error.message.split('|', 2)[1];
+    if (!encoded) return {};
+    try {
+      const trace = JSON.parse(encoded) as {
+        learningExposed?: Array<{ id: string; version: number }>;
+        promptVersion?: string;
+      };
+      const validExposure =
+        Array.isArray(trace.learningExposed) &&
+        trace.learningExposed.length <= 3 &&
+        trace.learningExposed.every(
+          (item) =>
+            item &&
+            typeof item.id === 'string' &&
+            item.id.length > 0 &&
+            item.id.length <= 100 &&
+            Number.isSafeInteger(item.version) &&
+            item.version > 0 &&
+            Object.keys(item).every((key) => key === 'id' || key === 'version'),
+        );
+      return {
+        ...(validExposure ? { learningExposed: trace.learningExposed } : {}),
+        ...(typeof trace.promptVersion === 'string' &&
+        trace.promptVersion.length > 0 &&
+        trace.promptVersion.length <= 64
+          ? { promptVersion: trace.promptVersion }
+          : {}),
+      };
+    } catch {
+      return {};
+    }
   }
 
   private failureResult(
@@ -106,13 +146,21 @@ export class NousHermesEngine implements ConversationEngine {
     category: 'OUTPUT_BLOCKED' | 'PROVIDER_ERROR',
     attempts: number,
     requiresHumanReview: boolean,
+    trace: {
+      learningExposed?: Array<{ id: string; version: number }>;
+      promptVersion?: string;
+    } = {},
   ): ConversationTurnResult {
     return {
       replyText: 'Disculpe, no pude completar la respuesta en este momento.',
       proposedActions: [{ type: 'none' }],
       engine: 'nous_hermes',
       providerModel: 'unknown',
+      ...(trace.promptVersion ? { promptVersion: trace.promptVersion } : {}),
       traceId: input.inboundMessageId,
+      ...(trace.learningExposed?.length
+        ? { learningExposed: trace.learningExposed }
+        : {}),
       business: {
         detectedIntent: 'error',
         nextAction: 'sin_accion',

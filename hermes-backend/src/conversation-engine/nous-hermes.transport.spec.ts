@@ -168,9 +168,55 @@ describe('NousHermesTransport', () => {
       'no comerciales ni acciones ejecutadas',
     );
     expect(result.learningExposed).toEqual([{ id: 'safe', version: 3 }]);
+    expect(result.promptVersion).toMatch(/^[0-9a-f]{12}$/);
     expect(JSON.stringify(result.learningExposed)).not.toContain(
       'Responder primero',
     );
+  });
+
+  it('retains exposure after a provider response is rejected by output validation', async () => {
+    post.mockResolvedValue({ data: { model: 'hermes-agent', choices: [] } });
+    const result = await configuredTransport().execute(
+      baseInput({
+        approvedContext: {
+          ...baseInput().approvedContext,
+          approvedLearning: [
+            {
+              id: 'safe',
+              version: 2,
+              kind: 'STYLE',
+              trigger: 'pregunta actual',
+              guidance: 'Responder primero la pregunta',
+            },
+          ],
+        },
+      }),
+    );
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(result.learningExposed).toEqual([{ id: 'safe', version: 2 }]);
+    expect(result.promptVersion).toMatch(/^[0-9a-f]{12}$/);
+    expect(result.diagnostic).toBeDefined();
+  });
+
+  it('carries only ID/version across a retryable 429', async () => {
+    post.mockRejectedValue({ response: { status: 429 } });
+    const input = baseInput({
+      approvedContext: {
+        ...baseInput().approvedContext,
+        approvedLearning: [
+          {
+            id: 'safe',
+            version: 2,
+            kind: 'STYLE',
+            trigger: 'pregunta actual',
+            guidance: 'Responder primero la pregunta',
+          },
+        ],
+      },
+    });
+    await expect(configuredTransport().execute(input)).rejects.toMatchObject({
+      learningExposed: [{ id: 'safe', version: 2 }],
+    });
   });
 
   it('enforces the aggregate learning budget even for a direct engine input', async () => {

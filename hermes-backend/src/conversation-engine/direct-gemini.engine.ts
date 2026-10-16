@@ -43,14 +43,15 @@ export class DirectGeminiEngine implements ConversationEngine {
       proposedActions: [{ type: 'none' }],
       engine: this.id,
       providerModel: this.hermes.getProviderModel(),
+      promptVersion: this.hermes.getPromptVersion(),
       usage:
         response.tokensUsed === undefined
           ? undefined
           : { totalTokens: response.tokensUsed },
       traceId: input.inboundMessageId,
-      ...(input.approvedContext.approvedLearning?.length
+      ...(response.learningExposed?.length
         ? {
-            learningExposed: input.approvedContext.approvedLearning.map(
+            learningExposed: response.learningExposed.map(
               ({ id, version }) => ({ id, version }),
             ),
           }

@@ -111,6 +111,8 @@ export class HermesRequestDto {
 
 export class HermesResponseDto {
   response: string;
+  /** Present only when the provider boundary was observed with approved learning in the request. */
+  learningExposed?: Array<{ id: string; version: number }>;
   tokensUsed?: number;
   costEstimate?: number;
   suggestedTags?: string[];

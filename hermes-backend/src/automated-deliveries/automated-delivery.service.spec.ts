@@ -113,7 +113,7 @@ class DeliveryStore {
     },
     $executeRaw: jest.fn(async () => undefined),
     $transaction: jest.fn(async (callback: (tx: Row) => unknown) => {
-      if (this.failNextClaimTransaction) {
+      if (this.failNextClaimTransaction && this.rows.length > 0) {
         this.failNextClaimTransaction = false;
         throw new Error('claim transaction failed');
       }

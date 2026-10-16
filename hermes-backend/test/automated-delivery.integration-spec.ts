@@ -8,6 +8,7 @@ import {
   PrismaClient,
 } from '@prisma/client';
 import { AutomatedDeliveryService } from '../src/automated-deliveries/automated-delivery.service';
+import { loadLearningTrace } from '../src/automated-deliveries/learning-trace';
 import { MetaService } from '../src/meta/meta.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 
@@ -240,5 +241,156 @@ describe('AutomatedDelivery PostgreSQL claims (integration)', () => {
     expect(result.confirmed).toBe(1);
     expect(result.reasonCode).toBe('NEWER_INBOUND');
     expect(sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('reconstructs confirmed exposure from the persisted ledger without guidance', async () => {
+    if (!prisma) throw new Error('Integration fixture unavailable');
+    const delivery = await prisma.automatedDelivery.findUniqueOrThrow({
+      where: { id: deliveryId },
+    });
+    await prisma.automatedDelivery.update({
+      where: { id: deliveryId },
+      data: {
+        metadata: {
+          conversationEngine: 'gemini_direct',
+          providerModel: 'gemini-fake',
+          promptVersion: 'synthetic-digest',
+          traceId: delivery.sourceMessageId,
+          learningExposed: [{ id: 'synthetic-learning-a', version: 1 }],
+        },
+      },
+    });
+    const service = new AutomatedDeliveryService(
+      prisma as PrismaService,
+      {
+        sendTextMessage: jest.fn().mockResolvedValue({
+          messages: [{ id: `wamid.out.${randomUUID()}` }],
+        }),
+      } as unknown as MetaService,
+    );
+    expect(
+      (await service.deliverPreparedBatch(delivery.sourceMessageId)).confirmed,
+    ).toBe(1);
+    const trace = await loadLearningTrace(
+      prisma as PrismaService,
+      delivery.sourceMessageId,
+    );
+    expect(trace.deliveredConfirmed).toBe(true);
+    expect(trace.learningExposed).toEqual([
+      { id: 'synthetic-learning-a', version: 1 },
+    ]);
+    expect(trace.traceId).toBe(delivery.sourceMessageId);
+    expect(trace.deliveries[0].wamid).toMatch(/^wamid\.out\./);
+    expect(JSON.stringify(trace)).not.toContain('guidance');
+    expect(
+      (
+        await loadLearningTrace(
+          prisma as PrismaService,
+          delivery.sourceMessageId,
+        )
+      ).learningExposed,
+    ).toEqual(trace.learningExposed);
+  });
+
+  it('rolls back every prepared part when later trace metadata cannot persist', async () => {
+    if (!prisma || !contactId)
+      throw new Error('Integration fixture unavailable');
+    const delivery = await prisma.automatedDelivery.findUniqueOrThrow({
+      where: { id: deliveryId },
+    });
+    const source = await prisma.message.create({
+      data: {
+        conversationId: delivery.conversationId,
+        contactId,
+        direction: MessageDirection.INBOUND,
+        sender: MessageSender.CONTACT,
+        type: MessageType.TEXT,
+        content: 'synthetic second inbound',
+      },
+    });
+    const service = new AutomatedDeliveryService(
+      prisma as PrismaService,
+      { sendTextMessage: jest.fn() } as unknown as MetaService,
+    );
+    const invalidMetadata: Record<string, unknown> = {};
+    invalidMetadata.self = invalidMetadata;
+    const batch = {
+      deliveryKind: 'HERMES_REPLY' as const,
+      conversationId: delivery.conversationId,
+      contactId,
+      sourceMessageId: source.id,
+      sender: 'HERMES' as const,
+      allowHandedOff: false,
+      parts: [
+        {
+          partIndex: 0,
+          content: 'Part 0',
+          metadata: {
+            conversationEngine: 'nous_hermes',
+            providerModel: 'nous-fake',
+            traceId: source.id,
+            learningExposed: [{ id: 'synthetic-learning', version: 2 }],
+          },
+        },
+        { partIndex: 1, content: 'Part 1', metadata: invalidMetadata },
+      ],
+    };
+    await expect(service.prepareBatch(batch)).rejects.toBeDefined();
+    expect(
+      await prisma.automatedDelivery.count({
+        where: { sourceMessageId: source.id },
+      }),
+    ).toBe(0);
+    await service.prepareBatch({
+      ...batch,
+      parts: [batch.parts[0], { partIndex: 1, content: 'Part 1' }],
+    });
+    expect(
+      await prisma.automatedDelivery.count({
+        where: { sourceMessageId: source.id },
+      }),
+    ).toBe(2);
+  });
+
+  it('keeps a post-inference suppression terminal with exposure and no Meta send', async () => {
+    if (!prisma || !contactId)
+      throw new Error('Integration fixture unavailable');
+    const delivery = await prisma.automatedDelivery.findUniqueOrThrow({
+      where: { id: deliveryId },
+    });
+    const source = await prisma.message.create({
+      data: {
+        conversationId: delivery.conversationId,
+        contactId,
+        direction: MessageDirection.INBOUND,
+        sender: MessageSender.CONTACT,
+        type: MessageType.TEXT,
+        content: 'synthetic suppressed inbound',
+      },
+    });
+    const sendTextMessage = jest.fn();
+    const service = new AutomatedDeliveryService(
+      prisma as PrismaService,
+      { sendTextMessage } as unknown as MetaService,
+    );
+    await service.recordSuppressedInference({
+      conversationId: delivery.conversationId,
+      contactId,
+      sourceMessageId: source.id,
+      reasonCode: 'REPLY_PART_BLOCKED',
+      metadata: {
+        conversationEngine: 'nous_hermes',
+        providerModel: 'nous-fake',
+        promptVersion: 'synthetic-digest',
+        traceId: source.id,
+        learningExposed: [{ id: 'synthetic-learning', version: 1 }],
+      },
+    });
+    const trace = await loadLearningTrace(prisma as PrismaService, source.id);
+    expect(trace.deliveredConfirmed).toBe(false);
+    expect(trace.exposureAnalyticsEligible).toBe(true);
+    expect(trace.deliveries[0].status).toBe('SUPPRESSED');
+    expect((await service.recoverBatch(source.id))?.terminal).toBe(true);
+    expect(sendTextMessage).not.toHaveBeenCalled();
   });
 });

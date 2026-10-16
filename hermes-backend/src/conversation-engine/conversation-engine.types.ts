@@ -71,6 +71,8 @@ export interface ConversationTurnResult {
   engine: ConversationEngineId;
   /** Effective provider model when the runtime can verify it, otherwise `unknown`. */
   providerModel: string;
+  /** Digest of the effective system prompt/contract, when observable. */
+  promptVersion?: string;
   usage?: { inputTokens?: number; outputTokens?: number; totalTokens?: number };
   traceId: string;
   /** Items exposed to the engine request, not items causally used in the answer. */

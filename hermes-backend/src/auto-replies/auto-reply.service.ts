@@ -588,6 +588,27 @@ export class AutoReplyService {
         },
       },
     });
+    const recordSuppressedInference = (reasonCode: string) =>
+      this.deliveries.recordSuppressedInference({
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        sourceMessageId: inbound.id,
+        reasonCode,
+        metadata: {
+          conversationEngine: engineResult.engine,
+          providerModel: engineResult.providerModel,
+          ...(engineResult.promptVersion
+            ? { promptVersion: engineResult.promptVersion }
+            : {}),
+          traceId: engineResult.traceId,
+          ...(engineResult.learningExposed?.length
+            ? { learningExposed: engineResult.learningExposed }
+            : {}),
+          ...(data.inboundTurnId
+            ? { conversationTurnId: data.inboundTurnId }
+            : {}),
+        },
+      });
     const response: HermesResponseDto = {
       response: engineResult.replyText,
       tokensUsed: engineResult.usage?.totalTokens,
@@ -918,10 +939,12 @@ export class AutoReplyService {
       this.logSkip(data, 'CONVERSATION_CHANGED_DURING_GENERATION', {
         status: currentConversation?.status ?? 'NOT_FOUND',
       });
+      await recordSuppressedInference('CONVERSATION_CHANGED_DURING_GENERATION');
       return;
     }
     if (await this.hasNewerInbound(data.conversationId, inbound)) {
       this.logSkip(data, 'NEWER_INBOUND_DURING_GENERATION');
+      await recordSuppressedInference('NEWER_INBOUND_DURING_GENERATION');
       return;
     }
 
@@ -1043,6 +1066,9 @@ export class AutoReplyService {
       ))
     ) {
       this.logSkip(data, 'CONVERSATION_STATUS_REJECTED_BEFORE_SEND');
+      await recordSuppressedInference(
+        'CONVERSATION_STATUS_REJECTED_BEFORE_SEND',
+      );
       return;
     }
     response.detectedIntent = reconcileCommercialIntent(
@@ -1091,6 +1117,7 @@ export class AutoReplyService {
     );
     if (messageParts.length > 9) {
       this.logSkip(data, 'TOO_MANY_REPLY_PARTS');
+      await recordSuppressedInference('TOO_MANY_REPLY_PARTS');
       return;
     }
     if (
@@ -1103,6 +1130,7 @@ export class AutoReplyService {
       )
     ) {
       this.logSkip(data, 'REPLY_PART_BLOCKED');
+      await recordSuppressedInference('REPLY_PART_BLOCKED');
       return;
     }
     const modality = this.config.get<string>('HERMES_REPLY_MODALITY', 'mirror');
@@ -1221,6 +1249,9 @@ export class AutoReplyService {
                     }
                   : {}),
                 providerModel: engineResult.providerModel,
+                ...(engineResult.promptVersion
+                  ? { promptVersion: engineResult.promptVersion }
+                  : {}),
                 traceId: engineResult.traceId,
                 ...(engineResult.learningExposed?.length
                   ? { learningExposed: engineResult.learningExposed }

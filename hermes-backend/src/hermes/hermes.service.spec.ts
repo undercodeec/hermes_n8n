@@ -40,7 +40,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup(
       JSON.stringify({ response: 'Con gusto le ayudo.' }),
     );
-    await service.generateResponse({
+    const result = await service.generateResponse({
       contactName: 'Cliente',
       messageContent: 'Consulta',
       conversationHistory: [],
@@ -63,6 +63,33 @@ describe('HermesService commercial contract', () => {
     );
     expect(prompt).toContain('Plan A');
     expect(prompt).toContain('Responder con brevedad');
+    expect(result.learningExposed).toEqual([{ id: 'safe', version: 1 }]);
+  });
+  it('keeps exposure when the provider answered with an HTTP failure', async () => {
+    const { service, post } = setup(JSON.stringify({ response: 'unused' }));
+    post.mockRejectedValue({
+      isAxiosError: true,
+      message: 'synthetic HTTP failure',
+      response: { status: 500 },
+    });
+    const result = await service.generateResponse({
+      contactName: 'Cliente',
+      messageContent: 'Consulta',
+      conversationHistory: [],
+      commercialSnapshot: snapshot([]),
+      approvedLearning: [
+        {
+          id: 'safe',
+          version: 2,
+          kind: 'STYLE',
+          trigger: 'consulta actual',
+          guidance: 'Responder con brevedad',
+        },
+      ],
+    });
+    expect(post).toHaveBeenCalled();
+    expect(result.learningExposed).toEqual([{ id: 'safe', version: 2 }]);
+    expect(result.diagnostic).toBeDefined();
   });
   it.each(['USD 360e3', 'USD 360 EUR'])(
     'rejects malformed money at the model output boundary: %s',
@@ -1192,6 +1219,15 @@ describe('HermesService commercial contract', () => {
     const result = await service.generateResponse({
       contactName: 'Christopher',
       messageContent: '?',
+      approvedLearning: [
+        {
+          id: 'selected-only',
+          version: 1,
+          kind: 'STYLE',
+          trigger: 'consulta actual',
+          guidance: 'Responder con brevedad',
+        },
+      ],
       conversationHistory: [
         { role: 'user', content: 'Mostrar mis arreglos florales' },
         {
@@ -1213,6 +1249,7 @@ describe('HermesService commercial contract', () => {
     expect(result.response).not.toMatch(/plan de lanzamiento|horario/i);
     expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
     expect(post).not.toHaveBeenCalled();
+    expect(result.learningExposed).toBeUndefined();
   });
 
   it('repairs missing opening question marks and joins a continued question with a comma', async () => {
