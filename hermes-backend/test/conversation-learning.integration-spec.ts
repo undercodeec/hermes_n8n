@@ -1760,4 +1760,212 @@ describe('Conversation learning loop (isolated integration)', () => {
       provider: provider.requests.length,
     }).toEqual(before);
   });
+
+  it('F3 privacy isolation reuses generalized learning from A in B without reading or writing A private context', async () => {
+    const { source, item: original } =
+      await createCandidate('f3-privacy-source');
+    const sourceConversation = await prisma.conversation.findUniqueOrThrow({
+      where: { id: source.conversationId },
+    });
+    await prisma.contact.update({
+      where: { id: sourceConversation.contactId },
+      data: { name: 'PRIV_A_NAME_7F31', company: 'PRIV_A_COMPANY_7F31' },
+    });
+    await prisma.message.update({
+      where: { id: source.sourceMessageId },
+      data: { content: 'PRIV_A_SECRET_FACT_7F31' },
+    });
+    await prisma.conversationFeedback.update({
+      where: { id: source.feedbackId },
+      data: { suggestedReply: 'PRIV_A_FEEDBACK_7F31' },
+    });
+    await prisma.conversationReview.update({
+      where: { id: original.sourceReviewId! },
+      data: { summary: 'PRIV_A_REVIEW_7F31' },
+    });
+    await prisma.conversationState.create({
+      data: {
+        conversationId: source.conversationId,
+        summary: 'PRIV_A_SUMMARY_7F31',
+      },
+    });
+    await prisma.lead.create({
+      data: {
+        contactId: sourceConversation.contactId,
+        conversationId: source.conversationId,
+        metadata: { commercialProfile: { need: 'PRIV_A_PROFILE_7F31' } },
+      },
+    });
+    const expiry = new Date(Date.now() + 86400_000);
+    await prisma.learningItem.update({
+      where: { id: original.id },
+      data: {
+        status: LearningItemStatus.ACTIVE,
+        riskLevel: LearningRiskLevel.LOW,
+        trigger: 'cliente confirma continuar',
+        guidance:
+          'Tras confirmar, avanzar al siguiente paso sin repetir la misma oferta',
+        serviceCode: 'WEBSITE',
+        market: 'EC',
+        validUntil: expiry,
+      },
+    });
+    const add = async (
+      fingerprint: string,
+      guidance: string,
+      withEvidence: boolean,
+    ) =>
+      prisma.learningItem.create({
+        data: {
+          fingerprint: `f3-privacy-${fingerprint}`,
+          version: 1,
+          kind: 'STYLE',
+          trigger: 'cliente confirma continuar',
+          guidance,
+          status: LearningItemStatus.ACTIVE,
+          riskLevel: LearningRiskLevel.LOW,
+          validUntil: expiry,
+          serviceCode: 'WEBSITE',
+          market: 'EC',
+          ...(withEvidence
+            ? {
+                evidence: {
+                  create: {
+                    conversationId: source.conversationId,
+                    messageId: source.sourceMessageId,
+                    feedbackId: source.feedbackId,
+                    reviewId: original.sourceReviewId!,
+                  },
+                },
+              }
+            : {}),
+        },
+      });
+    const safe2 = await add('safe-2', 'Hacer una pregunta pertinente', true);
+    const privateItem = await add(
+      'private',
+      'Enviar a priv-a-7f31@example.invalid',
+      true,
+    );
+    const noEvidence = await add(
+      'no-evidence',
+      'Explicar la etapa actual',
+      false,
+    );
+    const bContact = await prisma.contact.create({
+      data: { waId: 'learning-priv-b-7f31', name: 'PRIV_B_NAME_7F31' },
+    });
+    const bConversation = await prisma.conversation.create({
+      data: { contactId: bContact.id },
+    });
+    await prisma.conversationState.create({
+      data: {
+        conversationId: bConversation.id,
+        summary: 'PRIV_B_SUMMARY_7F31',
+      },
+    });
+    await prisma.lead.create({
+      data: {
+        contactId: bContact.id,
+        conversationId: bConversation.id,
+        metadata: { commercialProfile: { need: 'PRIV_B_PROFILE_7F31' } },
+      },
+    });
+    const bMessage = await prisma.message.create({
+      data: {
+        conversationId: bConversation.id,
+        contactId: bContact.id,
+        direction: MessageDirection.INBOUND,
+        sender: MessageSender.CONTACT,
+        type: MessageType.TEXT,
+        content: 'cliente confirma continuar',
+        wamid: 'wamid.priv-b-7f31',
+      },
+    });
+    const sourceBefore = {
+      contact: await prisma.contact.findUniqueOrThrow({
+        where: { id: sourceConversation.contactId },
+      }),
+      lead: await prisma.lead.findFirstOrThrow({
+        where: { contactId: sourceConversation.contactId },
+      }),
+      state: await prisma.conversationState.findUniqueOrThrow({
+        where: { conversationId: source.conversationId },
+      }),
+      message: await prisma.message.findUniqueOrThrow({
+        where: { id: source.sourceMessageId },
+      }),
+      feedback: await prisma.conversationFeedback.findUniqueOrThrow({
+        where: { id: source.feedbackId },
+      }),
+      review: await prisma.conversationReview.findUniqueOrThrow({
+        where: { id: original.sourceReviewId! },
+      }),
+      evidence: await prisma.learningEvidence.findMany({
+        where: { conversationId: source.conversationId },
+      }),
+    };
+    const findMany = jest.fn((args: Prisma.LearningItemFindManyArgs) =>
+      prisma.learningItem.findMany(args),
+    );
+    const retrieval = new LearningRetrievalService(
+      { learningItem: { findMany } } as unknown as PrismaService,
+      config(10, true),
+    );
+    const selected = await retrieval.select({
+      customerMessage: bMessage.content!,
+      serviceCode: 'WEBSITE',
+      market: 'EC',
+      approvedKnowledge: ['Plan autorizado'],
+      traceId: bMessage.id,
+    });
+    expect(selected.map(({ id }) => id).sort()).toEqual(
+      [original.id, safe2.id].sort(),
+    );
+    expect(selected.map(({ id }) => id)).not.toContain(privateItem.id);
+    expect(selected.map(({ id }) => id)).not.toContain(noEvidence.id);
+    expect(JSON.stringify(selected)).not.toMatch(/PRIV_A_|priv-a-7f31/);
+    const query = findMany.mock.calls[0][0];
+    expect(query.select?.evidence).toMatchObject({
+      select: { id: true },
+      take: 1,
+    });
+    expect(query.select).not.toHaveProperty('sourceReviewId');
+    expect(query.select).not.toHaveProperty('sourceReview');
+    expect(sourceBefore).toEqual({
+      contact: await prisma.contact.findUniqueOrThrow({
+        where: { id: sourceConversation.contactId },
+      }),
+      lead: await prisma.lead.findFirstOrThrow({
+        where: { contactId: sourceConversation.contactId },
+      }),
+      state: await prisma.conversationState.findUniqueOrThrow({
+        where: { conversationId: source.conversationId },
+      }),
+      message: await prisma.message.findUniqueOrThrow({
+        where: { id: source.sourceMessageId },
+      }),
+      feedback: await prisma.conversationFeedback.findUniqueOrThrow({
+        where: { id: source.feedbackId },
+      }),
+      review: await prisma.conversationReview.findUniqueOrThrow({
+        where: { id: original.sourceReviewId! },
+      }),
+      evidence: await prisma.learningEvidence.findMany({
+        where: { conversationId: source.conversationId },
+      }),
+    });
+    await prisma.learningEvidence.updateMany({
+      where: { learningItemId: original.id },
+      data: { messageId: null },
+    });
+    const afterInvalidation = await retrieval.select({
+      customerMessage: bMessage.content!,
+      serviceCode: 'WEBSITE',
+      market: 'EC',
+      approvedKnowledge: ['Plan autorizado'],
+      traceId: bMessage.id,
+    });
+    expect(afterInvalidation.map(({ id }) => id)).toEqual([safe2.id]);
+  });
 });

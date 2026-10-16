@@ -1068,6 +1068,104 @@ describe('AutoReplyService', () => {
     );
   });
 
+  it.each(['gemini_direct', 'nous_hermes'] as const)(
+    'F3 privacy: %s turn for contact B keeps B context and delivery metadata free of source A',
+    async (engineId) => {
+      const safeId = '123e4567-e89b-42d3-a456-426614174000';
+      const safeGuidance =
+        'Tras confirmar, avanzar al siguiente paso sin repetir la misma oferta';
+      const baseRow = {
+        version: 1,
+        kind: 'STYLE',
+        trigger: 'confirmar punto',
+        status: LearningItemStatus.ACTIVE,
+        riskLevel: LearningRiskLevel.LOW,
+        validUntil: new Date(Date.now() + 86400_000),
+        createdAt: new Date('2026-10-15T12:00:00Z'),
+        serviceCode: null,
+        market: null,
+      };
+      const harness = setupProcessHarness({
+        hermesResponse: { response: 'Le ayudo con el siguiente paso.' },
+        retrieval: true,
+        realShadow: true,
+        engineId,
+        persistedProfile: {
+          need: 'PRIV_B_NEED_7F31',
+          company: 'PRIV_B_COMPANY_7F31',
+        },
+        learningRows: [
+          {
+            ...baseRow,
+            id: safeId,
+            guidance: safeGuidance,
+            sourceReviewId: 'PRIV_A_REVIEW_7F31',
+            evidence: [{ id: 'PRIV_A_EVIDENCE_7F31' }],
+          },
+          {
+            ...baseRow,
+            id: 'private-a',
+            guidance: 'Enviar a priv-a-7f31@example.invalid',
+            evidence: [{ id: 'PRIV_A_EVIDENCE_7F31' }],
+          },
+        ],
+      });
+      (harness.prisma.conversation.findUnique as jest.Mock).mockResolvedValue({
+        id: 'conversation-1',
+        status: ConversationStatus.ACTIVE,
+        metadata: {},
+        contact: { name: 'Beatriz', waId: '593000000732', email: null },
+      });
+      (
+        harness.prisma.conversationState.findUnique as jest.Mock
+      ).mockResolvedValue({
+        summary: 'PRIV_B_SUMMARY_7F31',
+      });
+      harness.engine.respond.mockImplementation(
+        async (turn: ConversationTurnInput) => ({
+          ...toEngineResult({ response: 'Le ayudo con el siguiente paso.' }),
+          engine: engineId,
+          traceId: turn.inboundMessageId,
+          learningExposed: turn.approvedContext.approvedLearning?.map(
+            ({ id, version }) => ({ id, version }),
+          ),
+        }),
+      );
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      const turn = harness.engine.respond.mock
+        .calls[0][0] as ConversationTurnInput;
+      expect(turn.approvedContext.approvedLearning).toEqual([
+        expect.objectContaining({
+          id: safeId,
+          version: 1,
+          guidance: safeGuidance,
+        }),
+      ]);
+      expect(turn.approvedContext.commercialProfile).toEqual(
+        expect.objectContaining({
+          need: 'PRIV_B_NEED_7F31',
+          company: 'PRIV_B_COMPANY_7F31',
+        }),
+      );
+      expect(turn.approvedContext.conversationSummary).toBe(
+        'PRIV_B_SUMMARY_7F31',
+      );
+      const batch = harness.deliveries.prepareBatch.mock.calls[0][0];
+      expect(batch.parts[0].metadata.learningExposed).toEqual([
+        { id: safeId, version: 1 },
+      ]);
+      expect(JSON.stringify({ turn, batch })).not.toMatch(
+        /PRIV_A_|priv-a-7f31/,
+      );
+      expect(harness.prisma.learningItem.update).not.toHaveBeenCalled();
+      expect(harness.prisma.learningEvidence.create).not.toHaveBeenCalled();
+    },
+  );
+
   it.each([false, true])(
     'preserves a newer profile and intent when an older normal delivery finishes (equal provider timestamp: %s)',
     async (equalTimestamp) => {
