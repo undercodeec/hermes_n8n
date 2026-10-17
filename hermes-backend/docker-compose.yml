@@ -22,8 +22,9 @@ services:
         read_only: true
       - hermes_backups:/var/lib/hermes/backups
     networks:
-      - default
-      - hermes_client_api
+      default:
+      hermes_client_api:
+        ipv4_address: 172.31.250.11
     ports:
       - '127.0.0.1:3003:3003'
     depends_on:
