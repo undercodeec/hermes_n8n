@@ -256,10 +256,9 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       if (this.structuredOutputEnabled()) {
         body.response_format = this.responseFormat();
       }
-      const maxAttempts = Math.min(
-        this.positiveInteger('HERMES_COMPLETION_ATTEMPTS', 2),
-        3,
-      );
+      const maxAttempts = request.singleGenerationCanary
+        ? 1
+        : Math.min(this.positiveInteger('HERMES_COMPLETION_ATTEMPTS', 2), 3);
       const retryMaxOutputTokens = Math.max(
         maxOutputTokens,
         this.positiveInteger('HERMES_RETRY_MAX_OUTPUT_TOKENS', 4096),

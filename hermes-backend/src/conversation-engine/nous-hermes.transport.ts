@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosError } from 'axios';
 import { createHash } from 'crypto';
@@ -23,6 +23,9 @@ import {
 } from './nous-hermes.constants';
 import { learningContentBudget } from '../learning/learning-retrieval.service';
 import type { ApprovedLearning } from '../learning/learning-retrieval.service';
+import { InboundTurnService } from '../auto-replies/inbound-turn.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
 
 type NousRequestMessage = {
   role: 'system' | 'user' | 'assistant';
@@ -60,6 +63,8 @@ export class NousHermesTransport {
     private readonly config: ConfigService,
     private readonly outputValidator: AgentOutputValidator,
     private readonly secretReader: NousHermesSecretReader,
+    @Optional() private readonly inboundTurns?: InboundTurnService,
+    @Optional() private readonly prisma?: PrismaService,
   ) {}
 
   async execute(input: ConversationTurnInput): Promise<ConversationTurnResult> {
@@ -95,6 +100,31 @@ export class NousHermesTransport {
         .update(messages[0].content)
         .digest('hex')
         .slice(0, 12);
+      if (input.singleGenerationCanary) {
+        if (
+          !this.inboundTurns ||
+          !(await this.inboundTurns.reserveNousDispatch({
+            turnId: input.singleGenerationCanary.turnId,
+            conversationId: input.conversationId,
+            sourceMessageId: input.inboundMessageId,
+            generationToken: input.singleGenerationCanary.generationToken,
+          }))
+        )
+          throw new Error('CANARY_NOUS_DISPATCH_DENIED');
+      } else if (this.prisma) {
+        const prior = await this.prisma.inboundTurn.findFirst({
+          where: { generationSourceMessageId: input.inboundMessageId },
+          select: { id: true },
+        });
+        if (
+          prior ||
+          isSingleGenerationCanaryConversation(
+            this.config,
+            input.conversationId,
+          )
+        )
+          throw new Error('CANARY_NOUS_RESERVATION_REQUIRED');
+      }
       const response = await axios.post(
         NOUS_HERMES_ENDPOINT,
         {
@@ -146,6 +176,8 @@ export class NousHermesTransport {
         proposalEvidence: validated.fieldEvidence,
       };
     } catch (error) {
+      if (error instanceof Error && error.message.startsWith('CANARY_NOUS_'))
+        throw error;
       if (this.httpStatus(error) === 429) {
         throw new NousHermesRateLimitError(
           submittedLearning,

@@ -230,6 +230,27 @@ describe('HermesService commercial contract', () => {
     return { service, post };
   }
 
+  it.each([
+    ['valid', JSON.stringify({ response: 'Respuesta sintética.' })],
+    ['invalid', 'not-json'],
+    ['error', 'unused'],
+  ])(
+    'uses at most one Gemini POST for a canary %s response',
+    async (kind, content) => {
+      const { service, post } = setup(content);
+      if (kind === 'error')
+        post.mockRejectedValue(new Error('synthetic failure'));
+      await service.generateResponse({
+        contactName: 'Cliente',
+        messageContent: 'Consulta sintética',
+        conversationHistory: [],
+        commercialSnapshot: snapshot([]),
+        singleGenerationCanary: true,
+      });
+      expect(post).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it('sends the current inbound message exactly once and requests JSON schema', async () => {
     const { service, post } = setup(
       JSON.stringify({

@@ -24,6 +24,12 @@ export interface ConversationTurnInput {
   conversationId: string;
   /** Persisted inbound message identifier used for correlation and deduplication. */
   inboundMessageId: string;
+  /** Durable canary claim. The token is the original InboundTurn processing token. */
+  singleGenerationCanary?: {
+    turnId: string;
+    processingToken: string;
+    generationToken: string;
+  };
   customerMessage: string;
   approvedContext: {
     recentMessages: ApprovedConversationMessage[];

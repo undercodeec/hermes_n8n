@@ -58,8 +58,18 @@ export class AutomatedDeliveryService
     private readonly meta: MetaService,
   ) {}
 
-  async prepareBatch(input: PrepareAutomatedDeliveryBatch): Promise<void> {
+  async prepareBatch(
+    input: PrepareAutomatedDeliveryBatch,
+    canaryClaim?: {
+      turnId: string;
+      processingToken: string;
+      generationToken: string;
+    },
+  ): Promise<void> {
     await this.prisma.$transaction(async (tx) => {
+      if (canaryClaim) {
+        await this.assertCanaryClaim(tx, canaryClaim, input.sourceMessageId);
+      }
       for (const part of input.parts) {
         const operationKey = `${input.sourceMessageId}:${input.deliveryKind}:${part.partIndex}`;
         await tx.automatedDelivery.upsert({
@@ -83,33 +93,69 @@ export class AutomatedDeliveryService
   }
 
   /** Persist an inference stopped after generation without creating a dispatchable reply. */
-  async recordSuppressedInference(input: {
-    conversationId: string;
-    contactId: string;
-    sourceMessageId: string;
-    reasonCode: string;
-    metadata: Record<string, unknown>;
-  }): Promise<void> {
+  async recordSuppressedInference(
+    input: {
+      conversationId: string;
+      contactId: string;
+      sourceMessageId: string;
+      reasonCode: string;
+      metadata: Record<string, unknown>;
+    },
+    canaryClaim?: {
+      turnId: string;
+      processingToken: string;
+      generationToken: string;
+    },
+  ): Promise<void> {
     const operationKey = `${input.sourceMessageId}:HERMES_REPLY:0`;
-    await this.prisma.automatedDelivery.upsert({
-      where: { operationKey },
-      create: {
-        operationKey,
-        deliveryKind: 'HERMES_REPLY',
-        partIndex: 0,
-        conversationId: input.conversationId,
-        contactId: input.contactId,
-        sourceMessageId: input.sourceMessageId,
-        sender: 'HERMES',
-        content: '',
-        allowHandedOff: false,
-        status: AutomatedDeliveryStatus.SUPPRESSED,
-        suppressedAt: new Date(),
-        reasonCode: input.reasonCode,
-        metadata: input.metadata as Prisma.InputJsonValue,
+    const persist = (tx: Prisma.TransactionClient) =>
+      tx.automatedDelivery.upsert({
+        where: { operationKey },
+        create: {
+          operationKey,
+          deliveryKind: 'HERMES_REPLY',
+          partIndex: 0,
+          conversationId: input.conversationId,
+          contactId: input.contactId,
+          sourceMessageId: input.sourceMessageId,
+          sender: 'HERMES',
+          content: '',
+          allowHandedOff: false,
+          status: AutomatedDeliveryStatus.SUPPRESSED,
+          suppressedAt: new Date(),
+          reasonCode: input.reasonCode,
+          metadata: input.metadata as Prisma.InputJsonValue,
+        },
+        update: {},
+      });
+    if (canaryClaim) {
+      await this.prisma.$transaction(async (tx) => {
+        await this.assertCanaryClaim(tx, canaryClaim, input.sourceMessageId);
+        await persist(tx);
+      });
+    } else {
+      await persist(this.prisma);
+    }
+  }
+
+  private async assertCanaryClaim(
+    tx: Prisma.TransactionClient,
+    claim: { turnId: string; processingToken: string; generationToken: string },
+    sourceMessageId: string,
+  ): Promise<void> {
+    await tx.$queryRaw`SELECT id FROM inbound_turns WHERE id = ${claim.turnId} FOR UPDATE`;
+    const owner = await tx.inboundTurn.findFirst({
+      where: {
+        id: claim.turnId,
+        status: 'PROCESSING',
+        processingToken: claim.processingToken,
+        generationToken: claim.generationToken,
+        generationSourceMessageId: sourceMessageId,
+        generationBlockedAt: null,
       },
-      update: {},
+      select: { id: true },
     });
+    if (!owner) throw new Error('CANARY_GENERATION_CLAIM_LOST');
   }
 
   async recoverBatch(

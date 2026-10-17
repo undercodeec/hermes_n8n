@@ -27,6 +27,7 @@ import { PaymentsModule } from './payments/payments.module';
 import { FeedbackModule } from './feedback/feedback.module';
 import { RetentionModule } from './retention/retention.module';
 import { parseReviewCanaryFeedbackIds } from './learning/review-canary.policy';
+import { parseSingleGenerationCanaryConfig } from './auto-replies/single-generation-canary.policy';
 
 @Module({
   imports: [
@@ -36,6 +37,12 @@ import { parseReviewCanaryFeedbackIds } from './learning/review-canary.policy';
       envFilePath: '.env',
       validate: (env: Record<string, unknown>) => {
         parseReviewCanaryFeedbackIds(env.LEARNING_REVIEW_CANARY_FEEDBACK_IDS);
+        parseSingleGenerationCanaryConfig(
+          env.F3_SINGLE_GENERATION_CANARY_ENABLED,
+          env.F3_SINGLE_GENERATION_CANARY_CONVERSATION_ID,
+          env.HERMES_COMPLETION_ATTEMPTS,
+          env.NOUS_HERMES_MAX_ATTEMPTS,
+        );
         return env;
       },
     }),

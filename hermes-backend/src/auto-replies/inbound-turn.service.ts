@@ -8,6 +8,9 @@ import {
   MessageSender,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { isSingleGenerationCanaryConversation } from './single-generation-canary.policy';
+
+export const AMBIGUOUS_GENERATION = 'CANARY_BLOCKED_AMBIGUOUS_GENERATION';
 
 @Injectable()
 export class InboundTurnService {
@@ -185,12 +188,117 @@ export class InboundTurnService {
     });
   }
 
+  async reserveGeneration(input: {
+    turnId: string;
+    processingToken: string;
+    sourceMessageId: string;
+    conversationId: string;
+    engine: 'gemini_direct' | 'nous_hermes';
+  }): Promise<boolean> {
+    if (
+      !isSingleGenerationCanaryConversation(this.config, input.conversationId)
+    )
+      return false;
+    const reserved = await this.prisma.inboundTurn.updateMany({
+      where: {
+        id: input.turnId,
+        conversationId: input.conversationId,
+        lastMessageId: input.sourceMessageId,
+        status: InboundTurnStatus.PROCESSING,
+        processingToken: input.processingToken,
+        generationReservedAt: null,
+      },
+      data: {
+        generationSourceMessageId: input.sourceMessageId,
+        generationReservedAt: new Date(),
+        generationToken: input.processingToken,
+        generationEngine: input.engine,
+      },
+    });
+    return reserved.count === 1;
+  }
+
+  async reserveNousDispatch(input: {
+    turnId: string;
+    conversationId: string;
+    sourceMessageId: string;
+    generationToken: string;
+  }): Promise<boolean> {
+    const reserved = await this.prisma.inboundTurn.updateMany({
+      where: {
+        id: input.turnId,
+        conversationId: input.conversationId,
+        lastMessageId: input.sourceMessageId,
+        generationSourceMessageId: input.sourceMessageId,
+        generationToken: input.generationToken,
+        processingToken: input.generationToken,
+        generationEngine: 'nous_hermes',
+        generationReservedAt: { not: null },
+        providerDispatchReservedAt: null,
+        generationBlockedAt: null,
+        status: InboundTurnStatus.PROCESSING,
+      },
+      data: { providerDispatchReservedAt: new Date() },
+    });
+    return reserved.count === 1;
+  }
+
+  async blockAmbiguous(turnId: string, token?: string): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM inbound_turns WHERE id = ${turnId} FOR UPDATE`;
+      const turn = await tx.inboundTurn.findUnique({ where: { id: turnId } });
+      if (
+        !turn?.generationReservedAt ||
+        turn.status === InboundTurnStatus.PROCESSED ||
+        turn.status === InboundTurnStatus.BLOCKED ||
+        (token && turn.processingToken !== token)
+      )
+        return false;
+      const batch = await tx.automatedDelivery.findFirst({
+        where: { sourceMessageId: turn.generationSourceMessageId! },
+        select: { id: true },
+      });
+      if (batch) return false;
+      const blocked = await tx.inboundTurn.updateMany({
+        where: {
+          id: turnId,
+          status: turn.status,
+          processingToken: turn.processingToken,
+        },
+        data: {
+          status: InboundTurnStatus.BLOCKED,
+          processingAt: null,
+          processingToken: null,
+          generationBlockedAt: new Date(),
+          generationBlockReason: AMBIGUOUS_GENERATION,
+        },
+      });
+      return blocked.count === 1;
+    });
+  }
+
   async release(turnId: string, token: string): Promise<void> {
+    const ordinary = await this.prisma.inboundTurn.updateMany({
+      where: {
+        id: turnId,
+        status: InboundTurnStatus.PROCESSING,
+        processingToken: token,
+        generationReservedAt: null,
+      },
+      data: {
+        status: InboundTurnStatus.OPEN,
+        processingAt: null,
+        processingToken: null,
+      },
+    });
+    if (ordinary.count === 1) return;
+    if (await this.blockAmbiguous(turnId, token)) return;
     await this.prisma.inboundTurn.updateMany({
       where: {
         id: turnId,
         status: InboundTurnStatus.PROCESSING,
         processingToken: token,
+        generationReservedAt: { not: null },
       },
       data: {
         status: InboundTurnStatus.OPEN,

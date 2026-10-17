@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Job, Queue } from 'bullmq';
 import type {
@@ -10,6 +10,7 @@ import type {
 import { NOUS_HERMES_INFERENCE_QUEUE } from './nous-hermes.constants';
 import { NousHermesQueueEvents } from './nous-hermes.queue-events';
 import { NousHermesRateLimitError } from './nous-hermes.transport';
+import { InboundTurnService } from '../auto-replies/inbound-turn.service';
 
 @Injectable()
 export class NousHermesEngine implements ConversationEngine {
@@ -24,6 +25,7 @@ export class NousHermesEngine implements ConversationEngine {
       string
     >,
     private readonly queueEvents: NousHermesQueueEvents,
+    @Optional() private readonly inboundTurns?: InboundTurnService,
   ) {}
 
   async respond(input: ConversationTurnInput): Promise<ConversationTurnResult> {
@@ -38,7 +40,9 @@ export class NousHermesEngine implements ConversationEngine {
       );
     }
 
-    const attempts = this.positiveInteger('NOUS_HERMES_MAX_ATTEMPTS', 3);
+    const attempts = input.singleGenerationCanary
+      ? 1
+      : this.positiveInteger('NOUS_HERMES_MAX_ATTEMPTS', 3);
     const delay = this.positiveInteger('NOUS_HERMES_BACKOFF_MS', 1500);
     const waitTimeout = this.positiveInteger(
       'NOUS_HERMES_QUEUE_WAIT_TIMEOUT_MS',
@@ -55,6 +59,10 @@ export class NousHermesEngine implements ConversationEngine {
         removeOnFail: { age: 24 * 3600, count: 1000 },
       });
     } catch {
+      if (input.singleGenerationCanary) {
+        await this.blockAmbiguousCanary(input);
+        throw new Error('CANARY_NOUS_QUEUE_AMBIGUOUS');
+      }
       return this.queueUnavailable(input);
     }
 
@@ -64,6 +72,10 @@ export class NousHermesEngine implements ConversationEngine {
         waitTimeout,
       );
     } catch (error) {
+      if (input.singleGenerationCanary) {
+        await this.blockAmbiguousCanary(input);
+        throw new Error('CANARY_NOUS_RESULT_AMBIGUOUS');
+      }
       if (this.isTerminalRateLimit(error)) {
         return this.failureResult(
           input,
@@ -77,6 +89,17 @@ export class NousHermesEngine implements ConversationEngine {
       }
       return this.queueUnavailable(input);
     }
+  }
+
+  private async blockAmbiguousCanary(
+    input: ConversationTurnInput,
+  ): Promise<void> {
+    if (!this.inboundTurns || !input.singleGenerationCanary)
+      throw new Error('CANARY_TURN_GUARD_UNAVAILABLE');
+    await this.inboundTurns.blockAmbiguous(
+      input.singleGenerationCanary.turnId,
+      input.singleGenerationCanary.processingToken,
+    );
   }
 
   private queueUnavailable(

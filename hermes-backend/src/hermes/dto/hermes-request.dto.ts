@@ -93,6 +93,7 @@ export class HermesRequestDto {
   conversationId?: string;
   /** Identificador interno del mensaje entrante para trazabilidad sin registrar su contenido. */
   correlationId?: string;
+  singleGenerationCanary?: boolean;
   currentIntent?: string;
   conversationGuidance?: ConversationGuidance;
   pendingQuestions?: string[];

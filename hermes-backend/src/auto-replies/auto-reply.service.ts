@@ -5,6 +5,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ConversationStatus,
+  InboundTurn,
   HandoffReason,
   MessageDirection,
   MessageSender,
@@ -61,6 +62,7 @@ import { PaymentsService } from '../payments/payments.service';
 import { ConversationReviewService } from '../learning/conversation-review.service';
 import { LearningRetrievalService } from '../learning/learning-retrieval.service';
 import { retrievalEnabledForConversation } from '../learning/retrieval-canary-scope';
+import { isSingleGenerationCanaryConversation } from './single-generation-canary.policy';
 import { redactPaymentMessageForAi } from '../payments/payment-message-redaction';
 import {
   VoiceProcessingError,
@@ -247,6 +249,7 @@ export class AutoReplyService {
         await this.processTurn(
           { ...data, inboundMessageId: turn.lastMessageId },
           messages,
+          turn,
         );
         await this.inboundTurns.complete(turn.id, turn.processingToken!);
       } catch (error) {
@@ -261,6 +264,7 @@ export class AutoReplyService {
   private async processTurn(
     data: AutoReplyJobData,
     turnMessages?: Awaited<ReturnType<InboundTurnService['messages']>>,
+    claimedTurn?: InboundTurn,
   ): Promise<void> {
     const inbound = await this.prisma.message.findUnique({
       where: { id: data.inboundMessageId },
@@ -272,6 +276,7 @@ export class AutoReplyService {
         wamid: true,
         conversationId: true,
         contactId: true,
+        inboundTurnId: true,
       },
     });
     if (!inbound || inbound.conversationId !== data.conversationId) {
@@ -303,6 +308,37 @@ export class AutoReplyService {
         terminal: recovered.terminal,
         reasonCode: recovered.reasonCode,
       });
+      return;
+    }
+
+    const canaryArmed = isSingleGenerationCanaryConversation(
+      this.config,
+      data.conversationId,
+    );
+    if (claimedTurn && claimedTurn.lastMessageId !== inbound.id) {
+      this.logSkip(data, 'CANARY_SOURCE_MISMATCH');
+      return;
+    }
+    if (claimedTurn?.generationReservedAt) {
+      await this.inboundTurns!.blockAmbiguous(
+        claimedTurn.id,
+        claimedTurn.processingToken!,
+      );
+      this.logSkip(data, 'CANARY_BLOCKED_AMBIGUOUS_GENERATION');
+      return;
+    }
+    if (!claimedTurn && inbound.inboundTurnId && this.inboundTurns) {
+      const persistedTurn = await this.prisma.inboundTurn.findUnique({
+        where: { id: inbound.inboundTurnId },
+        select: { generationReservedAt: true },
+      });
+      if (persistedTurn?.generationReservedAt) {
+        this.logSkip(data, 'CANARY_BLOCKED_AMBIGUOUS_GENERATION');
+        return;
+      }
+    }
+    if (canaryArmed && !claimedTurn) {
+      this.logSkip(data, 'CANARY_TURN_CLAIM_REQUIRED');
       return;
     }
 
@@ -564,9 +600,28 @@ export class AutoReplyService {
         );
       }
     }
+    const canaryBatchClaim =
+      canaryArmed && claimedTurn
+        ? {
+            turnId: claimedTurn.id,
+            processingToken: claimedTurn.processingToken!,
+            generationToken: claimedTurn.processingToken!,
+          }
+        : undefined;
+    if (canaryBatchClaim) {
+      const acquired = await this.inboundTurns!.reserveGeneration({
+        turnId: claimedTurn!.id,
+        processingToken: canaryBatchClaim.processingToken,
+        sourceMessageId: inbound.id,
+        conversationId: data.conversationId,
+        engine: this.conversationEngine.selectedEngine(data.conversationId),
+      });
+      if (!acquired) throw new Error('CANARY_GENERATION_RESERVATION_DENIED');
+    }
     const engineResult = await this.conversationEngine.respond({
       conversationId: data.conversationId,
       inboundMessageId: inbound.id,
+      ...(canaryBatchClaim ? { singleGenerationCanary: canaryBatchClaim } : {}),
       customerMessage,
       approvedContext: {
         contactName: conversation.contact.name || 'Cliente',
@@ -602,26 +657,29 @@ export class AutoReplyService {
       },
     });
     const recordSuppressedInference = (reasonCode: string) =>
-      this.deliveries.recordSuppressedInference({
-        conversationId: data.conversationId,
-        contactId: data.contactId,
-        sourceMessageId: inbound.id,
-        reasonCode,
-        metadata: {
-          conversationEngine: engineResult.engine,
-          providerModel: engineResult.providerModel,
-          ...(engineResult.promptVersion
-            ? { promptVersion: engineResult.promptVersion }
-            : {}),
-          traceId: engineResult.traceId,
-          ...(engineResult.learningExposed?.length
-            ? { learningExposed: engineResult.learningExposed }
-            : {}),
-          ...(data.inboundTurnId
-            ? { conversationTurnId: data.inboundTurnId }
-            : {}),
+      this.deliveries.recordSuppressedInference(
+        {
+          conversationId: data.conversationId,
+          contactId: data.contactId,
+          sourceMessageId: inbound.id,
+          reasonCode,
+          metadata: {
+            conversationEngine: engineResult.engine,
+            providerModel: engineResult.providerModel,
+            ...(engineResult.promptVersion
+              ? { promptVersion: engineResult.promptVersion }
+              : {}),
+            traceId: engineResult.traceId,
+            ...(engineResult.learningExposed?.length
+              ? { learningExposed: engineResult.learningExposed }
+              : {}),
+            ...(data.inboundTurnId
+              ? { conversationTurnId: data.inboundTurnId }
+              : {}),
+          },
         },
-      });
+        ...(canaryBatchClaim ? ([canaryBatchClaim] as const) : ([] as const)),
+      );
     const response: HermesResponseDto = {
       response: engineResult.replyText,
       tokensUsed: engineResult.usage?.totalTokens,
@@ -1204,93 +1262,96 @@ export class AutoReplyService {
       policy.pendingQuestions,
       commercialSnapshot,
     );
-    await this.deliveries.prepareBatch({
-      deliveryKind: 'HERMES_REPLY',
-      conversationId: data.conversationId,
-      contactId: data.contactId,
-      sourceMessageId: inbound.id,
-      sender: 'HERMES',
-      allowHandedOff: shouldHandoff,
-      parts: messageParts.map((content, partIndex) => ({
-        partIndex,
-        content,
-        ...(data.inboundTurnId
-          ? {
-              metadata: {
-                conversationTurnId: data.inboundTurnId,
-                ...(voiceMediaIds[partIndex]
-                  ? { voiceMediaId: voiceMediaIds[partIndex] }
-                  : {}),
-              },
-            }
-          : {}),
-        ...(partIndex === 0
-          ? {
-              metadata: {
-                commercialResolution: {
-                  version: 2,
-                  sourceMessageId: inbound.id,
-                  pendingQuestions: policy.pendingQuestions,
-                  resolvedByOperation: quoteCreated
-                    ? policy.pendingQuestions.filter(
-                        (question) =>
-                          question === 'price' || question === 'timeline',
-                      )
-                    : [],
-                  resolvedByPart: messageParts.map((_, index) => [
-                    ...new Set(
-                      resolutionProofs
-                        .filter(
-                          (proof) =>
-                            proof.partIndexes.length === 1 &&
-                            proof.partIndexes[0] === index,
-                        )
-                        .flatMap((proof) => proof.questions),
-                    ),
-                  ]),
-                  resolvedBySpan: resolutionProofs.filter(
-                    (proof) => proof.partIndexes.length > 1,
-                  ),
+    await this.deliveries.prepareBatch(
+      {
+        deliveryKind: 'HERMES_REPLY',
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        sourceMessageId: inbound.id,
+        sender: 'HERMES',
+        allowHandedOff: shouldHandoff,
+        parts: messageParts.map((content, partIndex) => ({
+          partIndex,
+          content,
+          ...(data.inboundTurnId
+            ? {
+                metadata: {
+                  conversationTurnId: data.inboundTurnId,
+                  ...(voiceMediaIds[partIndex]
+                    ? { voiceMediaId: voiceMediaIds[partIndex] }
+                    : {}),
                 },
-                conversationEngine: engineResult.engine,
-                ...(data.inboundTurnId
-                  ? {
-                      conversationTurnId: data.inboundTurnId,
-                      ...(voiceMediaIds[partIndex]
-                        ? { voiceMediaId: voiceMediaIds[partIndex] }
-                        : {}),
-                    }
-                  : {}),
-                providerModel: engineResult.providerModel,
-                ...(engineResult.promptVersion
-                  ? { promptVersion: engineResult.promptVersion }
-                  : {}),
-                traceId: engineResult.traceId,
-                ...(engineResult.learningExposed?.length
-                  ? { learningExposed: engineResult.learningExposed }
-                  : {}),
-                tokensUsed: response.tokensUsed,
-                latencyMs: Date.now() - startedAt,
-                ...(isNous
-                  ? {
-                      proposalUnchanged:
-                        engineResult.replyText === response.response,
-                      proposedReplySha256: createHash('sha256')
-                        .update(engineResult.replyText)
-                        .digest('hex'),
-                      proposalRejections: reviewedProposal?.rejections,
-                      proposedAction:
-                        engineResult.proposedActions[0]?.type ?? 'none',
-                      actionResult,
-                    }
-                  : {}),
-                costEstimate: response.costEstimate,
-                ...(incident ? { hermesIncident: incident } : {}),
-              },
-            }
-          : {}),
-      })),
-    });
+              }
+            : {}),
+          ...(partIndex === 0
+            ? {
+                metadata: {
+                  commercialResolution: {
+                    version: 2,
+                    sourceMessageId: inbound.id,
+                    pendingQuestions: policy.pendingQuestions,
+                    resolvedByOperation: quoteCreated
+                      ? policy.pendingQuestions.filter(
+                          (question) =>
+                            question === 'price' || question === 'timeline',
+                        )
+                      : [],
+                    resolvedByPart: messageParts.map((_, index) => [
+                      ...new Set(
+                        resolutionProofs
+                          .filter(
+                            (proof) =>
+                              proof.partIndexes.length === 1 &&
+                              proof.partIndexes[0] === index,
+                          )
+                          .flatMap((proof) => proof.questions),
+                      ),
+                    ]),
+                    resolvedBySpan: resolutionProofs.filter(
+                      (proof) => proof.partIndexes.length > 1,
+                    ),
+                  },
+                  conversationEngine: engineResult.engine,
+                  ...(data.inboundTurnId
+                    ? {
+                        conversationTurnId: data.inboundTurnId,
+                        ...(voiceMediaIds[partIndex]
+                          ? { voiceMediaId: voiceMediaIds[partIndex] }
+                          : {}),
+                      }
+                    : {}),
+                  providerModel: engineResult.providerModel,
+                  ...(engineResult.promptVersion
+                    ? { promptVersion: engineResult.promptVersion }
+                    : {}),
+                  traceId: engineResult.traceId,
+                  ...(engineResult.learningExposed?.length
+                    ? { learningExposed: engineResult.learningExposed }
+                    : {}),
+                  tokensUsed: response.tokensUsed,
+                  latencyMs: Date.now() - startedAt,
+                  ...(isNous
+                    ? {
+                        proposalUnchanged:
+                          engineResult.replyText === response.response,
+                        proposedReplySha256: createHash('sha256')
+                          .update(engineResult.replyText)
+                          .digest('hex'),
+                        proposalRejections: reviewedProposal?.rejections,
+                        proposedAction:
+                          engineResult.proposedActions[0]?.type ?? 'none',
+                        actionResult,
+                      }
+                    : {}),
+                  costEstimate: response.costEstimate,
+                  ...(incident ? { hermesIncident: incident } : {}),
+                },
+              }
+            : {}),
+        })),
+      },
+      ...(canaryBatchClaim ? ([canaryBatchClaim] as const) : ([] as const)),
+    );
     if (data.inboundTurnId) {
       const configured = Number(
         this.config.get('HERMES_CONVERSATION_MESSAGE_DELAY_MS'),
