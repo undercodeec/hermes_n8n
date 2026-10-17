@@ -20,6 +20,7 @@ import type {
 } from '../src/conversation-engine/conversation-engine.types';
 import { AgentOutputValidator } from '../src/conversation-engine/agent-output.validator';
 import { NousHermesTransport } from '../src/conversation-engine/nous-hermes.transport';
+import { NousHermesProcessor } from '../src/conversation-engine/nous-hermes.processor';
 import { CommercialPolicyService } from '../src/hermes/commercial-policy.service';
 import { CommercialAuthorityService } from '../src/hermes/commercial-authority.service';
 import { ConversationGuardService } from '../src/conversation-guard/conversation-guard.service';
@@ -274,6 +275,103 @@ describe('F3 single-generation canary with PostgreSQL', () => {
       expect(endpoint).toHaveBeenCalledTimes(1);
     } finally {
       await worker.close();
+      await events.close();
+      await queue.obliterate({ force: true });
+      await queue.close();
+      endpoint.mockRestore();
+    }
+  });
+
+  it('denies a replay after a Nous worker restart through the real queue handler', async () => {
+    // A timed BullMQ stall depends on lock-renew scheduling. Re-delivery after
+    // worker restart runs the same WorkerHost.process path deterministically.
+    const f = await fixture();
+    const claim = await reserve(f, 'nous_hermes');
+    const endpoint = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: JSON.stringify({ replyText: 'Respuesta sintética.' }),
+            },
+          },
+        ],
+      },
+    });
+    const parsed = new URL(redisUrl);
+    const connection = {
+      host: parsed.hostname,
+      port: Number(parsed.port),
+      maxRetriesPerRequest: null,
+    };
+    const name = `f3-restart-replay-${randomUUID()}`;
+    const queue = new Queue<ConversationTurnInput, ConversationTurnResult>(
+      name,
+      { connection },
+    );
+    const events = new QueueEvents(name, { connection });
+    const processor = () =>
+      new NousHermesProcessor(
+        new NousHermesTransport(
+          configFor(f.conversation.id),
+          new AgentOutputValidator(),
+          { read: jest.fn().mockResolvedValue('synthetic-secret') },
+          f.turns,
+          prisma,
+        ),
+      );
+    let worker:
+      | Worker<ConversationTurnInput, ConversationTurnResult>
+      | undefined;
+    const payload: ConversationTurnInput = {
+      conversationId: f.conversation.id,
+      inboundMessageId: f.source.id,
+      customerMessage: 'Consulta sintética',
+      singleGenerationCanary: {
+        turnId: f.turn.id,
+        processingToken: claim.processingToken!,
+        generationToken: claim.processingToken!,
+      },
+      approvedContext: {
+        recentMessages: [],
+        approvedKnowledge: [],
+        handoffActive: false,
+        contactName: 'Cliente',
+      },
+    };
+    try {
+      await Promise.all([queue.waitUntilReady(), events.waitUntilReady()]);
+      const firstProcessor = processor();
+      worker = new Worker(name, (job) => firstProcessor.process(job), {
+        connection,
+      });
+      await worker.waitUntilReady();
+      const first = await queue.add('infer', payload, { attempts: 1 });
+      await first.waitUntilFinished(events, 5000);
+      expect(
+        (
+          await prisma.inboundTurn.findUniqueOrThrow({
+            where: { id: f.turn.id },
+          })
+        ).providerDispatchReservedAt,
+      ).not.toBeNull();
+      expect(endpoint).toHaveBeenCalledTimes(1);
+
+      await worker.close();
+      worker = undefined;
+      const restartedProcessor = processor();
+      worker = new Worker(name, (job) => restartedProcessor.process(job), {
+        connection,
+      });
+      await worker.waitUntilReady();
+      const replay = await queue.add('infer', payload, { attempts: 1 });
+      await expect(replay.waitUntilFinished(events, 5000)).rejects.toThrow(
+        'CANARY_NOUS_DISPATCH_DENIED',
+      );
+      expect(endpoint).toHaveBeenCalledTimes(1);
+    } finally {
+      await worker?.close();
       await events.close();
       await queue.obliterate({ force: true });
       await queue.close();

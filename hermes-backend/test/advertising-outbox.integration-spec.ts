@@ -49,6 +49,7 @@ describe('Phase E durable CRM milestones in isolated PostgreSQL', () => {
   let contactId: string;
   let userId: string;
   let leadId: string;
+  const leadIds: string[] = [];
   let touchId: string;
   let integrationId: string;
   let bullQueue: Queue<AdvertisingSyncJobData> | undefined;
@@ -94,14 +95,20 @@ describe('Phase E durable CRM milestones in isolated PostgreSQL', () => {
 
   afterAll(async () => {
     if (!prisma) return;
-    if (leadId) {
-      await prisma.auditLog.deleteMany({ where: { entityId: leadId } });
-      await prisma.advertisingSyncJob.deleteMany({
-        where: { conversion: { leadId } },
+    if (leadIds.length) {
+      await prisma.auditLog.deleteMany({
+        where: { entityId: { in: leadIds } },
       });
-      await prisma.advertisingConversion.deleteMany({ where: { leadId } });
-      await prisma.advertisingAttribution.deleteMany({ where: { leadId } });
-      await prisma.lead.deleteMany({ where: { id: leadId } });
+      await prisma.advertisingSyncJob.deleteMany({
+        where: { conversion: { leadId: { in: leadIds } } },
+      });
+      await prisma.advertisingConversion.deleteMany({
+        where: { leadId: { in: leadIds } },
+      });
+      await prisma.advertisingAttribution.deleteMany({
+        where: { leadId: { in: leadIds } },
+      });
+      await prisma.lead.deleteMany({ where: { id: { in: leadIds } } });
     }
     if (touchId)
       await prisma.advertisingTouch.deleteMany({ where: { id: touchId } });
@@ -126,11 +133,13 @@ describe('Phase E durable CRM milestones in isolated PostgreSQL', () => {
   it('commits QUALIFIED and WON with one conversion and one outbox row each', async () => {
     const lead = await leads.create({ contactId, stage: LeadStage.QUALIFIED });
     leadId = lead.id;
+    leadIds.push(leadId);
     const qualified = await prisma.advertisingConversion.findUniqueOrThrow({
       where: {
-        leadId_eventType: {
+        leadId_eventType_qualificationCycle: {
           leadId,
           eventType: AdvertisingEventType.LEAD_QUALIFIED,
+          qualificationCycle: 0,
         },
       },
       include: { syncJob: true },
@@ -157,9 +166,10 @@ describe('Phase E durable CRM milestones in isolated PostgreSQL', () => {
     );
     const won = await prisma.advertisingConversion.findUniqueOrThrow({
       where: {
-        leadId_eventType: {
+        leadId_eventType_qualificationCycle: {
           leadId,
           eventType: AdvertisingEventType.CONTRACT_WON,
+          qualificationCycle: 0,
         },
       },
       include: { syncJob: true },
@@ -182,14 +192,24 @@ describe('Phase E durable CRM milestones in isolated PostgreSQL', () => {
         ).value,
       ),
     ).toBe(1200);
+
+    // The remaining tests need an actively QUALIFIED lead. A WON lead is
+    // terminal and its qualification job is no longer eligible for recovery.
+    const activeLead = await leads.create({
+      contactId,
+      stage: LeadStage.QUALIFIED,
+    });
+    leadId = activeLead.id;
+    leadIds.push(leadId);
   });
 
   it('recovers a missing outbox row and grants exactly one of five SQL claims', async () => {
     const qualified = await prisma.advertisingConversion.findUniqueOrThrow({
       where: {
-        leadId_eventType: {
+        leadId_eventType_qualificationCycle: {
           leadId,
           eventType: AdvertisingEventType.LEAD_QUALIFIED,
+          qualificationCycle: 0,
         },
       },
       include: { syncJob: true },
@@ -269,9 +289,10 @@ describe('Phase E durable CRM milestones in isolated PostgreSQL', () => {
       });
       const conversion = await prisma.advertisingConversion.findUniqueOrThrow({
         where: {
-          leadId_eventType: {
+          leadId_eventType_qualificationCycle: {
             leadId,
             eventType: AdvertisingEventType.LEAD_QUALIFIED,
+            qualificationCycle: 0,
           },
         },
       });
@@ -349,9 +370,10 @@ describe('Phase E durable CRM milestones in isolated PostgreSQL', () => {
     async () => {
       const conversion = await prisma.advertisingConversion.findUniqueOrThrow({
         where: {
-          leadId_eventType: {
+          leadId_eventType_qualificationCycle: {
             leadId,
             eventType: AdvertisingEventType.LEAD_QUALIFIED,
+            qualificationCycle: 0,
           },
         },
         include: { syncJob: true },
@@ -404,9 +426,10 @@ describe('Phase E durable CRM milestones in isolated PostgreSQL', () => {
     async () => {
       const conversion = await prisma.advertisingConversion.findUniqueOrThrow({
         where: {
-          leadId_eventType: {
+          leadId_eventType_qualificationCycle: {
             leadId,
             eventType: AdvertisingEventType.LEAD_QUALIFIED,
+            qualificationCycle: 0,
           },
         },
         include: { syncJob: true },
@@ -467,15 +490,27 @@ describe('Phase E durable CRM milestones in isolated PostgreSQL', () => {
       const redis = new URL(testRedisUrl!);
       const qualified = await prisma.advertisingConversion.findUniqueOrThrow({
         where: {
-          leadId_eventType: {
+          leadId_eventType_qualificationCycle: {
             leadId,
             eventType: AdvertisingEventType.LEAD_QUALIFIED,
+            qualificationCycle: 0,
           },
         },
         include: { syncJob: true },
       });
       const oldJob = await bullQueue!.getJob(qualified.syncJob!.id);
       if (oldJob) await oldJob.remove();
+      await leads.update(leadId, { stage: LeadStage.PROPOSAL }, userId);
+      await leads.update(
+        leadId,
+        {
+          stage: LeadStage.WON,
+          contractedAmount: 1200,
+          commercialCurrency: 'USD',
+          contractReference: `contract-race-${suffix}`,
+        },
+        userId,
+      );
       await prisma.advertisingConversionMapping.create({
         data: {
           integrationId,
@@ -486,9 +521,10 @@ describe('Phase E durable CRM milestones in isolated PostgreSQL', () => {
       });
       const conversion = await prisma.advertisingConversion.findUniqueOrThrow({
         where: {
-          leadId_eventType: {
+          leadId_eventType_qualificationCycle: {
             leadId,
             eventType: AdvertisingEventType.CONTRACT_WON,
+            qualificationCycle: 0,
           },
         },
         include: { syncJob: true },
