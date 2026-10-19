@@ -100,8 +100,15 @@ export class NousHermesTransport {
         .update(messages[0].content)
         .digest('hex')
         .slice(0, 12);
+      const guarded = isSingleGenerationCanaryConversation(
+        this.config,
+        input.conversationId,
+      );
       if (input.singleGenerationCanary) {
         if (
+          !guarded ||
+          input.singleGenerationCanary.processingToken !==
+            input.singleGenerationCanary.generationToken ||
           !this.inboundTurns ||
           !(await this.inboundTurns.reserveNousDispatch({
             turnId: input.singleGenerationCanary.turnId,
@@ -111,19 +118,14 @@ export class NousHermesTransport {
           }))
         )
           throw new Error('CANARY_NOUS_DISPATCH_DENIED');
+      } else if (guarded) {
+        throw new Error('CANARY_NOUS_RESERVATION_REQUIRED');
       } else if (this.prisma) {
         const prior = await this.prisma.inboundTurn.findFirst({
           where: { generationSourceMessageId: input.inboundMessageId },
           select: { id: true },
         });
-        if (
-          prior ||
-          isSingleGenerationCanaryConversation(
-            this.config,
-            input.conversationId,
-          )
-        )
-          throw new Error('CANARY_NOUS_RESERVATION_REQUIRED');
+        if (prior) throw new Error('CANARY_NOUS_RESERVATION_REQUIRED');
       }
       const response = await axios.post(
         NOUS_HERMES_ENDPOINT,

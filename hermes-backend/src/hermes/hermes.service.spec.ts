@@ -195,6 +195,10 @@ describe('HermesService commercial contract', () => {
           HERMES_API_KEY: 'test-key',
           HERMES_MODEL: model,
           HERMES_STRUCTURED_OUTPUT: 'true',
+          F3_SINGLE_GENERATION_CANARY_ENABLED: 'true',
+          F3_SINGLE_GENERATION_CANARY_CONVERSATION_ID:
+            'd3e10ce6-996f-4e89-bc98-68bcbb3e28dc',
+          NOUS_HERMES_MAX_ATTEMPTS: '3',
         };
         return values[key] ?? fallback;
       }),
@@ -203,6 +207,10 @@ describe('HermesService commercial contract', () => {
       knowledgeDocument: { findMany: jest.fn().mockResolvedValue([]) },
       product: { findMany: jest.fn().mockResolvedValue([]) },
       salesPlaybook: { findMany: jest.fn().mockResolvedValue([]) },
+      inboundTurn: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
     } as unknown as PrismaService;
     const service = new HermesService(config, prisma);
     const contents = Array.isArray(content) ? content : [content];
@@ -245,7 +253,13 @@ describe('HermesService commercial contract', () => {
         messageContent: 'Consulta sintética',
         conversationHistory: [],
         commercialSnapshot: snapshot([]),
-        singleGenerationCanary: true,
+        conversationId: 'd3e10ce6-996f-4e89-bc98-68bcbb3e28dc',
+        correlationId: 'synthetic-source',
+        singleGenerationCanary: {
+          turnId: 'synthetic-turn',
+          processingToken: 'synthetic-token',
+          generationToken: 'synthetic-token',
+        },
       });
       expect(post).toHaveBeenCalledTimes(1);
     },

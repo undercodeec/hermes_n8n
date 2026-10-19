@@ -30,7 +30,7 @@ export class DirectGeminiEngine implements ConversationEngine {
       contact: input.approvedContext.contact,
       conversationId: input.conversationId,
       correlationId: input.inboundMessageId,
-      singleGenerationCanary: Boolean(input.singleGenerationCanary),
+      singleGenerationCanary: input.singleGenerationCanary,
       currentIntent: input.approvedContext.currentIntent,
       conversationGuidance: input.approvedContext.conversationGuidance,
       pendingQuestions: input.approvedContext.pendingQuestions,

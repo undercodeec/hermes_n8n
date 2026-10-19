@@ -28,25 +28,23 @@ export function parseSingleGenerationCanaryConfig(
     );
   if (enabled === 'true' && !id)
     throw new Error('F3 single-generation canary requires a conversation ID');
-  if (
-    enabled === 'true' &&
-    geminiAttempts !== undefined &&
-    Number(geminiAttempts) !== 1
-  )
-    throw new Error('HERMES_COMPLETION_ATTEMPTS must be 1 for F3 canary');
-  if (
-    enabled === 'true' &&
-    nousAttempts !== undefined &&
-    Number(nousAttempts) !== 1
-  )
-    throw new Error('NOUS_HERMES_MAX_ATTEMPTS must be 1 for F3 canary');
-  if (
-    enabled === 'true' &&
-    (geminiAttempts === undefined || nousAttempts === undefined)
-  )
-    throw new Error(
-      'Both provider attempt limits must be explicitly 1 for F3 canary',
-    );
+  // The guarded source has its own durable dispatch reservation and one
+  // attempt at each provider boundary. Global limits remain the baseline for
+  // every other conversation, including concurrent traffic.
+  for (const [name, value] of [
+    ['HERMES_COMPLETION_ATTEMPTS', geminiAttempts],
+    ['NOUS_HERMES_MAX_ATTEMPTS', nousAttempts],
+  ] as const) {
+    if (enabled === 'true' && value !== undefined) {
+      if (typeof value !== 'string' && typeof value !== 'number')
+        throw new Error(`${name} must be a positive integer`);
+      if (
+        !/^[1-9]\d*$/.test(String(value)) ||
+        !Number.isSafeInteger(Number(value))
+      )
+        throw new Error(`${name} must be a positive integer`);
+    }
+  }
   return {
     enabled: enabled === 'true',
     conversationId: id.toLowerCase() || null,

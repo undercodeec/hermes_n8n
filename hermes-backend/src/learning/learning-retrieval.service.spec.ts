@@ -1,6 +1,7 @@
 import { ConfigService } from '@nestjs/config';
 import { LearningItemStatus, LearningRiskLevel, Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { retrievalEnabledForConversation } from './retrieval-canary-scope';
 import {
   learningContentBudget,
   LearningRetrievalService,
@@ -32,6 +33,44 @@ const item = (id: string, extra: Record<string, unknown> = {}) => ({
 });
 
 describe('F3 shared safe learning selector', () => {
+  it('selects the expected synthetic QA item once and exposes nothing outside the scope', async () => {
+    const target = 'd3e10ce6-996f-4e89-bc98-68bcbb3e28dc';
+    const expected = '49111733-99d9-4c0f-845c-4fbef6d28a47';
+    const text =
+      'Quiero hacer otro cambio en el alcance del proyecto: incluir una sección de preguntas frecuentes. ¿Podemos ajustar los requerimientos?';
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        ...item(expected, {
+          trigger: 'cambio alcance proyecto preguntas frecuentes',
+          guidance: 'Responder primero a la consulta actual',
+          validUntil: new Date('2030-01-01T00:00:00Z'),
+        }),
+        evidence: [{ id: 'synthetic-evidence' }],
+      },
+    ]);
+    const config = new ConfigService({
+      LEARNING_RETRIEVAL_ENABLED: 'true',
+      LEARNING_RETRIEVAL_CONVERSATION_ALLOWLIST: target,
+    });
+    const service = new LearningRetrievalService(
+      { learningItem: { findMany } } as unknown as PrismaService,
+      config,
+    );
+    const selected = retrievalEnabledForConversation(config, target)
+      ? await service.select({ customerMessage: text, approvedKnowledge: [] })
+      : [];
+    expect(selected.map(({ id, version }) => `${id}@${version}`)).toEqual([
+      `${expected}@1`,
+    ]);
+    const outside = retrievalEnabledForConversation(
+      config,
+      'other-conversation',
+    )
+      ? await service.select({ customerMessage: text, approvedKnowledge: [] })
+      : [];
+    expect(outside).toEqual([]);
+    expect(findMany).toHaveBeenCalledTimes(1);
+  });
   it('filters status, expiry, scope, high risk, privacy, injection and commercial claims', () => {
     const candidates = [
       item('safe'),

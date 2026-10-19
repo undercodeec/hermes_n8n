@@ -11,6 +11,7 @@ import { NOUS_HERMES_INFERENCE_QUEUE } from './nous-hermes.constants';
 import { NousHermesQueueEvents } from './nous-hermes.queue-events';
 import { NousHermesRateLimitError } from './nous-hermes.transport';
 import { InboundTurnService } from '../auto-replies/inbound-turn.service';
+import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
 
 @Injectable()
 export class NousHermesEngine implements ConversationEngine {
@@ -29,6 +30,12 @@ export class NousHermesEngine implements ConversationEngine {
   ) {}
 
   async respond(input: ConversationTurnInput): Promise<ConversationTurnResult> {
+    const guarded = isSingleGenerationCanaryConversation(
+      this.config,
+      input.conversationId,
+    );
+    if (guarded !== Boolean(input.singleGenerationCanary))
+      throw new Error('CANARY_NOUS_SCOPE_OR_CLAIM_MISMATCH');
     if (input.approvedContext.handoffActive) {
       return this.failureResult(
         input,

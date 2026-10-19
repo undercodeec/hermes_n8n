@@ -30,7 +30,12 @@ const input: ConversationTurnInput = {
 };
 
 const config = {
-  get: (_key: string, fallback?: unknown) => fallback,
+  get: (key: string, fallback?: unknown) =>
+    ({
+      F3_SINGLE_GENERATION_CANARY_ENABLED: 'true',
+      F3_SINGLE_GENERATION_CANARY_CONVERSATION_ID: input.conversationId,
+      NOUS_HERMES_MAX_ATTEMPTS: '3',
+    })[key as 'F3_SINGLE_GENERATION_CANARY_ENABLED'] ?? fallback,
 } as ConfigService;
 
 describe('Nous canary HTTP boundary', () => {
@@ -141,5 +146,74 @@ describe('Nous canary HTTP boundary', () => {
       'CANARY_NOUS_QUEUE_AMBIGUOUS',
     );
     expect(blockAmbiguous).toHaveBeenCalledWith('turn-a', 'token-a');
+  });
+
+  it('keeps three BullMQ attempts for a non-target source while guard is armed', async () => {
+    const result = {
+      replyText: 'Respuesta sintética.',
+    } as ConversationTurnResult;
+    const add = jest.fn().mockResolvedValue({
+      waitUntilFinished: jest.fn().mockResolvedValue(result),
+    });
+    const queue = { add } as unknown as Queue<
+      ConversationTurnInput,
+      ConversationTurnResult,
+      string
+    >;
+    const engine = new NousHermesEngine(config, queue, {
+      queueEvents: {},
+    } as NousHermesQueueEvents);
+    const other = {
+      ...input,
+      conversationId: 'other-conversation',
+      inboundMessageId: 'other-source',
+      singleGenerationCanary: undefined,
+    };
+    await expect(engine.respond(other)).resolves.toBe(result);
+    expect(add).toHaveBeenCalledWith(
+      'infer',
+      other,
+      expect.objectContaining({ attempts: 3 }),
+    );
+    await expect(
+      engine.respond({
+        ...other,
+        singleGenerationCanary: input.singleGenerationCanary,
+      }),
+    ).rejects.toThrow('CANARY_NOUS_SCOPE_OR_CLAIM_MISMATCH');
+    await expect(
+      engine.respond({ ...input, singleGenerationCanary: undefined }),
+    ).rejects.toThrow('CANARY_NOUS_SCOPE_OR_CLAIM_MISMATCH');
+    expect(add).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a queued QA claim after guard neutralization before HTTP', async () => {
+    const post = jest.spyOn(axios, 'post');
+    const neutral = {
+      get: (key: string, fallback?: unknown) => {
+        if (key === 'F3_SINGLE_GENERATION_CANARY_ENABLED') return 'false';
+        if (key === 'F3_SINGLE_GENERATION_CANARY_CONVERSATION_ID')
+          return input.conversationId;
+        if (key === 'NOUS_HERMES_MAX_ATTEMPTS') return '3';
+        return fallback;
+      },
+    } as ConfigService;
+    const transport = new NousHermesTransport(
+      neutral,
+      new AgentOutputValidator(),
+      { read: jest.fn().mockResolvedValue('synthetic-secret') },
+      {
+        reserveNousDispatch: jest.fn().mockResolvedValue(true),
+      } as unknown as InboundTurnService,
+      {
+        inboundTurn: {
+          findFirst: jest.fn().mockResolvedValue({ id: 'turn-a' }),
+        },
+      } as unknown as PrismaService,
+    );
+    await expect(transport.execute(input)).rejects.toThrow(
+      'CANARY_NOUS_DISPATCH_DENIED',
+    );
+    expect(post).not.toHaveBeenCalled();
   });
 });

@@ -4,6 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import { createHash } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { InboundTurnStatus } from '@prisma/client';
+import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
 import {
   CommercialProfile,
   HermesRequestDto,
@@ -51,6 +53,12 @@ type ChatCompletionResponse = {
   }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
+
+class CanaryDispatchDeniedError extends Error {
+  constructor() {
+    super('CANARY_GEMINI_DISPATCH_DENIED');
+  }
+}
 
 @Injectable()
 export class HermesService {
@@ -256,6 +264,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       if (this.structuredOutputEnabled()) {
         body.response_format = this.responseFormat();
       }
+      await this.reserveProviderDispatch(request);
       const maxAttempts = request.singleGenerationCanary
         ? 1
         : Math.min(this.positiveInteger('HERMES_COMPLETION_ATTEMPTS', 2), 3);
@@ -287,6 +296,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
               max_tokens:
                 attempt === 1 ? maxOutputTokens : retryMaxOutputTokens,
             },
+            request.singleGenerationCanary ? { maxRedirects: 0 } : undefined,
           );
           providerReached = true;
           const choice = response.data.choices?.[0];
@@ -414,6 +424,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         costEstimate: this.costEstimate(promptTokens, completionTokens),
       };
     } catch (error: unknown) {
+      if (error instanceof CanaryDispatchDeniedError) throw error;
       const message = axios.isAxiosError<{ error?: { message?: string } }>(
         error,
       )
@@ -453,14 +464,75 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
             ? 'HERMES_INVALID_PROVIDER_RESPONSE'
             : 'HERMES_PROVIDER_UNAVAILABLE',
           summary: sanitizeDiagnosticSummary(message),
-          attempts: Math.min(
-            this.positiveInteger('HERMES_COMPLETION_ATTEMPTS', 2),
-            3,
-          ),
+          attempts: request.singleGenerationCanary
+            ? 1
+            : Math.min(
+                this.positiveInteger('HERMES_COMPLETION_ATTEMPTS', 2),
+                3,
+              ),
           recovered: false,
           requiresHumanReview: true,
         },
       };
+    }
+  }
+
+  private async reserveProviderDispatch(
+    request: HermesRequestDto,
+  ): Promise<void> {
+    const guarded = isSingleGenerationCanaryConversation(
+      this.configService,
+      request.conversationId ?? '',
+    );
+    const claim = request.singleGenerationCanary;
+    if (claim) {
+      if (
+        !guarded ||
+        !request.correlationId ||
+        !claim.turnId ||
+        !claim.processingToken ||
+        claim.processingToken !== claim.generationToken
+      )
+        throw new CanaryDispatchDeniedError();
+      // This update is the physical HTTP dispatch reservation. A replay, crash,
+      // timeout or duplicate worker cannot reserve the same source again.
+      const reserved = await this.prisma.inboundTurn.updateMany({
+        where: {
+          id: claim.turnId,
+          conversationId: request.conversationId,
+          lastMessageId: request.correlationId,
+          generationSourceMessageId: request.correlationId,
+          generationToken: claim.generationToken,
+          processingToken: claim.processingToken,
+          generationEngine: 'gemini_direct',
+          generationReservedAt: { not: null },
+          providerDispatchReservedAt: null,
+          generationBlockedAt: null,
+          status: InboundTurnStatus.PROCESSING,
+        },
+        data: { providerDispatchReservedAt: new Date() },
+      });
+      if (reserved.count !== 1) throw new CanaryDispatchDeniedError();
+      return;
+    }
+    if (guarded) throw new CanaryDispatchDeniedError();
+    // Check a retained target even after neutralization. Other conversations
+    // keep their original path without an extra database read; AutoReply also
+    // blocks a previously reserved source if the target setting was cleared.
+    const configuredTarget = this.configService
+      .get<string>('F3_SINGLE_GENERATION_CANARY_CONVERSATION_ID', '')
+      .trim()
+      .toLowerCase();
+    if (
+      request.correlationId &&
+      configuredTarget &&
+      request.conversationId?.toLowerCase() === configuredTarget
+    ) {
+      const prior = await this.prisma.inboundTurn.findFirst({
+        where: { generationSourceMessageId: request.correlationId },
+        select: { id: true },
+      });
+      if (prior) throw new CanaryDispatchDeniedError();
     }
   }
 

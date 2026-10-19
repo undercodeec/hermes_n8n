@@ -266,6 +266,10 @@ export class AutoReplyService {
     turnMessages?: Awaited<ReturnType<InboundTurnService['messages']>>,
     claimedTurn?: InboundTurn,
   ): Promise<void> {
+    const canaryArmed = isSingleGenerationCanaryConversation(
+      this.config,
+      data.conversationId,
+    );
     const inbound = await this.prisma.message.findUnique({
       where: { id: data.inboundMessageId },
       select: {
@@ -279,7 +283,14 @@ export class AutoReplyService {
         inboundTurnId: true,
       },
     });
-    if (!inbound || inbound.conversationId !== data.conversationId) {
+    if (
+      !inbound ||
+      inbound.conversationId !== data.conversationId ||
+      (canaryArmed && inbound.contactId !== data.contactId) ||
+      (canaryArmed &&
+        data.inboundTurnId &&
+        inbound.inboundTurnId !== data.inboundTurnId)
+    ) {
       this.logSkip(data, 'INBOUND_NOT_FOUND_OR_MISMATCH');
       return;
     }
@@ -311,10 +322,6 @@ export class AutoReplyService {
       return;
     }
 
-    const canaryArmed = isSingleGenerationCanaryConversation(
-      this.config,
-      data.conversationId,
-    );
     if (claimedTurn && claimedTurn.lastMessageId !== inbound.id) {
       this.logSkip(data, 'CANARY_SOURCE_MISMATCH');
       return;

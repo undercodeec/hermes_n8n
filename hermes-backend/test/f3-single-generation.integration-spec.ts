@@ -23,6 +23,7 @@ import { NousHermesTransport } from '../src/conversation-engine/nous-hermes.tran
 import { NousHermesProcessor } from '../src/conversation-engine/nous-hermes.processor';
 import { CommercialPolicyService } from '../src/hermes/commercial-policy.service';
 import { CommercialAuthorityService } from '../src/hermes/commercial-authority.service';
+import { HermesService } from '../src/hermes/hermes.service';
 import { ConversationGuardService } from '../src/conversation-guard/conversation-guard.service';
 import { HandoffService } from '../src/handoff/handoff.service';
 import { LeadsService } from '../src/leads/leads.service';
@@ -47,8 +48,7 @@ describe('F3 single-generation canary with PostgreSQL', () => {
         ({
           F3_SINGLE_GENERATION_CANARY_ENABLED: String(enabled),
           F3_SINGLE_GENERATION_CANARY_CONVERSATION_ID: conversationId,
-          HERMES_COMPLETION_ATTEMPTS: '1',
-          NOUS_HERMES_MAX_ATTEMPTS: '1',
+          NOUS_HERMES_MAX_ATTEMPTS: '3',
           HERMES_CONVERSATION_MESSAGE_DELAY_MS: 0,
           AI_MESSAGE_PART_DELAY_MS: 0,
         })[key as 'F3_SINGLE_GENERATION_CANARY_ENABLED'] ?? fallback,
@@ -128,7 +128,7 @@ describe('F3 single-generation canary with PostgreSQL', () => {
   ) {
     const engine = { respond: jest.fn() };
     const service = new AutoReplyService(
-      configFor(f.conversation.id, enabled),
+      configFor(enabled ? f.conversation.id : '', enabled),
       prisma,
       {} as MetaService,
       engine as unknown as ConversationEngineService,
@@ -194,6 +194,66 @@ describe('F3 single-generation canary with PostgreSQL', () => {
         data: { generationSourceMessageId: first.source.id },
       }),
     ).rejects.toMatchObject({ code: 'P2002' });
+  });
+
+  it('reserves one Gemini HTTP dispatch durably across concurrent calls and neutralization', async () => {
+    const f = await fixture();
+    const claim = await reserve(f);
+    const armed = new HermesService(configFor(f.conversation.id), prisma);
+    const post = jest.fn().mockResolvedValue({
+      data: {
+        choices: [
+          {
+            message: {
+              content: JSON.stringify({ response: 'Respuesta sintética.' }),
+            },
+          },
+        ],
+      },
+    });
+    (
+      armed as unknown as { httpClient: { post: typeof post } }
+    ).httpClient.post = post;
+    const request = {
+      conversationId: f.conversation.id,
+      correlationId: f.source.id,
+      messageContent: 'Consulta sintética',
+      conversationHistory: [],
+      singleGenerationCanary: {
+        turnId: f.turn.id,
+        processingToken: claim.processingToken!,
+        generationToken: claim.processingToken!,
+      },
+    };
+    const outcomes = await Promise.allSettled([
+      armed.generateResponse(request),
+      armed.generateResponse(request),
+    ]);
+    expect(outcomes.map((result) => result.status).sort()).toEqual([
+      'fulfilled',
+      'rejected',
+    ]);
+    expect(post).toHaveBeenCalledTimes(1);
+    expect(
+      (await prisma.inboundTurn.findUniqueOrThrow({ where: { id: f.turn.id } }))
+        .providerDispatchReservedAt,
+    ).not.toBeNull();
+
+    const neutral = new HermesService(
+      configFor(f.conversation.id, false),
+      prisma,
+    );
+    const latePost = jest.fn();
+    (
+      neutral as unknown as { httpClient: { post: typeof latePost } }
+    ).httpClient.post = latePost;
+    await expect(
+      neutral.generateResponse({
+        ...request,
+        singleGenerationCanary: undefined,
+      }),
+    ).rejects.toThrow('CANARY_GEMINI_DISPATCH_DENIED');
+    expect(latePost).not.toHaveBeenCalled();
   });
 
   it('limits duplicate BullMQ Nous jobs to one fake HTTP request', async () => {
@@ -427,10 +487,7 @@ describe('F3 single-generation canary with PostgreSQL', () => {
     expect(blocked.generationBlockReason).toBe(
       'CANARY_BLOCKED_AMBIGUOUS_GENERATION',
     );
-    const off = new InboundTurnService(
-      prisma,
-      configFor(f.conversation.id, false),
-    );
+    const off = new InboundTurnService(prisma, configFor('', false));
     expect(await off.claim(f.turn.id)).toBeNull();
     expect(blocked.generationSourceMessageId).toBe(f.source.id);
   });
