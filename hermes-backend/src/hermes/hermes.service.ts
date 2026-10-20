@@ -13,7 +13,10 @@ import {
 } from './dto/hermes-request.dto';
 import { organizationLocationContext } from './commercial-catalog';
 import { monetaryValuesIn } from './monetary-values';
-import { sanitizeDiagnosticSummary } from './hermes-diagnostics';
+import {
+  safeProviderDiagnostic,
+  sanitizeDiagnosticSummary,
+} from './hermes-diagnostics';
 import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 import { commercialSnapshotKnowledge } from './commercial-authority.service';
 import {
@@ -57,6 +60,12 @@ type ChatCompletionResponse = {
 class CanaryDispatchDeniedError extends Error {
   constructor() {
     super('CANARY_GEMINI_DISPATCH_DENIED');
+  }
+}
+
+class InvalidProviderResponseError extends Error {
+  constructor() {
+    super('HERMES_INVALID_PROVIDER_RESPONSE');
   }
 }
 
@@ -327,15 +336,16 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           const choice = response.data.choices?.[0];
           promptTokens += response.data.usage?.prompt_tokens || 0;
           completionTokens += response.data.usage?.completion_tokens || 0;
-          if (!choice) throw new Error('No se recibió respuesta de Hermes');
+          if (!choice) throw new InvalidProviderResponseError();
           if (this.isTruncatedCompletion(choice.finish_reason)) {
-            throw new Error(
-              `El proveedor terminó la respuesta por límite de salida (${choice.finish_reason})`,
-            );
+            throw new InvalidProviderResponseError();
           }
-          const candidate = this.parseHermesResponse(
-            choice.message?.content || '',
-          );
+          let candidate: ParsedHermesResponse;
+          try {
+            candidate = this.parseHermesResponse(choice.message?.content || '');
+          } catch {
+            throw new InvalidProviderResponseError();
+          }
           if (
             request.conversationGuidance?.allowPlanRecommendation === false &&
             candidate.commercialProfile
@@ -409,7 +419,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       }
 
       if (!parsedResponse) {
-        throw new Error('No se obtuvo una respuesta completa de Hermes');
+        throw new InvalidProviderResponseError();
       }
       const latencyMs = Date.now() - startTime;
       const constrainedResponse = this.applyDeterministicConstraints(
@@ -448,17 +458,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       };
     } catch (error: unknown) {
       if (error instanceof CanaryDispatchDeniedError) throw error;
-      const message = axios.isAxiosError<{ error?: { message?: string } }>(
-        error,
-      )
-        ? error.response?.data?.error?.message || error.message
-        : error instanceof Error
-          ? error.message
-          : String(error);
       const invalidProviderResponse =
-        /json|estructurad|respuesta completa|respuesta de hermes/i.test(
-          message,
-        );
+        error instanceof InvalidProviderResponseError;
       this.logger.error(
         JSON.stringify({
           event: 'hermes_completion_failed',
@@ -484,14 +485,14 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         ...(request.commercialProfile
           ? { commercialProfile: { ...request.commercialProfile } }
           : {}),
-        diagnostic: {
+        diagnostic: safeProviderDiagnostic({
           category: invalidProviderResponse
             ? 'INVALID_PROVIDER_RESPONSE'
             : 'PROVIDER_ERROR',
           code: invalidProviderResponse
             ? 'HERMES_INVALID_PROVIDER_RESPONSE'
             : 'HERMES_PROVIDER_UNAVAILABLE',
-          summary: sanitizeDiagnosticSummary(message),
+          summary: '',
           attempts: request.singleGenerationCanary
             ? 1
             : Math.min(
@@ -500,7 +501,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
               ),
           recovered: false,
           requiresHumanReview: true,
-        },
+        }),
       };
     }
   }
@@ -677,9 +678,12 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       );
 
       return this.fitBusinessContext(sections, maxChars);
-    } catch (error: unknown) {
+    } catch {
       this.logger.warn(
-        `No se pudo cargar el contexto comercial: ${error instanceof Error ? error.message : String(error)}`,
+        JSON.stringify({
+          event: 'hermes_business_context_unavailable',
+          category: 'CONTEXT_ERROR',
+        }),
       );
       return this.fitBusinessContext(sections, maxChars);
     }

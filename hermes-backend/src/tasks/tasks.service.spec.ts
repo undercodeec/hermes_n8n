@@ -9,7 +9,14 @@ describe('TasksService callback requests', () => {
         type: TaskType;
         status: TaskStatus;
         title: string;
-        metadata: { actionStatus: string; sourceMessageIds: string[] };
+        description: string;
+        metadata: {
+          actionStatus: string;
+          sourceMessageIds: string[];
+          category: string;
+          code: string;
+          summary: string;
+        };
       };
     };
     let capturedCreateArgs: CreateArgs | undefined;
@@ -49,7 +56,7 @@ describe('TasksService callback requests', () => {
       sourceMessageId: 'message-1',
       category: 'PROVIDER_ERROR' as const,
       code: 'HERMES_PROVIDER_UNAVAILABLE',
-      summary: 'HTTP 503',
+      summary: 'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE',
     };
 
     const first = await service.requestHermesReview(params);
@@ -60,12 +67,95 @@ describe('TasksService callback requests', () => {
     expect(capturedCreateArgs?.data.type).toBe(TaskType.GENERAL);
     expect(capturedCreateArgs?.data.status).toBe(TaskStatus.PENDING);
     expect(capturedCreateArgs?.data.title).toBe('Revisar incidencia de Hermes');
+    expect(capturedCreateArgs?.data.description).toBe(
+      'Revisar incidencia de Hermes: No se pudo completar la respuesta del proveedor.',
+    );
     expect(capturedCreateArgs?.data.metadata).toEqual(
       expect.objectContaining({
         actionStatus: 'PENDING_REVIEW',
+        category: 'PROVIDER_ERROR',
+        code: 'HERMES_PROVIDER_UNAVAILABLE',
+        summary: 'No se pudo completar la respuesta del proveedor.',
         sourceMessageIds: ['message-1'],
       }),
     );
+    expect(JSON.stringify(capturedCreateArgs)).not.toContain(
+      'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE',
+    );
+  });
+
+  it('does not expose old provider text through task list or detail', async () => {
+    const stored = {
+      id: 'review-task-1',
+      type: TaskType.GENERAL,
+      title: 'Revisar incidencia de Hermes',
+      description: 'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE',
+      metadata: {
+        actionStatus: 'PENDING_REVIEW',
+        category: 'PROVIDER_ERROR',
+        code: 'FAKE_PROVIDER_CODE_DO_NOT_USE',
+        summary: 'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE',
+        nested: { provider: 'FAKE_NESTED_PROVIDER_TEXT_DO_NOT_USE' },
+      },
+      conversation: {
+        metadata: {
+          lastHermesIncident: {
+            category: 'PROVIDER_ERROR',
+            code: 'FAKE_PROVIDER_CODE_DO_NOT_USE',
+            summary: 'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE',
+          },
+        },
+      },
+    };
+    const { conversation: _conversation, ...listed } = stored;
+    const prisma = {
+      task: {
+        findMany: jest.fn().mockResolvedValue([listed]),
+        count: jest.fn().mockResolvedValue(1),
+        findUnique: jest.fn().mockResolvedValue(stored),
+      },
+    } as unknown as PrismaService;
+    const service = new TasksService(prisma);
+
+    const list = await service.findAll();
+    const detail = await service.findOne(stored.id);
+
+    for (const output of [list.data[0], detail]) {
+      expect(JSON.stringify(output)).not.toContain('FAKE_');
+      expect(output).toMatchObject({
+        description:
+          'Revisar incidencia de Hermes: No se pudo completar la respuesta del proveedor.',
+        metadata: {
+          category: 'PROVIDER_ERROR',
+          code: 'HERMES_PROVIDER_UNAVAILABLE',
+          summary: 'No se pudo completar la respuesta del proveedor.',
+        },
+      });
+    }
+    expect(detail.conversation).toEqual(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          lastHermesIncident: expect.objectContaining({
+            summary: 'No se pudo completar la respuesta del proveedor.',
+          }),
+        }),
+      }),
+    );
+  });
+
+  it('keeps a user task description outside the provider review flow', async () => {
+    const task = {
+      id: 'user-task-1',
+      type: TaskType.GENERAL,
+      title: 'Nota manual',
+      description: 'Texto legítimo del usuario.',
+      metadata: { source: 'manual' },
+    };
+    const prisma = {
+      task: { findUnique: jest.fn().mockResolvedValue(task) },
+    } as unknown as PrismaService;
+
+    expect(await new TasksService(prisma).findOne(task.id)).toEqual(task);
   });
 
   it('does not duplicate a callback task when the same inbound message is retried', async () => {

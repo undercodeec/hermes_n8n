@@ -3239,6 +3239,7 @@ describe('AutoReplyService', () => {
   });
 
   it('keeps the internal Hermes incident visible to CRM and absent from customer copy', async () => {
+    const poisonedProviderSummary = 'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE';
     const harness = setupProcessHarness({
       hermesResponse: {
         response: 'Disculpe, no pude completar la respuesta en este momento.',
@@ -3247,7 +3248,7 @@ describe('AutoReplyService', () => {
         diagnostic: {
           category: 'PROVIDER_ERROR',
           code: 'HERMES_PROVIDER_UNAVAILABLE',
-          summary: 'HTTP 503',
+          summary: poisonedProviderSummary,
           attempts: 2,
           recovered: false,
           requiresHumanReview: true,
@@ -3281,6 +3282,14 @@ describe('AutoReplyService', () => {
       'Ya dejé registrado el caso para revisarlo y continuar por este mismo chat',
     );
     expect(customerCopy).not.toMatch(/HTTP 503|HERMES_PROVIDER_UNAVAILABLE/);
+    expect(customerCopy).not.toContain(poisonedProviderSummary);
+    expect(harness.tasks.requestHermesReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'PROVIDER_ERROR',
+        code: 'HERMES_PROVIDER_UNAVAILABLE',
+        summary: 'No se pudo completar la respuesta del proveedor.',
+      }),
+    );
     expect(harness.messageCreate).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
@@ -3299,12 +3308,20 @@ describe('AutoReplyService', () => {
         metadata: expect.objectContaining({
           lastHermesIncident: expect.objectContaining({
             code: 'HERMES_PROVIDER_UNAVAILABLE',
-            summary: 'HTTP 503',
+            summary: 'No se pudo completar la respuesta del proveedor.',
             taskId: 'review-task-1',
           }),
         }),
       },
     });
+    for (const calls of [
+      harness.tasks.requestHermesReview.mock.calls,
+      harness.messageCreate.mock.calls,
+      harness.conversationUpdate.mock.calls,
+      harness.deliveries.prepareBatch.mock.calls,
+    ]) {
+      expect(JSON.stringify(calls)).not.toContain(poisonedProviderSummary);
+    }
   });
 
   it('creates a review before promising confirmation of a missing commercial fact', async () => {
@@ -3614,8 +3631,12 @@ describe('AutoReplyService', () => {
           requiresHumanReview: true,
         },
       },
-      reviewTask: new Error('database unavailable'),
+      reviewTask: new Error('FAKE_TASK_ERROR_DO_NOT_USE'),
     });
+
+    const logged = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
 
     await harness.service.process({
       conversationId: 'conversation-1',
@@ -3626,6 +3647,16 @@ describe('AutoReplyService', () => {
     const sent = harness.meta.sendTextMessage.mock.calls[0][1] as string;
     expect(sent).toContain('enviar nuevamente su mensaje');
     expect(sent).not.toMatch(/equipo|revisar|confirmaremos|registrado/i);
+    expect(JSON.stringify(logged.mock.calls)).not.toContain(
+      'FAKE_TASK_ERROR_DO_NOT_USE',
+    );
+    expect(logged).toHaveBeenCalledWith(
+      JSON.stringify({
+        event: 'hermes_review_task_failed',
+        category: 'TASK_PERSISTENCE_ERROR',
+      }),
+    );
+    logged.mockRestore();
   });
 
   it('persists a recovered policy incident without creating a review task', async () => {

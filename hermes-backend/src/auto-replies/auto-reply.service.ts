@@ -51,6 +51,7 @@ import { TasksService } from '../tasks/tasks.service';
 import { splitWhatsAppMessage } from './whatsapp-message-splitter';
 import {
   HermesIncidentMetadata,
+  safeProviderDiagnostic,
   toIncidentMetadata,
 } from '../hermes/hermes-diagnostics';
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
@@ -696,7 +697,9 @@ export class AutoReplyService {
       nextAction: engineResult.business?.nextAction,
       decision: engineResult.business?.decision,
       commercialProfile: engineResult.business?.commercialProfile,
-      diagnostic: engineResult.diagnostic,
+      diagnostic: engineResult.diagnostic
+        ? safeProviderDiagnostic(engineResult.diagnostic)
+        : undefined,
     };
     const isNous = engineResult.engine === 'nous_hermes';
     const reviewedProposal =
@@ -986,9 +989,12 @@ export class AutoReplyService {
           ].includes(response.diagnostic.category)
             ? 'Disculpe, no pude completar la respuesta en este momento. Ya dejé registrado el caso para revisarlo y continuar por este mismo chat.'
             : 'Permítame consultar este punto con el equipo. Le confirmaremos por este mismo chat.';
-        } catch (error) {
+        } catch {
           this.logger.error(
-            `No se pudo crear la tarea de revisión de Hermes: ${error instanceof Error ? error.message : String(error)}`,
+            JSON.stringify({
+              event: 'hermes_review_task_failed',
+              category: 'TASK_PERSISTENCE_ERROR',
+            }),
           );
           response.response =
             'Disculpe, no pude completar la respuesta en este momento. ¿Podría enviar nuevamente su mensaje para intentarlo otra vez?';

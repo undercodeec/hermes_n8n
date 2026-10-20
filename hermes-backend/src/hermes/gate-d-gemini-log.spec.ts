@@ -18,6 +18,8 @@ const marker = {
   status: 'FAKE_STATUS_DO_NOT_USE',
   finish: 'FAKE_FINISH_REASON_DO_NOT_USE',
   correlation: 'FAKE_CORRELATION_DO_NOT_USE',
+  unexpected: 'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE',
+  unusual: 'FAKE_☃_\u2028_\u0000_DO_NOT_USE',
 };
 
 const config = {
@@ -78,8 +80,8 @@ function syntheticError(
       : {
           data: {
             error: {
-              message: marker.provider,
-              nested: { prompt: marker.body },
+              message: `${marker.provider} ${marker.unexpected} ${marker.unusual} ${'q'.repeat(900)}`,
+              nested: { prompt: marker.body, extra: [marker.cause] },
             },
           },
           status: status as number,
@@ -159,6 +161,7 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
         diagnostic: {
           category: 'PROVIDER_ERROR',
           code: 'HERMES_PROVIDER_UNAVAILABLE',
+          summary: 'No se pudo completar la respuesta del proveedor.',
           attempts: 2,
           recovered: false,
           requiresHumanReview: true,
@@ -166,6 +169,7 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
       });
       expect(calls.map((call) => call[0])).toEqual(['warn', 'error']);
       assertNoMarkers(calls);
+      assertNoMarkers([[result.diagnostic]]);
       const logged = fields(calls);
       expect(logged[0].payload).toEqual({
         event: 'hermes_completion_retry',
@@ -198,8 +202,10 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
     }));
     const result = await service.generateResponse(request());
     expect(result.diagnostic?.category).toBe('INVALID_PROVIDER_RESPONSE');
+    expect(result.diagnostic?.summary).toBe('El proveedor devolvió una respuesta inválida.');
     expect(calls.map((call) => call[0])).toEqual(['warn', 'error']);
     assertNoMarkers(calls);
+    assertNoMarkers([[result.diagnostic]]);
   });
 
   it('keeps generic exception messages, stack and cause out of both logs', async () => {
@@ -209,12 +215,13 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
       error.cause = { nested: marker.cause };
       throw error;
     });
-    await service.generateResponse(request());
+    const result = await service.generateResponse(request());
     expect(fields(calls).map((entry) => entry.payload.category)).toEqual([
       'GENERATION_ERROR',
       'GENERATION_ERROR',
     ]);
     assertNoMarkers(calls);
+    assertNoMarkers([[result.diagnostic]]);
   });
 
   it('keeps a synthetic single-generation turn at one POST and one safe error log', async () => {
@@ -233,6 +240,7 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
     });
     expect(posts).toBe(1);
     expect(result.diagnostic?.attempts).toBe(1);
+    expect(result.diagnostic?.summary).toBe('No se pudo completar la respuesta del proveedor.');
     expect(calls.map((call) => call[0])).toEqual(['error']);
     expect(fields(calls)[0].payload).toEqual({
       event: 'hermes_completion_failed',
@@ -240,6 +248,7 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
       httpStatus: 429,
     });
     assertNoMarkers(calls);
+    assertNoMarkers([[result.diagnostic]]);
   });
 
   it('preserves the successful response and its existing log event', async () => {
@@ -271,5 +280,33 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
     expect(result.diagnostic).toBeUndefined();
     expect(calls.map((call) => call[0])).toEqual(['log']);
     expect(fields(calls)[0].payload.event).toBe('hermes_response_generated');
+  });
+
+  it('keeps a context lookup exception out of the adjacent logger', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const prisma = {
+      knowledgeDocument: {
+        findMany: jest.fn().mockRejectedValue(new Error(marker.unexpected)),
+      },
+      product: { findMany: jest.fn().mockResolvedValue([]) },
+      salesPlaybook: { findMany: jest.fn().mockResolvedValue([]) },
+    } as unknown as PrismaService;
+    const service = new HermesService(config, prisma);
+    const context = await (
+      service as unknown as {
+        loadBusinessContext: (input: ReturnType<typeof request>) => Promise<string>;
+      }
+    ).loadBusinessContext(request());
+
+    expect(typeof context).toBe('string');
+    expect(warn).toHaveBeenCalledWith(
+      JSON.stringify({
+        event: 'hermes_business_context_unavailable',
+        category: 'CONTEXT_ERROR',
+      }),
+    );
+    assertNoMarkers(warn.mock.calls);
   });
 });

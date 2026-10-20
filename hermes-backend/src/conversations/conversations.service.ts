@@ -16,8 +16,7 @@ import {
   TaskType,
 } from '@prisma/client';
 import {
-  HermesDiagnosticCategory,
-  sanitizeDiagnosticSummary,
+  safeStoredIncident,
 } from '../hermes/hermes-diagnostics';
 import { MetaService } from '../meta/meta.service';
 import { whatsappReplyWindow } from '../meta/whatsapp-service-window';
@@ -38,14 +37,6 @@ const OPEN_TASK_STATUSES: TaskStatus[] = [
   TaskStatus.PENDING,
   TaskStatus.IN_PROGRESS,
 ];
-const HERMES_DIAGNOSTIC_CATEGORIES = new Set<HermesDiagnosticCategory>([
-  'POLICY_VIOLATION',
-  'PROVIDER_ERROR',
-  'INVALID_PROVIDER_RESPONSE',
-  'OUTPUT_BLOCKED',
-  'CONTEXT_ERROR',
-]);
-
 @Injectable()
 export class ConversationsService {
   constructor(
@@ -68,44 +59,26 @@ export class ConversationsService {
   }
 
   private hermesIncident(metadata: unknown) {
-    const incident = this.objectValue(
-      this.objectValue(metadata)?.lastHermesIncident,
-    );
-    if (
-      !incident ||
-      typeof incident.category !== 'string' ||
-      !HERMES_DIAGNOSTIC_CATEGORIES.has(
-        incident.category as HermesDiagnosticCategory,
-      ) ||
-      typeof incident.code !== 'string' ||
-      typeof incident.summary !== 'string'
-    ) {
-      return null;
-    }
+    return safeStoredIncident(this.objectValue(metadata)?.lastHermesIncident);
+  }
 
+  private safeMessage<T extends { metadata?: unknown }>(message: T): T {
+    const metadata = this.objectValue(message.metadata);
+    if (
+      !metadata ||
+      !Object.prototype.hasOwnProperty.call(metadata, 'hermesIncident')
+    ) {
+      return message;
+    }
     return {
-      category: incident.category as HermesDiagnosticCategory,
-      code: sanitizeDiagnosticSummary(incident.code),
-      summary: sanitizeDiagnosticSummary(incident.summary),
-      attempts: typeof incident.attempts === 'number' ? incident.attempts : 0,
-      recovered:
-        typeof incident.recovered === 'boolean' ? incident.recovered : false,
-      requiresHumanReview:
-        typeof incident.requiresHumanReview === 'boolean'
-          ? incident.requiresHumanReview
-          : false,
-      sourceMessageId:
-        typeof incident.sourceMessageId === 'string'
-          ? sanitizeDiagnosticSummary(incident.sourceMessageId)
-          : '',
-      ...(typeof incident.taskId === 'string'
-        ? { taskId: sanitizeDiagnosticSummary(incident.taskId) }
-        : {}),
-      occurredAt:
-        typeof incident.occurredAt === 'string'
-          ? sanitizeDiagnosticSummary(incident.occurredAt)
-          : '',
-    };
+      ...message,
+      metadata: {
+        ...metadata,
+        hermesIncident: this.hermesIncident({
+          lastHermesIncident: metadata.hermesIncident,
+        }),
+      },
+    } as T;
   }
 
   private hermesReviewTask(task: unknown) {
@@ -269,6 +242,9 @@ export class ConversationsService {
         const { metadata, tasks, ...safeConversation } = conversation;
         return {
           ...safeConversation,
+          messages: conversation.messages.map((message) =>
+            this.safeMessage(message),
+          ),
           hermesIncident: this.hermesIncident(metadata),
           hermesReviewTask: this.hermesReviewTask(
             tasks.find((task) => task.type === TaskType.GENERAL),
@@ -329,7 +305,9 @@ export class ConversationsService {
     const { metadata, tasks, ...safeConversation } = conversation;
     return {
       ...safeConversation,
-      messages: conversation.messages.reverse(),
+      messages: conversation.messages.reverse().map((message) =>
+        this.safeMessage(message),
+      ),
       hermesIncident: this.hermesIncident(metadata),
       hermesReviewTask: this.hermesReviewTask(
         tasks.find((task) => task.type === TaskType.GENERAL),
@@ -363,7 +341,7 @@ export class ConversationsService {
     ]);
 
     return {
-      data: messages.reverse(),
+      data: messages.reverse().map((message) => this.safeMessage(message)),
       total,
       page: query.page,
       limit: query.limit,

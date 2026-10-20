@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { HermesService } from '../hermes/hermes.service';
+import { safeProviderDiagnostic } from '../hermes/hermes-diagnostics';
 import type {
   ConversationEngine,
   ConversationTurnInput,
@@ -65,7 +66,9 @@ export class DirectGeminiEngine implements ConversationEngine {
         decision: response.decision,
         commercialProfile: response.commercialProfile,
       },
-      diagnostic: response.diagnostic,
+      diagnostic: response.diagnostic
+        ? safeProviderDiagnostic(response.diagnostic)
+        : undefined,
     };
   }
 }

@@ -167,4 +167,42 @@ describe('DirectGeminiEngine', () => {
     });
     expect(result.learningExposed).toBeUndefined();
   });
+
+  it('does not pass provider diagnostic text across the engine boundary', async () => {
+    const engine = new DirectGeminiEngine({
+      generateResponse: jest.fn().mockResolvedValue({
+        response: 'Disculpe, no pude completar la respuesta en este momento.',
+        diagnostic: {
+          category: 'PROVIDER_ERROR',
+          code: 'FAKE_PROVIDER_CODE_DO_NOT_USE',
+          summary: 'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE',
+          attempts: 2,
+          recovered: false,
+          requiresHumanReview: true,
+        },
+      }),
+      getProviderModel: () => 'synthetic-model',
+      getPromptVersion: () => 'synthetic-digest',
+    } as unknown as HermesService);
+
+    const result = await engine.respond({
+      conversationId: 'conversation-1',
+      inboundMessageId: 'inbound-1',
+      customerMessage: 'Consulta sintética',
+      approvedContext: {
+        recentMessages: [],
+        approvedKnowledge: [],
+        handoffActive: false,
+        contactName: 'Cliente',
+      },
+    });
+
+    expect(result.diagnostic).toMatchObject({
+      category: 'PROVIDER_ERROR',
+      code: 'HERMES_PROVIDER_UNAVAILABLE',
+      summary: 'No se pudo completar la respuesta del proveedor.',
+      attempts: 2,
+    });
+    expect(JSON.stringify(result.diagnostic)).not.toContain('FAKE_');
+  });
 });
