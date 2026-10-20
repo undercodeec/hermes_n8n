@@ -60,6 +60,33 @@ class CanaryDispatchDeniedError extends Error {
   }
 }
 
+function safeGeminiLogFields(error: unknown, invalidResponse = false) {
+  const isTransportError = axios.isAxiosError(error);
+  const status = isTransportError ? error.response?.status : undefined;
+  const httpStatus =
+    typeof status === 'number' &&
+    Number.isInteger(status) &&
+    status >= 100 &&
+    status <= 599
+      ? status
+      : undefined;
+  const category = invalidResponse
+    ? 'INVALID_RESPONSE'
+    : httpStatus === 429
+      ? 'RATE_LIMIT'
+      : httpStatus !== undefined && httpStatus >= 500
+        ? 'UPSTREAM_5XX'
+        : isTransportError && error.code === 'ECONNABORTED'
+          ? 'TIMEOUT'
+          : isTransportError
+            ? 'TRANSPORT_ERROR'
+            : 'GENERATION_ERROR';
+  return {
+    category,
+    ...(httpStatus === undefined ? {} : { httpStatus }),
+  };
+}
+
 @Injectable()
 export class HermesService {
   private readonly logger = new Logger(HermesService.name);
@@ -285,8 +312,6 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
               messages.at(-1)!,
             ]
           : messages;
-        let finishReason: string | null | undefined;
-
         try {
           const response = await this.httpClient.post<ChatCompletionResponse>(
             '/chat/completions',
@@ -300,7 +325,6 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           );
           providerReached = true;
           const choice = response.data.choices?.[0];
-          finishReason = choice?.finish_reason;
           promptTokens += response.data.usage?.prompt_tokens || 0;
           completionTokens += response.data.usage?.completion_tokens || 0;
           if (!choice) throw new Error('No se recibió respuesta de Hermes');
@@ -378,8 +402,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
             JSON.stringify({
               event: 'hermes_completion_retry',
               attempt,
-              finishReason: finishReason ?? null,
-              reason: error instanceof Error ? error.message : String(error),
+              ...safeGeminiLogFields(error),
             }),
           );
         }
@@ -432,11 +455,16 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         : error instanceof Error
           ? error.message
           : String(error);
-      this.logger.error(`Error llamando a Hermes: ${message}`);
       const invalidProviderResponse =
         /json|estructurad|respuesta completa|respuesta de hermes/i.test(
           message,
         );
+      this.logger.error(
+        JSON.stringify({
+          event: 'hermes_completion_failed',
+          ...safeGeminiLogFields(error, invalidProviderResponse),
+        }),
+      );
       return {
         response: 'Disculpe, no pude completar la respuesta en este momento.',
         ...(providerReached && request.approvedLearning?.length
