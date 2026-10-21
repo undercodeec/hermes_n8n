@@ -5,6 +5,8 @@ import { UpdateTaskDto } from './dto/update-task.dto';
 import { Meeting, Prisma, TaskStatus, TaskType } from '@prisma/client';
 import {
   HermesDiagnosticCategory,
+  safeDiagnosticFields,
+  safeStoredIncident,
   sanitizeDiagnosticSummary,
 } from '../hermes/hermes-diagnostics';
 
@@ -207,10 +209,11 @@ export class TasksService {
         return existing;
       }
 
-      const summary = sanitizeDiagnosticSummary(params.summary);
+      const safeFields = safeDiagnosticFields(params);
+      const summary = sanitizeDiagnosticSummary(safeFields.summary);
       const metadata = {
-        category: params.category,
-        code: sanitizeDiagnosticSummary(params.code).slice(0, 100),
+        category: safeFields.category,
+        code: sanitizeDiagnosticSummary(safeFields.code).slice(0, 100),
         summary,
         contactId: params.contactId,
         actionStatus: 'PENDING_REVIEW',
@@ -252,6 +255,66 @@ export class TasksService {
       : {};
   }
 
+  private safeReviewTask<T extends { type?: TaskType; metadata?: unknown }>(
+    task: T,
+  ): T {
+    const metadata = this.objectMetadata(task.metadata as Prisma.JsonValue);
+    if (
+      task.type !== TaskType.GENERAL ||
+      metadata.actionStatus !== 'PENDING_REVIEW'
+    ) {
+      return task;
+    }
+    const fields = safeDiagnosticFields({
+      category:
+        typeof metadata.category === 'string'
+          ? (metadata.category as HermesDiagnosticCategory)
+          : 'CONTEXT_ERROR',
+      code: typeof metadata.code === 'string' ? metadata.code : '',
+      summary: typeof metadata.summary === 'string' ? metadata.summary : '',
+    });
+    if (
+      fields.category !== 'PROVIDER_ERROR' &&
+      fields.category !== 'INVALID_PROVIDER_RESPONSE'
+    ) {
+      return task;
+    }
+    return {
+      ...task,
+      description: `Revisar incidencia de Hermes: ${fields.summary}`,
+      metadata: {
+        actionStatus: 'PENDING_REVIEW',
+        ...fields,
+        ...(typeof metadata.contactId === 'string'
+          ? { contactId: metadata.contactId }
+          : {}),
+        sourceMessageIds: Array.isArray(metadata.sourceMessageIds)
+          ? metadata.sourceMessageIds.filter(
+              (value): value is string => typeof value === 'string',
+            )
+          : [],
+      },
+    } as T;
+  }
+
+  private safeConversationOnTask<T extends { conversation?: unknown }>(task: T): T {
+    const conversation = this.objectMetadata(task.conversation as Prisma.JsonValue);
+    const metadata = this.objectMetadata(conversation.metadata as Prisma.JsonValue);
+    if (!Object.prototype.hasOwnProperty.call(metadata, 'lastHermesIncident')) {
+      return task;
+    }
+    return {
+      ...task,
+      conversation: {
+        ...conversation,
+        metadata: {
+          ...metadata,
+          lastHermesIncident: safeStoredIncident(metadata.lastHermesIncident),
+        },
+      },
+    } as T;
+  }
+
   async findAll(
     page = 1,
     limit = 20,
@@ -274,7 +337,13 @@ export class TasksService {
       this.prisma.task.count({ where }),
     ]);
 
-    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+    return {
+      data: data.map((task) => this.safeReviewTask(task)),
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async findOne(id: string) {
@@ -287,7 +356,7 @@ export class TasksService {
       },
     });
     if (!task) throw new NotFoundException('Tarea no encontrada');
-    return task;
+    return this.safeConversationOnTask(this.safeReviewTask(task));
   }
 
   async update(id: string, dto: UpdateTaskDto) {
@@ -296,15 +365,17 @@ export class TasksService {
     if (dto.dueAt) data.dueAt = new Date(dto.dueAt);
     if (dto.status === TaskStatus.COMPLETED) data.completedAt = new Date();
 
-    return this.prisma.task.update({
+    const updated = await this.prisma.task.update({
       where: { id },
       data,
       include: { lead: true, assignedUser: true },
     });
+    return this.safeReviewTask(updated);
   }
 
   async remove(id: string) {
     await this.findOne(id);
-    return this.prisma.task.delete({ where: { id } });
+    const deleted = await this.prisma.task.delete({ where: { id } });
+    return this.safeReviewTask(deleted);
   }
 }

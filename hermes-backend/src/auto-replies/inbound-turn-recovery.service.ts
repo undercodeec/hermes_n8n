@@ -39,6 +39,20 @@ export class InboundTurnRecoveryService
     try {
       const turns = await this.turns.recoverable();
       for (const turn of turns) {
+        if (
+          turn.generationReservedAt &&
+          (await this.turns.blockAmbiguous(turn.id))
+        ) {
+          this.logger.warn(
+            JSON.stringify({
+              event: 'canary_generation_blocked',
+              turnId: turn.id,
+              sourceMessageId: turn.generationSourceMessageId,
+              reasonCode: 'CANARY_BLOCKED_AMBIGUOUS_GENERATION',
+            }),
+          );
+          continue;
+        }
         await this.queue.add(
           'send-auto-reply',
           {

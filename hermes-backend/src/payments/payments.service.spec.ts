@@ -462,7 +462,7 @@ describe('transfer approval with attributed CONTRACT_WON', () => {
           return Promise.resolve(conversion);
         }),
         upsert: jest.fn(({ where, create }) => {
-          const key = `${where.leadId_eventType.leadId}:${where.leadId_eventType.eventType}`;
+          const key = `${where.leadId_eventType_qualificationCycle.leadId}:${where.leadId_eventType_qualificationCycle.eventType}`;
           const existing = conversions.get(key);
           if (existing) return Promise.resolve(existing);
           const conversion = {

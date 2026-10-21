@@ -98,17 +98,17 @@ model User {
   updatedAt DateTime @updatedAt
 
   // Relaciones
-  assignedHandoffs    HumanHandoff[]    @relation("AssignedAgent")
-  assignedTasks       Task[]            @relation("AssignedUser")
-  sentMessages        Message[]         @relation("HumanSender")
-  auditLogs           AuditLog[]
-  createdCampaigns    Campaign[]        @relation("CampaignCreator")
-  createdBankAccounts BankAccount[]     @relation("BankAccountCreator")
-  updatedBankAccounts BankAccount[]     @relation("BankAccountUpdater")
-  approvedTransfers   TransferPayment[] @relation("TransferApprover")
-  rejectedTransfers   TransferPayment[] @relation("TransferRejecter")
+  assignedHandoffs     HumanHandoff[]         @relation("AssignedAgent")
+  assignedTasks        Task[]                 @relation("AssignedUser")
+  sentMessages         Message[]              @relation("HumanSender")
+  auditLogs            AuditLog[]
+  createdCampaigns     Campaign[]             @relation("CampaignCreator")
+  createdBankAccounts  BankAccount[]          @relation("BankAccountCreator")
+  updatedBankAccounts  BankAccount[]          @relation("BankAccountUpdater")
+  approvedTransfers    TransferPayment[]      @relation("TransferApprover")
+  rejectedTransfers    TransferPayment[]      @relation("TransferRejecter")
   conversationFeedback ConversationFeedback[]
-  approvedLearnings LearningItem[] @relation("LearningApprover")
+  approvedLearnings    LearningItem[]         @relation("LearningApprover")
 
   @@map("users")
 }
@@ -402,21 +402,29 @@ enum InboundTurnStatus {
   OPEN
   PROCESSING
   PROCESSED
+  BLOCKED
 }
 
 model InboundTurn {
-  id              String            @id @default(uuid())
-  conversationId  String
-  contactId       String
-  firstAt         DateTime
-  lastAt          DateTime
-  dueAt           DateTime
-  lastMessageId   String
-  status          InboundTurnStatus @default(OPEN)
-  processingAt    DateTime?
-  processingToken String?
-  createdAt       DateTime          @default(now())
-  updatedAt       DateTime          @updatedAt
+  id                         String            @id @default(uuid())
+  conversationId             String
+  contactId                  String
+  firstAt                    DateTime
+  lastAt                     DateTime
+  dueAt                      DateTime
+  lastMessageId              String
+  status                     InboundTurnStatus @default(OPEN)
+  processingAt               DateTime?
+  processingToken            String?
+  generationSourceMessageId  String?           @unique
+  generationReservedAt       DateTime?
+  generationToken            String?
+  generationEngine           String?
+  providerDispatchReservedAt DateTime?
+  generationBlockedAt        DateTime?
+  generationBlockReason      String?
+  createdAt                  DateTime          @default(now())
+  updatedAt                  DateTime          @updatedAt
 
   conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
   messages     Message[]
@@ -468,7 +476,7 @@ model Message {
   inboundTurn               InboundTurn?                 @relation(fields: [inboundTurnId], references: [id], onDelete: SetNull)
   transferProof             TransferPaymentProofMessage?
   feedback                  ConversationFeedback[]
-  sourceReviews             ConversationReview[] @relation("ReviewSourceMessage")
+  sourceReviews             ConversationReview[]         @relation("ReviewSourceMessage")
   learningEvidence          LearningEvidence[]
 
   @@unique([inboundTurnId, inboundTurnPosition])
@@ -480,21 +488,21 @@ model Message {
 }
 
 model ConversationFeedback {
-  id             String             @id @default(uuid())
+  id             String              @id @default(uuid())
   conversationId String
   messageId      String
   userId         String
   rating         FeedbackRating
   reasonCode     FeedbackReasonCode?
-  suggestedReply String?            @db.VarChar(2000)
-  requestKey     String             @unique
-  createdAt      DateTime           @default(now())
+  suggestedReply String?             @db.VarChar(2000)
+  requestKey     String              @unique
+  createdAt      DateTime            @default(now())
 
-  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  message      Message      @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation     Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  message          Message              @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user             User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
   learningEvidence LearningEvidence[]
-  reviews ConversationReview[]
+  reviews          ConversationReview[]
 
   @@unique([messageId, userId])
   @@index([conversationId, createdAt])
@@ -528,26 +536,26 @@ enum LearningRiskLevel {
 }
 
 model ConversationReview {
-  id              String                   @id @default(uuid())
-  reviewKey       String                   @unique
+  id              String                    @id @default(uuid())
+  reviewKey       String                    @unique
   conversationId  String
   sourceMessageId String
   feedbackId      String?
   reviewerVersion String
   trigger         ConversationReviewTrigger
-  status          ConversationReviewStatus @default(PENDING)
-  issueCode       String?                  @db.VarChar(60)
-  summary         String?                  @db.VarChar(500)
-  counterexample  String?                  @db.VarChar(500)
+  status          ConversationReviewStatus  @default(PENDING)
+  issueCode       String?                   @db.VarChar(60)
+  summary         String?                   @db.VarChar(500)
+  counterexample  String?                   @db.VarChar(500)
   confidence      Float?
-  providerModel   String?                  @db.VarChar(100)
+  providerModel   String?                   @db.VarChar(100)
   processingAt    DateTime?
-  attempts        Int                      @default(0)
-  createdAt       DateTime                 @default(now())
-  updatedAt       DateTime                 @updatedAt
+  attempts        Int                       @default(0)
+  createdAt       DateTime                  @default(now())
+  updatedAt       DateTime                  @updatedAt
 
-  conversation Conversation         @relation(fields: [conversationId], references: [id], onDelete: Cascade)
-  sourceMessage Message             @relation("ReviewSourceMessage", fields: [sourceMessageId], references: [id], onDelete: Cascade)
+  conversation  Conversation          @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sourceMessage Message               @relation("ReviewSourceMessage", fields: [sourceMessageId], references: [id], onDelete: Cascade)
   feedback      ConversationFeedback? @relation(fields: [feedbackId], references: [id], onDelete: SetNull)
   items         LearningItem[]
   evidence      LearningEvidence[]
@@ -1098,6 +1106,9 @@ model AdvertisingConversion {
   id                  String               @id @default(uuid())
   idempotencyKey      String               @unique
   eventType           AdvertisingEventType
+  qualificationCycle  Int                  @default(0)
+  invalidatedAt       DateTime?
+  invalidationReason  String?
   attributionId       String?
   touchId             String?
   contactId           String?
@@ -1119,7 +1130,7 @@ model AdvertisingConversion {
   lead        Lead?                   @relation(fields: [leadId], references: [id], onDelete: SetNull)
   syncJob     AdvertisingSyncJob?
 
-  @@unique([leadId, eventType])
+  @@unique([leadId, eventType, qualificationCycle])
   @@index([eventType, occurredAt])
   @@index([touchId, occurredAt])
   @@map("advertising_conversions")
@@ -1203,6 +1214,71 @@ model AuditLog {
   @@index([userId])
   @@index([createdAt])
   @@map("audit_logs")
+}
+
+// One installation-wide policy. The row is created on first ADMIN update;
+// absence means all periodic work is disabled.
+model RetentionRecoveryPolicy {
+  id                       String   @id @default("global")
+  backupEnabled            Boolean  @default(false)
+  backupIntervalHours      Int      @default(72)
+  maximumBackupCount       Int      @default(5)
+  maximumBackupAgeDays     Int      @default(30)
+  maximumBackupStorageGiB  Int      @default(2)
+  restoreCheckEnabled      Boolean  @default(false)
+  restoreCheckIntervalDays Int      @default(60)
+  updatedBy                String?
+  updatedAt                DateTime @updatedAt
+
+  @@map("retention_recovery_policy")
+}
+
+model BackupArtifact {
+  id                 String    @id @default(uuid())
+  // PERIODIC is the only kind eligible for automatic rotation.
+  kind               String
+  fileName           String    @unique
+  sizeBytes          BigInt
+  sha256             String
+  protected          Boolean   @default(false)
+  inUse              Boolean   @default(false)
+  createdAt          DateTime  @default(now())
+  restoreCheckedAt   DateTime?
+  restoreCheckPassed Boolean?
+
+  @@index([kind, createdAt])
+  @@map("backup_artifacts")
+}
+
+model BackupOperation {
+  id         String    @id @default(uuid())
+  kind       String
+  status     String
+  artifactId String?
+  detail     String?
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  @@index([kind, startedAt])
+  @@map("backup_operations")
+}
+
+model LeadStageCorrection {
+  id                        String    @id @default(uuid())
+  requestKey                String    @unique
+  leadId                    String
+  actorUserId               String
+  previousStage             LeadStage
+  targetStage               LeadStage
+  reasonCode                String
+  reason                    String
+  advertisingReconciliation String
+  advertisingSyncJobId      String?
+  result                    Json
+  createdAt                 DateTime  @default(now())
+
+  @@index([leadId, createdAt])
+  @@map("lead_stage_corrections")
 }
 
 enum BankAccountType {

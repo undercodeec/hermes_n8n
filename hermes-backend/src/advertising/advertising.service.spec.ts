@@ -97,7 +97,7 @@ describe('AdvertisingService', () => {
     const prisma = {
       $transaction: jest.fn().mockRejectedValue({ code: 'P2002' }),
       advertisingConversion: {
-        findUnique: jest.fn().mockResolvedValue(existing),
+        findFirst: jest.fn().mockResolvedValue(existing),
       },
     };
     const service = new AdvertisingService(
@@ -252,6 +252,7 @@ describe('AdvertisingService', () => {
 
   it('writes the sync intent inside the same transaction as a new qualified event', async () => {
     const tx = {
+      $executeRaw: jest.fn(),
       lead: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'lead-1',
@@ -261,7 +262,7 @@ describe('AdvertisingService', () => {
       },
       advertisingAttribution: { findFirst: jest.fn().mockResolvedValue(null) },
       advertisingConversion: {
-        findUnique: jest.fn().mockResolvedValue(null),
+        findFirst: jest.fn().mockResolvedValue(null),
         create: jest.fn().mockResolvedValue({ id: 'conversion-1' }),
       },
       advertisingSyncJob: {
@@ -489,6 +490,23 @@ describe('AdvertisingService', () => {
 
   it('claims a queued sync job atomically for one worker and rejects terminal replay', async () => {
     const status = { value: AdvertisingSyncStatus.QUEUED };
+    const tx = {
+      $executeRaw: jest.fn(),
+      advertisingSyncJob: {
+        findUnique: jest.fn().mockImplementation(() =>
+          Promise.resolve({
+            id: 'sync-1',
+            status: status.value,
+            conversion: {
+              eventType: AdvertisingEventType.LEAD_QUALIFIED,
+              invalidatedAt: null,
+              lead: { contactId: 'contact-1', stage: 'QUALIFIED' },
+            },
+          }),
+        ),
+        updateMany: jest.fn(),
+      },
+    };
     const updateMany = jest
       .fn()
       .mockImplementation(
@@ -504,8 +522,13 @@ describe('AdvertisingService', () => {
           return { count: 1 };
         },
       );
+    tx.advertisingSyncJob.updateMany = updateMany;
     const service = new AdvertisingService(
-      { advertisingSyncJob: { updateMany } } as unknown as PrismaService,
+      {
+        $transaction: jest.fn(
+          (callback: (client: typeof tx) => Promise<boolean>) => callback(tx),
+        ),
+      } as unknown as PrismaService,
       { get: jest.fn(() => 'true') } as unknown as ConfigService,
       {} as Queue,
     );
@@ -523,6 +546,64 @@ describe('AdvertisingService', () => {
         }),
       }),
     );
+  });
+
+  it('cancels a stale queued qualification instead of allowing worker dispatch', async () => {
+    const tx = {
+      $executeRaw: jest.fn(),
+      advertisingSyncJob: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'sync-stale',
+          status: AdvertisingSyncStatus.QUEUED,
+          conversion: {
+            eventType: AdvertisingEventType.LEAD_QUALIFIED,
+            invalidatedAt: new Date(),
+            lead: { contactId: 'contact-1', stage: 'CONTACTED' },
+          },
+        }),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+    };
+    const service = new AdvertisingService(
+      {
+        $transaction: jest.fn((callback) => callback(tx)),
+      } as unknown as PrismaService,
+      { get: jest.fn(() => 'true') } as unknown as ConfigService,
+      {} as Queue,
+    );
+    await expect(service.claimSyncJob('sync-stale')).resolves.toBe(false);
+    expect(tx.advertisingSyncJob.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: AdvertisingSyncStatus.CANCELLED,
+        }),
+      }),
+    );
+  });
+
+  it('does not requeue a failed historical qualification after correction', async () => {
+    const prisma = {
+      advertisingConversion: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'conversion-old',
+          leadId: 'lead-1',
+          eventType: AdvertisingEventType.LEAD_QUALIFIED,
+          verified: true,
+          invalidatedAt: new Date(),
+          lead: { stage: 'CONTACTED' },
+        }),
+      },
+      advertisingSyncJob: { upsert: jest.fn() },
+    };
+    const queue = { add: jest.fn() };
+    const service = new AdvertisingService(
+      prisma as unknown as PrismaService,
+      { get: jest.fn(() => 'true') } as unknown as ConfigService,
+      queue as unknown as Queue,
+    );
+    await service.prepareSync('conversion-old');
+    expect(prisma.advertisingSyncJob.upsert).not.toHaveBeenCalled();
+    expect(queue.add).not.toHaveBeenCalled();
   });
 
   it('retries a failed BullMQ job instead of adding a second logical job', async () => {

@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Job, Queue } from 'bullmq';
 import type {
@@ -10,6 +10,8 @@ import type {
 import { NOUS_HERMES_INFERENCE_QUEUE } from './nous-hermes.constants';
 import { NousHermesQueueEvents } from './nous-hermes.queue-events';
 import { NousHermesRateLimitError } from './nous-hermes.transport';
+import { InboundTurnService } from '../auto-replies/inbound-turn.service';
+import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
 
 @Injectable()
 export class NousHermesEngine implements ConversationEngine {
@@ -24,9 +26,16 @@ export class NousHermesEngine implements ConversationEngine {
       string
     >,
     private readonly queueEvents: NousHermesQueueEvents,
+    @Optional() private readonly inboundTurns?: InboundTurnService,
   ) {}
 
   async respond(input: ConversationTurnInput): Promise<ConversationTurnResult> {
+    const guarded = isSingleGenerationCanaryConversation(
+      this.config,
+      input.conversationId,
+    );
+    if (guarded !== Boolean(input.singleGenerationCanary))
+      throw new Error('CANARY_NOUS_SCOPE_OR_CLAIM_MISMATCH');
     if (input.approvedContext.handoffActive) {
       return this.failureResult(
         input,
@@ -38,7 +47,9 @@ export class NousHermesEngine implements ConversationEngine {
       );
     }
 
-    const attempts = this.positiveInteger('NOUS_HERMES_MAX_ATTEMPTS', 3);
+    const attempts = input.singleGenerationCanary
+      ? 1
+      : this.positiveInteger('NOUS_HERMES_MAX_ATTEMPTS', 3);
     const delay = this.positiveInteger('NOUS_HERMES_BACKOFF_MS', 1500);
     const waitTimeout = this.positiveInteger(
       'NOUS_HERMES_QUEUE_WAIT_TIMEOUT_MS',
@@ -55,6 +66,10 @@ export class NousHermesEngine implements ConversationEngine {
         removeOnFail: { age: 24 * 3600, count: 1000 },
       });
     } catch {
+      if (input.singleGenerationCanary) {
+        await this.blockAmbiguousCanary(input);
+        throw new Error('CANARY_NOUS_QUEUE_AMBIGUOUS');
+      }
       return this.queueUnavailable(input);
     }
 
@@ -64,6 +79,10 @@ export class NousHermesEngine implements ConversationEngine {
         waitTimeout,
       );
     } catch (error) {
+      if (input.singleGenerationCanary) {
+        await this.blockAmbiguousCanary(input);
+        throw new Error('CANARY_NOUS_RESULT_AMBIGUOUS');
+      }
       if (this.isTerminalRateLimit(error)) {
         return this.failureResult(
           input,
@@ -72,10 +91,22 @@ export class NousHermesEngine implements ConversationEngine {
           'PROVIDER_ERROR',
           attempts,
           true,
+          this.rateLimitTrace(error),
         );
       }
       return this.queueUnavailable(input);
     }
+  }
+
+  private async blockAmbiguousCanary(
+    input: ConversationTurnInput,
+  ): Promise<void> {
+    if (!this.inboundTurns || !input.singleGenerationCanary)
+      throw new Error('CANARY_TURN_GUARD_UNAVAILABLE');
+    await this.inboundTurns.blockAmbiguous(
+      input.singleGenerationCanary.turnId,
+      input.singleGenerationCanary.processingToken,
+    );
   }
 
   private queueUnavailable(
@@ -95,8 +126,47 @@ export class NousHermesEngine implements ConversationEngine {
     return (
       error instanceof NousHermesRateLimitError ||
       (error instanceof Error &&
-        error.message === new NousHermesRateLimitError().message)
+        (error.message === 'Nous Hermes rate limit' ||
+          error.message.startsWith('Nous Hermes rate limit|')))
     );
+  }
+
+  private rateLimitTrace(error: unknown): {
+    learningExposed?: Array<{ id: string; version: number }>;
+    promptVersion?: string;
+  } {
+    if (!(error instanceof Error)) return {};
+    const encoded = error.message.split('|', 2)[1];
+    if (!encoded) return {};
+    try {
+      const trace = JSON.parse(encoded) as {
+        learningExposed?: Array<{ id: string; version: number }>;
+        promptVersion?: string;
+      };
+      const validExposure =
+        Array.isArray(trace.learningExposed) &&
+        trace.learningExposed.length <= 3 &&
+        trace.learningExposed.every(
+          (item) =>
+            item &&
+            typeof item.id === 'string' &&
+            item.id.length > 0 &&
+            item.id.length <= 100 &&
+            Number.isSafeInteger(item.version) &&
+            item.version > 0 &&
+            Object.keys(item).every((key) => key === 'id' || key === 'version'),
+        );
+      return {
+        ...(validExposure ? { learningExposed: trace.learningExposed } : {}),
+        ...(typeof trace.promptVersion === 'string' &&
+        trace.promptVersion.length > 0 &&
+        trace.promptVersion.length <= 64
+          ? { promptVersion: trace.promptVersion }
+          : {}),
+      };
+    } catch {
+      return {};
+    }
   }
 
   private failureResult(
@@ -106,13 +176,21 @@ export class NousHermesEngine implements ConversationEngine {
     category: 'OUTPUT_BLOCKED' | 'PROVIDER_ERROR',
     attempts: number,
     requiresHumanReview: boolean,
+    trace: {
+      learningExposed?: Array<{ id: string; version: number }>;
+      promptVersion?: string;
+    } = {},
   ): ConversationTurnResult {
     return {
       replyText: 'Disculpe, no pude completar la respuesta en este momento.',
       proposedActions: [{ type: 'none' }],
       engine: 'nous_hermes',
       providerModel: 'unknown',
+      ...(trace.promptVersion ? { promptVersion: trace.promptVersion } : {}),
       traceId: input.inboundMessageId,
+      ...(trace.learningExposed?.length
+        ? { learningExposed: trace.learningExposed }
+        : {}),
       business: {
         detectedIntent: 'error',
         nextAction: 'sin_accion',

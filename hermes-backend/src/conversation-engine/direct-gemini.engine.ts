@@ -1,5 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { HermesService } from '../hermes/hermes.service';
+import { safeProviderDiagnostic } from '../hermes/hermes-diagnostics';
 import type {
   ConversationEngine,
   ConversationTurnInput,
@@ -24,9 +25,13 @@ export class DirectGeminiEngine implements ConversationEngine {
       conversationSummary: input.approvedContext.conversationSummary,
       commercialProfile: input.approvedContext.commercialProfile,
       commercialSnapshot: input.approvedContext.commercialSnapshot,
+      ...(input.approvedContext.approvedLearning?.length
+        ? { approvedLearning: input.approvedContext.approvedLearning }
+        : {}),
       contact: input.approvedContext.contact,
       conversationId: input.conversationId,
       correlationId: input.inboundMessageId,
+      singleGenerationCanary: input.singleGenerationCanary,
       currentIntent: input.approvedContext.currentIntent,
       conversationGuidance: input.approvedContext.conversationGuidance,
       pendingQuestions: input.approvedContext.pendingQuestions,
@@ -40,11 +45,19 @@ export class DirectGeminiEngine implements ConversationEngine {
       proposedActions: [{ type: 'none' }],
       engine: this.id,
       providerModel: this.hermes.getProviderModel(),
+      promptVersion: this.hermes.getPromptVersion(),
       usage:
         response.tokensUsed === undefined
           ? undefined
           : { totalTokens: response.tokensUsed },
       traceId: input.inboundMessageId,
+      ...(response.learningExposed?.length
+        ? {
+            learningExposed: response.learningExposed.map(
+              ({ id, version }) => ({ id, version }),
+            ),
+          }
+        : {}),
       costEstimate: response.costEstimate,
       business: {
         suggestedTags: response.suggestedTags,
@@ -53,7 +66,9 @@ export class DirectGeminiEngine implements ConversationEngine {
         decision: response.decision,
         commercialProfile: response.commercialProfile,
       },
-      diagnostic: response.diagnostic,
+      diagnostic: response.diagnostic
+        ? safeProviderDiagnostic(response.diagnostic)
+        : undefined,
     };
   }
 }

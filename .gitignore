@@ -53,12 +53,16 @@ logs/
 # Coverage
 coverage/
 .nyc_output/
+hermes-backend/artifacts/f2-provider-evaluation/
 
 # Docker
 *.local.yml
 
-# Documentación interna (no se versiona)
+# Documentación interna: ignorada por defecto, salvo excepciones explícitas
 *.md
+!ProyectMD/registro-documental.md
+!hermes-backend/docs/README.md
+!hermes-backend/docs/deployment-runbook.md
 !hermes-backend/docs/crm-baseline-agent.md
 !hermes-backend/docs/nous-hermes-runbook.md
 !hermes-backend/docs/security-preflight-2026-09-21.md

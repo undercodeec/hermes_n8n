@@ -7,15 +7,19 @@ import { ConversationReviewService } from './conversation-review.service';
 import { LearningDecisionAction } from './dto/learning-decision.dto';
 import { ReviewJobData } from './learning.constants';
 import { ReviewModelService } from './review-model.service';
+import { ReviewCanaryPolicy } from './review-canary.policy';
+import { LearningRetrievalService } from './learning-retrieval.service';
 
 describe('Fase 3: decisión auditada y recuperación en sombra', () => {
   const tx = {
+    $queryRaw: jest.fn(() => Promise.resolve([{ one: 1 }])),
     learningItem: {
       findUnique: jest.fn(),
       updateMany: jest.fn(),
       findUniqueOrThrow: jest.fn(),
     },
     auditLog: { create: jest.fn() },
+    learningEvidence: { count: jest.fn() },
   };
   const prisma = {
     $transaction: jest.fn((callback: (client: typeof tx) => unknown) =>
@@ -29,6 +33,11 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
     config as unknown as ConfigService,
     {} as ReviewModelService,
     {} as Queue<ReviewJobData>,
+    {} as ReviewCanaryPolicy,
+    new LearningRetrievalService(
+      prisma as unknown as PrismaService,
+      config as unknown as ConfigService,
+    ),
   );
   const validUntil = new Date(Date.now() + 30 * 86400_000).toISOString();
 
@@ -39,9 +48,20 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
       id: 'item-1',
       status: LearningItemStatus.PROPOSED,
       version: 1,
+      kind: 'STYLE',
+      trigger: 'Cuando el cliente corrige un dato',
+      guidance: 'Usar el dato más reciente',
+      serviceCode: null,
+      market: null,
+      sourceReview: {
+        issueCode: 'REPETITION',
+        summary: 'Pauta general',
+        counterexample: null,
+      },
       _count: { evidence: 1 },
     });
     tx.learningItem.updateMany.mockResolvedValue({ count: 1 });
+    tx.learningEvidence.count.mockResolvedValue(1);
     tx.learningItem.findUniqueOrThrow.mockResolvedValue({
       id: 'item-1',
       status: LearningItemStatus.ACTIVE,
@@ -84,6 +104,7 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
       version: 1,
       _count: { evidence: 0 },
     });
+    tx.learningEvidence.count.mockResolvedValueOnce(0);
     const dto = {
       action: LearningDecisionAction.APPROVE,
       reason: 'Pauta revisada con evidencia',
@@ -96,6 +117,55 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
     await expect(
       service.decide('item-1', dto, 'admin-1'),
     ).rejects.toBeInstanceOf(ConflictException);
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('no actualiza ni audita si falla la consulta de evidencia', async () => {
+    tx.learningEvidence.count.mockRejectedValueOnce(
+      new Error('synthetic evidence lookup failure'),
+    );
+    await expect(
+      service.decide(
+        'item-1',
+        {
+          action: LearningDecisionAction.APPROVE,
+          reason: 'Pauta revisada con evidencia suficiente',
+          validUntil,
+        },
+        'admin-1',
+      ),
+    ).rejects.toThrow('synthetic evidence lookup failure');
+    expect(tx.learningItem.updateMany).not.toHaveBeenCalled();
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('bloquea la activación de candidatos históricos inseguros', async () => {
+    const dto = {
+      action: LearningDecisionAction.APPROVE,
+      reason: 'Pauta revisada con evidencia suficiente',
+      validUntil,
+    };
+    for (const guidance of [
+      'Recordar que Juan Pérez necesita 15 usuarios.',
+      'Ofrecer 20% de descuento si paga por transferencia.',
+    ]) {
+      tx.learningItem.findUnique.mockResolvedValueOnce({
+        id: 'item-1',
+        status: LearningItemStatus.PROPOSED,
+        version: 1,
+        kind: 'STYLE',
+        trigger: 'Cuando el cliente consulta',
+        guidance,
+        serviceCode: null,
+        market: null,
+        sourceReview: null,
+        _count: { evidence: 1 },
+      });
+      await expect(
+        service.decide('item-1', dto, 'admin-1'),
+      ).rejects.toBeInstanceOf(BadRequestException);
+    }
+    expect(tx.learningItem.updateMany).not.toHaveBeenCalled();
     expect(tx.auditLog.create).not.toHaveBeenCalled();
   });
 
@@ -160,8 +230,34 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
       key === 'LEARNING_SHADOW_ENABLED' ? 'true' : fallback,
     );
     prisma.learningItem.findMany.mockResolvedValue([
-      { id: 'item-1', version: 1, trigger: 'cliente pregunta precio' },
-      { id: 'item-2', version: 1, trigger: 'cliente solicita llamada' },
+      {
+        id: 'item-1',
+        version: 1,
+        kind: 'STYLE',
+        trigger: 'cliente pregunta precio',
+        guidance: 'Consultar el catálogo vigente',
+        status: LearningItemStatus.ACTIVE,
+        riskLevel: 'LOW',
+        validUntil: new Date(Date.now() + 86400_000),
+        createdAt: new Date(),
+        evidence: [{ id: 'evidence-1' }],
+        serviceCode: null,
+        market: null,
+      },
+      {
+        id: 'item-2',
+        version: 1,
+        kind: 'STYLE',
+        trigger: 'cliente solicita llamada',
+        guidance: 'Pedir confirmación al equipo',
+        status: LearningItemStatus.ACTIVE,
+        riskLevel: 'LOW',
+        validUntil: new Date(Date.now() + 86400_000),
+        createdAt: new Date(),
+        evidence: [{ id: 'evidence-2' }],
+        serviceCode: null,
+        market: null,
+      },
     ]);
     const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
     try {
@@ -183,10 +279,16 @@ describe('Fase 3: decisión auditada y recuperación en sombra', () => {
       const query = calls[0][0];
       expect(query.where.status).toBe(LearningItemStatus.ACTIVE);
       expect(query.where.validUntil.gt).toBeInstanceOf(Date);
-      const event = JSON.parse(log.mock.calls[0][0] as string) as {
-        matches: Array<{ id: string }>;
-        customerMessage?: string;
-      };
+      const event = log.mock.calls
+        .map(
+          ([message]) =>
+            JSON.parse(message as string) as {
+              matches: Array<{ id: string }>;
+              customerMessage?: string;
+              event: string;
+            },
+        )
+        .find((entry) => entry.event === 'learning_shadow_retrieval')!;
       expect(event.matches.map((item) => item.id)).toEqual(['item-1']);
       expect(event.customerMessage).toBeUndefined();
     } finally {

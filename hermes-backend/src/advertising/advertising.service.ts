@@ -210,9 +210,10 @@ export class AdvertisingService {
       if (lead) {
         const existing = await tx.advertisingConversion.findUnique({
           where: {
-            leadId_eventType: {
+            leadId_eventType_qualificationCycle: {
               leadId: lead.id,
               eventType: AdvertisingEventType.CONVERSATION_STARTED,
+              qualificationCycle: 0,
             },
           },
         });
@@ -309,11 +310,28 @@ export class AdvertisingService {
     let conversion: AdvertisingConversion;
     try {
       conversion = await this.prisma.$transaction(async (tx) => {
-        const lead = await tx.lead.findUnique({
+        const initialLead = await tx.lead.findUnique({
           where: { id: params.leadId },
           select: { id: true, contactId: true, stage: true },
         });
+        if (!initialLead) throw new NotFoundException('Lead not found');
+        if (params.eventType === AdvertisingEventType.LEAD_QUALIFIED) {
+          await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${initialLead.contactId}))`;
+        }
+        const lead =
+          params.eventType === AdvertisingEventType.LEAD_QUALIFIED
+            ? await tx.lead.findUnique({
+                where: { id: params.leadId },
+                select: { id: true, contactId: true, stage: true },
+              })
+            : initialLead;
         if (!lead) throw new NotFoundException('Lead not found');
+        if (
+          params.eventType === AdvertisingEventType.LEAD_QUALIFIED &&
+          lead.stage !== LeadStage.QUALIFIED
+        ) {
+          throw new ConflictException('Lead is no longer qualified');
+        }
         if (
           (params.eventType === AdvertisingEventType.CONTRACT_WON &&
             lead.stage === LeadStage.LOST) ||
@@ -333,14 +351,16 @@ export class AdvertisingService {
           orderBy: { attributedAt: 'asc' },
           select: { id: true, touchId: true },
         });
-        const existing = await tx.advertisingConversion.findUnique({
-          where: {
-            leadId_eventType: {
-              leadId: params.leadId,
-              eventType: params.eventType,
-            },
-          },
+        const latest = await tx.advertisingConversion.findFirst({
+          where: { leadId: params.leadId, eventType: params.eventType },
+          orderBy: { qualificationCycle: 'desc' },
         });
+        const qualificationCycle =
+          params.eventType === AdvertisingEventType.LEAD_QUALIFIED &&
+          latest?.invalidatedAt
+            ? latest.qualificationCycle + 1
+            : (latest?.qualificationCycle ?? 0);
+        const existing = latest?.invalidatedAt ? null : latest;
         if (existing) {
           this.assertMatchingMilestone(existing, params);
           return existing;
@@ -360,8 +380,12 @@ export class AdvertisingService {
         const saved = await tx.advertisingConversion.create({
           data: {
             ...data,
-            idempotencyKey: `lead:${params.leadId}:${params.eventType}`,
+            idempotencyKey:
+              qualificationCycle === 0
+                ? `lead:${params.leadId}:${params.eventType}`
+                : `lead:${params.leadId}:${params.eventType}:${qualificationCycle}`,
             eventType: params.eventType,
+            qualificationCycle,
             attributionId: attribution?.id,
             touchId: attribution?.touchId,
             contactId: lead.contactId,
@@ -433,15 +457,11 @@ export class AdvertisingService {
       if (code !== 'P2002') {
         throw error;
       }
-      const existing = await this.prisma.advertisingConversion.findUnique({
-        where: {
-          leadId_eventType: {
-            leadId: params.leadId,
-            eventType: params.eventType,
-          },
-        },
+      const existing = await this.prisma.advertisingConversion.findFirst({
+        where: { leadId: params.leadId, eventType: params.eventType },
+        orderBy: { qualificationCycle: 'desc' },
       });
-      if (!existing) throw error;
+      if (!existing || existing.invalidatedAt) throw error;
       this.assertMatchingMilestone(existing, params);
       conversion = existing;
     }
@@ -504,9 +524,16 @@ export class AdvertisingService {
   async prepareSync(conversionId: string) {
     let conversion = await this.prisma.advertisingConversion.findUnique({
       where: { id: conversionId },
-      include: { touch: true },
+      include: { touch: true, lead: { select: { stage: true } } },
     });
     if (!conversion?.leadId || !conversion.verified) return;
+    if (
+      conversion.eventType === AdvertisingEventType.LEAD_QUALIFIED &&
+      (conversion.invalidatedAt ||
+        conversion.lead === null ||
+        (conversion.lead && conversion.lead.stage !== LeadStage.QUALIFIED))
+    )
+      return;
     const syncJob = await this.prisma.advertisingSyncJob.upsert({
       where: { conversionId },
       create: {
@@ -546,7 +573,7 @@ export class AdvertisingService {
         });
         conversion = await this.prisma.advertisingConversion.findUnique({
           where: { id: conversionId },
-          include: { touch: true },
+          include: { touch: true, lead: { select: { stage: true } } },
         });
       }
     }
@@ -642,14 +669,49 @@ export class AdvertisingService {
     if (this.config.get<string>('ADVERTISING_GOOGLE_SYNC_ENABLED') !== 'true') {
       return false;
     }
-    const claimed = await this.prisma.advertisingSyncJob.updateMany({
-      where: { id: syncJobId, status: AdvertisingSyncStatus.QUEUED },
-      data: {
-        status: AdvertisingSyncStatus.RETRYING,
-        nextAttemptAt: new Date(Date.now() + 15 * 60_000),
-      },
+    return this.prisma.$transaction(async (tx) => {
+      const initial = await tx.advertisingSyncJob.findUnique({
+        where: { id: syncJobId },
+        include: { conversion: { include: { lead: true } } },
+      });
+      if (!initial || initial.status !== AdvertisingSyncStatus.QUEUED)
+        return false;
+      const qualified =
+        initial.conversion.eventType === AdvertisingEventType.LEAD_QUALIFIED;
+      if (qualified && initial.conversion.lead) {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${initial.conversion.lead.contactId}))`;
+      }
+      const current = qualified
+        ? await tx.advertisingSyncJob.findUnique({
+            where: { id: syncJobId },
+            include: { conversion: { include: { lead: true } } },
+          })
+        : initial;
+      if (!current || current.status !== AdvertisingSyncStatus.QUEUED)
+        return false;
+      if (
+        qualified &&
+        (current.conversion.invalidatedAt ||
+          current.conversion.lead?.stage !== LeadStage.QUALIFIED)
+      ) {
+        await tx.advertisingSyncJob.updateMany({
+          where: { id: syncJobId, status: AdvertisingSyncStatus.QUEUED },
+          data: {
+            status: AdvertisingSyncStatus.CANCELLED,
+            errorCode: 'LEAD_STAGE_CORRECTED',
+          },
+        });
+        return false;
+      }
+      const claimed = await tx.advertisingSyncJob.updateMany({
+        where: { id: syncJobId, status: AdvertisingSyncStatus.QUEUED },
+        data: {
+          status: AdvertisingSyncStatus.RETRYING,
+          nextAttemptAt: new Date(Date.now() + 15 * 60_000),
+        },
+      });
+      return claimed.count === 1;
     });
-    return claimed.count === 1;
   }
 
   async recoverDiagnostics(syncJobId: string): Promise<void> {

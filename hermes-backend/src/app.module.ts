@@ -25,6 +25,9 @@ import { AdvertisingModule } from './advertising/advertising.module';
 import { GoogleCalendarModule } from './integrations/google-calendar/google-calendar.module';
 import { PaymentsModule } from './payments/payments.module';
 import { FeedbackModule } from './feedback/feedback.module';
+import { RetentionModule } from './retention/retention.module';
+import { parseReviewCanaryFeedbackIds } from './learning/review-canary.policy';
+import { parseSingleGenerationCanaryConfig } from './auto-replies/single-generation-canary.policy';
 
 @Module({
   imports: [
@@ -32,6 +35,16 @@ import { FeedbackModule } from './feedback/feedback.module';
     ConfigModule.forRoot({
       isGlobal: true,
       envFilePath: '.env',
+      validate: (env: Record<string, unknown>) => {
+        parseReviewCanaryFeedbackIds(env.LEARNING_REVIEW_CANARY_FEEDBACK_IDS);
+        parseSingleGenerationCanaryConfig(
+          env.F3_SINGLE_GENERATION_CANARY_ENABLED,
+          env.F3_SINGLE_GENERATION_CANARY_CONVERSATION_ID,
+          env.HERMES_COMPLETION_ATTEMPTS,
+          env.NOUS_HERMES_MAX_ATTEMPTS,
+        );
+        return env;
+      },
     }),
 
     // Trazabilidad (traceId por request vía nestjs-cls)
@@ -88,6 +101,7 @@ import { FeedbackModule } from './feedback/feedback.module';
     CampaignsModule,
     AdvertisingModule,
     FeedbackModule,
+    RetentionModule,
     // Analytics y métricas
     AnalyticsModule,
   ],

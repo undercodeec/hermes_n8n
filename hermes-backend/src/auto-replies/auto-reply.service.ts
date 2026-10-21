@@ -5,6 +5,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ConversationStatus,
+  InboundTurn,
   HandoffReason,
   MessageDirection,
   MessageSender,
@@ -27,6 +28,7 @@ import {
 import {
   CommercialPolicyService,
   PendingQuestion,
+  requiresComplaintHandoff,
 } from '../hermes/commercial-policy.service';
 import {
   commercialClauses,
@@ -49,6 +51,7 @@ import { TasksService } from '../tasks/tasks.service';
 import { splitWhatsAppMessage } from './whatsapp-message-splitter';
 import {
   HermesIncidentMetadata,
+  safeProviderDiagnostic,
   toIncidentMetadata,
 } from '../hermes/hermes-diagnostics';
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
@@ -58,6 +61,9 @@ import { InboundTurnService } from './inbound-turn.service';
 import { MeetingsService } from '../integrations/google-calendar/meetings.service';
 import { PaymentsService } from '../payments/payments.service';
 import { ConversationReviewService } from '../learning/conversation-review.service';
+import { LearningRetrievalService } from '../learning/learning-retrieval.service';
+import { retrievalEnabledForConversation } from '../learning/retrieval-canary-scope';
+import { isSingleGenerationCanaryConversation } from './single-generation-canary.policy';
 import { redactPaymentMessageForAi } from '../payments/payment-message-redaction';
 import {
   VoiceProcessingError,
@@ -88,6 +94,7 @@ export class AutoReplyService {
     @Optional() private readonly meetings?: MeetingsService,
     @Optional() private readonly payments?: PaymentsService,
     @Optional() private readonly learningReviews?: ConversationReviewService,
+    @Optional() private readonly learningRetrieval?: LearningRetrievalService,
   ) {}
 
   async enqueue(data: AutoReplyJobData, messageLength: number): Promise<void> {
@@ -243,6 +250,7 @@ export class AutoReplyService {
         await this.processTurn(
           { ...data, inboundMessageId: turn.lastMessageId },
           messages,
+          turn,
         );
         await this.inboundTurns.complete(turn.id, turn.processingToken!);
       } catch (error) {
@@ -257,7 +265,12 @@ export class AutoReplyService {
   private async processTurn(
     data: AutoReplyJobData,
     turnMessages?: Awaited<ReturnType<InboundTurnService['messages']>>,
+    claimedTurn?: InboundTurn,
   ): Promise<void> {
+    const canaryArmed = isSingleGenerationCanaryConversation(
+      this.config,
+      data.conversationId,
+    );
     const inbound = await this.prisma.message.findUnique({
       where: { id: data.inboundMessageId },
       select: {
@@ -268,9 +281,17 @@ export class AutoReplyService {
         wamid: true,
         conversationId: true,
         contactId: true,
+        inboundTurnId: true,
       },
     });
-    if (!inbound || inbound.conversationId !== data.conversationId) {
+    if (
+      !inbound ||
+      inbound.conversationId !== data.conversationId ||
+      (canaryArmed && inbound.contactId !== data.contactId) ||
+      (canaryArmed &&
+        data.inboundTurnId &&
+        inbound.inboundTurnId !== data.inboundTurnId)
+    ) {
       this.logSkip(data, 'INBOUND_NOT_FOUND_OR_MISMATCH');
       return;
     }
@@ -302,6 +323,33 @@ export class AutoReplyService {
       return;
     }
 
+    if (claimedTurn && claimedTurn.lastMessageId !== inbound.id) {
+      this.logSkip(data, 'CANARY_SOURCE_MISMATCH');
+      return;
+    }
+    if (claimedTurn?.generationReservedAt) {
+      await this.inboundTurns!.blockAmbiguous(
+        claimedTurn.id,
+        claimedTurn.processingToken!,
+      );
+      this.logSkip(data, 'CANARY_BLOCKED_AMBIGUOUS_GENERATION');
+      return;
+    }
+    if (!claimedTurn && inbound.inboundTurnId && this.inboundTurns) {
+      const persistedTurn = await this.prisma.inboundTurn.findUnique({
+        where: { id: inbound.inboundTurnId },
+        select: { generationReservedAt: true },
+      });
+      if (persistedTurn?.generationReservedAt) {
+        this.logSkip(data, 'CANARY_BLOCKED_AMBIGUOUS_GENERATION');
+        return;
+      }
+    }
+    if (canaryArmed && !claimedTurn) {
+      this.logSkip(data, 'CANARY_TURN_CLAIM_REQUIRED');
+      return;
+    }
+
     const conversation = await this.prisma.conversation.findUnique({
       where: { id: data.conversationId },
       include: { contact: true },
@@ -320,6 +368,69 @@ export class AutoReplyService {
       return;
     }
 
+    const context = await this.buildConversationContext(
+      data.contactId,
+      data.conversationId,
+      turnMessages?.map((message) => message.id) ?? [inbound.id],
+    );
+    const receivedAt =
+      this.providerTimestamp(inbound.rawPayload) ?? inbound.createdAt;
+    const policy = this.commercialPolicy.analyze(
+      customerMessage,
+      receivedAt,
+      context.commercialProfile?.pendingQuestions,
+      {
+        conversationHistory: context.recentMessages,
+        commercialProfile: context.commercialProfile,
+      },
+    );
+    // Both explicit human requests and service complaints must create a durable
+    // handoff before an acknowledgement or any conversation engine response.
+    if (policy.requestsHuman || policy.requiresComplaintHandoff) {
+      const complaint = policy.requiresComplaintHandoff;
+      await this.meetings?.interrupt(data.conversationId);
+      this.logger.log(
+        JSON.stringify({
+          event: 'handoff_requested',
+          conversationId: data.conversationId,
+          sourceMessageId: inbound.id,
+          reason: complaint ? 'COMPLAINT' : 'CUSTOM',
+        }),
+      );
+      await this.handoffs.create(
+        {
+          conversationId: data.conversationId,
+          reason: complaint ? HandoffReason.COMPLAINT : HandoffReason.CUSTOM,
+          reasonDetail: complaint
+            ? 'El cliente solicitó atención humana por un reclamo sobre el servicio.'
+            : 'El cliente solicitó expresamente hablar con una persona.',
+        },
+        undefined,
+        complaint
+          ? undefined
+          : { sourceMessageId: inbound.id, callRequested: policy.requestsCall },
+      );
+      const delivery = await this.sendAndPersist({
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        sourceMessageId: inbound.id,
+        inboundWamid: inbound.wamid,
+        content: complaint
+          ? 'He registrado su reclamo para que lo atienda una persona del equipo. Queda pendiente de asignación.'
+          : policy.requestsCall
+            ? 'He registrado su solicitud para que un asesor coordine una llamada usando este mismo número de WhatsApp. Está pendiente de asignación y confirmación del horario.'
+            : 'He registrado su solicitud para que continúe con una persona del equipo. La conversación queda pendiente de asignación.',
+        metadata: { action: 'HUMAN_HANDOFF_CREATED' },
+        allowHandedOff: true,
+      });
+      if (delivery.confirmed > 0) {
+        await this.persistConversationState(data.conversationId, {
+          detectedIntent: complaint ? 'reclamo' : 'solicitud_humano',
+          nextAction: 'derivar_humano',
+        });
+      }
+      return;
+    }
     if (
       this.payments &&
       (await this.payments.maybeSendInstructions({
@@ -341,22 +452,6 @@ export class AutoReplyService {
     )
       return;
 
-    const context = await this.buildConversationContext(
-      data.contactId,
-      data.conversationId,
-      turnMessages?.map((message) => message.id) ?? [inbound.id],
-    );
-    const receivedAt =
-      this.providerTimestamp(inbound.rawPayload) ?? inbound.createdAt;
-    const policy = this.commercialPolicy.analyze(
-      customerMessage,
-      receivedAt,
-      context.commercialProfile?.pendingQuestions,
-      {
-        conversationHistory: context.recentMessages,
-        commercialProfile: context.commercialProfile,
-      },
-    );
     const commercialSnapshot = await this.commercialAuthority.snapshot({
       customerMessage,
       profile: context.commercialProfile,
@@ -375,45 +470,6 @@ export class AutoReplyService {
     const selectedEngine = policy.requestsCall
       ? this.conversationEngine.selectedEngine(data.conversationId)
       : undefined;
-
-    if (policy.requestsHuman) {
-      await this.meetings?.interrupt(data.conversationId);
-      this.logger.log(
-        JSON.stringify({
-          event: 'handoff_requested',
-          conversationId: data.conversationId,
-          sourceMessageId: inbound.id,
-        }),
-      );
-      await this.handoffs.create(
-        {
-          conversationId: data.conversationId,
-          reason: HandoffReason.CUSTOM,
-          reasonDetail:
-            'El cliente solicitó expresamente hablar con una persona.',
-        },
-        undefined,
-        { sourceMessageId: inbound.id, callRequested: policy.requestsCall },
-      );
-      const delivery = await this.sendAndPersist({
-        conversationId: data.conversationId,
-        contactId: data.contactId,
-        sourceMessageId: inbound.id,
-        inboundWamid: inbound.wamid,
-        content: policy.requestsCall
-          ? 'He registrado su solicitud para que un asesor coordine una llamada usando este mismo número de WhatsApp. Está pendiente de asignación y confirmación del horario.'
-          : 'He registrado su solicitud para que continúe con una persona del equipo. La conversación queda pendiente de asignación.',
-        metadata: { action: 'HUMAN_HANDOFF_CREATED' },
-        allowHandedOff: true,
-      });
-      if (delivery.confirmed > 0) {
-        await this.persistConversationState(data.conversationId, {
-          detectedIntent: 'solicitud_humano',
-          nextAction: 'derivar_humano',
-        });
-      }
-      return;
-    }
 
     if (this.meetings) {
       const meetingReply = await this.meetings.handleTurn({
@@ -496,6 +552,42 @@ export class AutoReplyService {
     const startedAt = Date.now();
     await this.showTypingIndicator(inbound.wamid);
     const approvedKnowledge = commercialSnapshotKnowledge(commercialSnapshot);
+    const retrievalEnabled = retrievalEnabledForConversation(
+      this.config,
+      data.conversationId,
+    );
+    let approvedLearning: Awaited<
+      ReturnType<LearningRetrievalService['select']>
+    > = [];
+    if (retrievalEnabled) {
+      try {
+        const selectedLearning =
+          (await this.learningRetrieval?.select({
+            customerMessage,
+            serviceCode: context.commercialProfile?.service,
+            market: commercialSnapshot.market,
+            approvedKnowledge,
+            traceId: inbound.id,
+          })) ?? [];
+        // The first live canary permits at most one eligible item. Multiple
+        // matches fail closed rather than silently choosing an arbitrary one.
+        if (selectedLearning.length === 1) approvedLearning = selectedLearning;
+        else if (selectedLearning.length > 1)
+          this.logger.warn(
+            JSON.stringify({
+              event: 'learning_retrieval_canary_multiple_matches',
+              selectedCount: selectedLearning.length,
+            }),
+          );
+      } catch {
+        this.logger.warn(
+          JSON.stringify({
+            event: 'learning_retrieval_fallback',
+            reason: 'SELECTOR_ERROR',
+          }),
+        );
+      }
+    }
     if (
       this.config.get<string>('LEARNING_SHADOW_ENABLED', 'false') === 'true'
     ) {
@@ -506,6 +598,8 @@ export class AutoReplyService {
           customerMessage,
           serviceCode: context.commercialProfile?.service,
           market: commercialSnapshot.market,
+          approvedKnowledge,
+          ...(retrievalEnabled ? { selectedLearning: approvedLearning } : {}),
           engine: this.conversationEngine.selectedEngine(data.conversationId),
         });
       } catch {
@@ -514,9 +608,28 @@ export class AutoReplyService {
         );
       }
     }
+    const canaryBatchClaim =
+      canaryArmed && claimedTurn
+        ? {
+            turnId: claimedTurn.id,
+            processingToken: claimedTurn.processingToken!,
+            generationToken: claimedTurn.processingToken!,
+          }
+        : undefined;
+    if (canaryBatchClaim) {
+      const acquired = await this.inboundTurns!.reserveGeneration({
+        turnId: claimedTurn!.id,
+        processingToken: canaryBatchClaim.processingToken,
+        sourceMessageId: inbound.id,
+        conversationId: data.conversationId,
+        engine: this.conversationEngine.selectedEngine(data.conversationId),
+      });
+      if (!acquired) throw new Error('CANARY_GENERATION_RESERVATION_DENIED');
+    }
     const engineResult = await this.conversationEngine.respond({
       conversationId: data.conversationId,
       inboundMessageId: inbound.id,
+      ...(canaryBatchClaim ? { singleGenerationCanary: canaryBatchClaim } : {}),
       customerMessage,
       approvedContext: {
         contactName: conversation.contact.name || 'Cliente',
@@ -527,6 +640,7 @@ export class AutoReplyService {
         commercialProfile: context.commercialProfile,
         recentProfileChanges: context.recentProfileChanges,
         approvedKnowledge,
+        ...(approvedLearning.length ? { approvedLearning } : {}),
         commercialSnapshot,
         handoffActive: false,
         leadStage: context.leadStage,
@@ -550,6 +664,30 @@ export class AutoReplyService {
         },
       },
     });
+    const recordSuppressedInference = (reasonCode: string) =>
+      this.deliveries.recordSuppressedInference(
+        {
+          conversationId: data.conversationId,
+          contactId: data.contactId,
+          sourceMessageId: inbound.id,
+          reasonCode,
+          metadata: {
+            conversationEngine: engineResult.engine,
+            providerModel: engineResult.providerModel,
+            ...(engineResult.promptVersion
+              ? { promptVersion: engineResult.promptVersion }
+              : {}),
+            traceId: engineResult.traceId,
+            ...(engineResult.learningExposed?.length
+              ? { learningExposed: engineResult.learningExposed }
+              : {}),
+            ...(data.inboundTurnId
+              ? { conversationTurnId: data.inboundTurnId }
+              : {}),
+          },
+        },
+        ...(canaryBatchClaim ? ([canaryBatchClaim] as const) : ([] as const)),
+      );
     const response: HermesResponseDto = {
       response: engineResult.replyText,
       tokensUsed: engineResult.usage?.totalTokens,
@@ -559,7 +697,9 @@ export class AutoReplyService {
       nextAction: engineResult.business?.nextAction,
       decision: engineResult.business?.decision,
       commercialProfile: engineResult.business?.commercialProfile,
-      diagnostic: engineResult.diagnostic,
+      diagnostic: engineResult.diagnostic
+        ? safeProviderDiagnostic(engineResult.diagnostic)
+        : undefined,
     };
     const isNous = engineResult.engine === 'nous_hermes';
     const reviewedProposal =
@@ -610,13 +750,6 @@ export class AutoReplyService {
           'Puedo ayudarle con la información disponible por este chat.';
         reviewedProposal.rejections.push('UNBACKED_FOLLOWUP_PROMISE');
       }
-      const safetyReview = this.commercialPolicy.repairNousCommercialClaims(
-        response.response,
-        approvedKnowledge,
-        commercialSnapshot.offers.some((offer) => offer.promotion),
-      );
-      response.response = safetyReview.response;
-      reviewedProposal.rejections.push(...safetyReview.reasons);
     }
     const acceptedProfile = response.diagnostic
       ? context.commercialProfile
@@ -635,6 +768,15 @@ export class AutoReplyService {
         this.commercialPolicy.enforceResponsePolicy(response, policy),
       );
     }
+    // This commercial repair applies after either engine, including provider
+    // output that ignored an otherwise safe learning item.
+    const policyReview = this.commercialPolicy.repairCommercialClaims(
+      response.response,
+      approvedKnowledge,
+      commercialSnapshot.offers.some((offer) => offer.promotion),
+    );
+    response.response = policyReview.response;
+    reviewedProposal?.rejections.push(...policyReview.reasons);
     const commercialReview = reviewCommercialClaims(
       response.response,
       commercialSnapshot,
@@ -847,9 +989,12 @@ export class AutoReplyService {
           ].includes(response.diagnostic.category)
             ? 'Disculpe, no pude completar la respuesta en este momento. Ya dejé registrado el caso para revisarlo y continuar por este mismo chat.'
             : 'Permítame consultar este punto con el equipo. Le confirmaremos por este mismo chat.';
-        } catch (error) {
+        } catch {
           this.logger.error(
-            `No se pudo crear la tarea de revisión de Hermes: ${error instanceof Error ? error.message : String(error)}`,
+            JSON.stringify({
+              event: 'hermes_review_task_failed',
+              category: 'TASK_PERSISTENCE_ERROR',
+            }),
           );
           response.response =
             'Disculpe, no pude completar la respuesta en este momento. ¿Podría enviar nuevamente su mensaje para intentarlo otra vez?';
@@ -878,10 +1023,12 @@ export class AutoReplyService {
       this.logSkip(data, 'CONVERSATION_CHANGED_DURING_GENERATION', {
         status: currentConversation?.status ?? 'NOT_FOUND',
       });
+      await recordSuppressedInference('CONVERSATION_CHANGED_DURING_GENERATION');
       return;
     }
     if (await this.hasNewerInbound(data.conversationId, inbound)) {
       this.logSkip(data, 'NEWER_INBOUND_DURING_GENERATION');
+      await recordSuppressedInference('NEWER_INBOUND_DURING_GENERATION');
       return;
     }
 
@@ -1003,6 +1150,9 @@ export class AutoReplyService {
       ))
     ) {
       this.logSkip(data, 'CONVERSATION_STATUS_REJECTED_BEFORE_SEND');
+      await recordSuppressedInference(
+        'CONVERSATION_STATUS_REJECTED_BEFORE_SEND',
+      );
       return;
     }
     response.detectedIntent = reconcileCommercialIntent(
@@ -1029,6 +1179,7 @@ export class AutoReplyService {
         recommendedOfferId: commercialSnapshot.recommendedOfferId,
         fallback: response.diagnostic?.code,
         claimRemoved:
+          policyReview.reasons.length > 0 ||
           commercialReview.reasons.length > 0 ||
           finalCommercialReview.reasons.length > 0 ||
           Boolean(reviewedProposal?.rejections.length),
@@ -1050,6 +1201,7 @@ export class AutoReplyService {
     );
     if (messageParts.length > 9) {
       this.logSkip(data, 'TOO_MANY_REPLY_PARTS');
+      await recordSuppressedInference('TOO_MANY_REPLY_PARTS');
       return;
     }
     if (
@@ -1062,6 +1214,7 @@ export class AutoReplyService {
       )
     ) {
       this.logSkip(data, 'REPLY_PART_BLOCKED');
+      await recordSuppressedInference('REPLY_PART_BLOCKED');
       return;
     }
     const modality = this.config.get<string>('HERMES_REPLY_MODALITY', 'mirror');
@@ -1122,87 +1275,96 @@ export class AutoReplyService {
       policy.pendingQuestions,
       commercialSnapshot,
     );
-    await this.deliveries.prepareBatch({
-      deliveryKind: 'HERMES_REPLY',
-      conversationId: data.conversationId,
-      contactId: data.contactId,
-      sourceMessageId: inbound.id,
-      sender: 'HERMES',
-      allowHandedOff: shouldHandoff,
-      parts: messageParts.map((content, partIndex) => ({
-        partIndex,
-        content,
-        ...(data.inboundTurnId
-          ? {
-              metadata: {
-                conversationTurnId: data.inboundTurnId,
-                ...(voiceMediaIds[partIndex]
-                  ? { voiceMediaId: voiceMediaIds[partIndex] }
-                  : {}),
-              },
-            }
-          : {}),
-        ...(partIndex === 0
-          ? {
-              metadata: {
-                commercialResolution: {
-                  version: 2,
-                  sourceMessageId: inbound.id,
-                  pendingQuestions: policy.pendingQuestions,
-                  resolvedByOperation: quoteCreated
-                    ? policy.pendingQuestions.filter(
-                        (question) =>
-                          question === 'price' || question === 'timeline',
-                      )
-                    : [],
-                  resolvedByPart: messageParts.map((_, index) => [
-                    ...new Set(
-                      resolutionProofs
-                        .filter(
-                          (proof) =>
-                            proof.partIndexes.length === 1 &&
-                            proof.partIndexes[0] === index,
-                        )
-                        .flatMap((proof) => proof.questions),
-                    ),
-                  ]),
-                  resolvedBySpan: resolutionProofs.filter(
-                    (proof) => proof.partIndexes.length > 1,
-                  ),
+    await this.deliveries.prepareBatch(
+      {
+        deliveryKind: 'HERMES_REPLY',
+        conversationId: data.conversationId,
+        contactId: data.contactId,
+        sourceMessageId: inbound.id,
+        sender: 'HERMES',
+        allowHandedOff: shouldHandoff,
+        parts: messageParts.map((content, partIndex) => ({
+          partIndex,
+          content,
+          ...(data.inboundTurnId
+            ? {
+                metadata: {
+                  conversationTurnId: data.inboundTurnId,
+                  ...(voiceMediaIds[partIndex]
+                    ? { voiceMediaId: voiceMediaIds[partIndex] }
+                    : {}),
                 },
-                conversationEngine: engineResult.engine,
-                ...(data.inboundTurnId
-                  ? {
-                      conversationTurnId: data.inboundTurnId,
-                      ...(voiceMediaIds[partIndex]
-                        ? { voiceMediaId: voiceMediaIds[partIndex] }
-                        : {}),
-                    }
-                  : {}),
-                providerModel: engineResult.providerModel,
-                traceId: engineResult.traceId,
-                tokensUsed: response.tokensUsed,
-                latencyMs: Date.now() - startedAt,
-                ...(isNous
-                  ? {
-                      proposalUnchanged:
-                        engineResult.replyText === response.response,
-                      proposedReplySha256: createHash('sha256')
-                        .update(engineResult.replyText)
-                        .digest('hex'),
-                      proposalRejections: reviewedProposal?.rejections,
-                      proposedAction:
-                        engineResult.proposedActions[0]?.type ?? 'none',
-                      actionResult,
-                    }
-                  : {}),
-                costEstimate: response.costEstimate,
-                ...(incident ? { hermesIncident: incident } : {}),
-              },
-            }
-          : {}),
-      })),
-    });
+              }
+            : {}),
+          ...(partIndex === 0
+            ? {
+                metadata: {
+                  commercialResolution: {
+                    version: 2,
+                    sourceMessageId: inbound.id,
+                    pendingQuestions: policy.pendingQuestions,
+                    resolvedByOperation: quoteCreated
+                      ? policy.pendingQuestions.filter(
+                          (question) =>
+                            question === 'price' || question === 'timeline',
+                        )
+                      : [],
+                    resolvedByPart: messageParts.map((_, index) => [
+                      ...new Set(
+                        resolutionProofs
+                          .filter(
+                            (proof) =>
+                              proof.partIndexes.length === 1 &&
+                              proof.partIndexes[0] === index,
+                          )
+                          .flatMap((proof) => proof.questions),
+                      ),
+                    ]),
+                    resolvedBySpan: resolutionProofs.filter(
+                      (proof) => proof.partIndexes.length > 1,
+                    ),
+                  },
+                  conversationEngine: engineResult.engine,
+                  ...(data.inboundTurnId
+                    ? {
+                        conversationTurnId: data.inboundTurnId,
+                        ...(voiceMediaIds[partIndex]
+                          ? { voiceMediaId: voiceMediaIds[partIndex] }
+                          : {}),
+                      }
+                    : {}),
+                  providerModel: engineResult.providerModel,
+                  ...(engineResult.promptVersion
+                    ? { promptVersion: engineResult.promptVersion }
+                    : {}),
+                  traceId: engineResult.traceId,
+                  ...(engineResult.learningExposed?.length
+                    ? { learningExposed: engineResult.learningExposed }
+                    : {}),
+                  tokensUsed: response.tokensUsed,
+                  latencyMs: Date.now() - startedAt,
+                  ...(isNous
+                    ? {
+                        proposalUnchanged:
+                          engineResult.replyText === response.response,
+                        proposedReplySha256: createHash('sha256')
+                          .update(engineResult.replyText)
+                          .digest('hex'),
+                        proposalRejections: reviewedProposal?.rejections,
+                        proposedAction:
+                          engineResult.proposedActions[0]?.type ?? 'none',
+                        actionResult,
+                      }
+                    : {}),
+                  costEstimate: response.costEstimate,
+                  ...(incident ? { hermesIncident: incident } : {}),
+                },
+              }
+            : {}),
+        })),
+      },
+      ...(canaryBatchClaim ? ([canaryBatchClaim] as const) : ([] as const)),
+    );
     if (data.inboundTurnId) {
       const configured = Number(
         this.config.get('HERMES_CONVERSATION_MESSAGE_DELAY_MS'),
@@ -1817,10 +1979,6 @@ export class AutoReplyService {
       'hablar con humano',
       'hablar con persona',
       'agente real',
-      'quiero quejarme',
-      'reclamo',
-      'estoy molesto',
-      'no funciona',
       'descuento especial',
       'cotización compleja',
       'precio corporativo',
@@ -1836,6 +1994,8 @@ export class AutoReplyService {
     // Un fallo del proveedor o de validación no expresa que el cliente necesite
     // atención humana. Nunca crear un handoff comercial por un error técnico.
     if (normalizedIntent === 'error') return false;
+    if (normalizedIntent === 'queja' || normalizedIntent === 'reclamo')
+      return requiresComplaintHandoff(message);
     return (
       keywords.some((keyword) =>
         message.toLocaleLowerCase('es').includes(keyword),

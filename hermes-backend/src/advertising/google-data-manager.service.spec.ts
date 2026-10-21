@@ -21,6 +21,8 @@ describe('GoogleDataManagerService', () => {
       validateOnly,
       conversion: {
         eventType: AdvertisingEventType.LEAD_QUALIFIED,
+        invalidatedAt: null as Date | null,
+        lead: { contactId: 'contact-1', stage: 'QUALIFIED' },
         occurredAt: new Date('2026-09-17T12:00:00Z'),
         idempotencyKey: 'lead:1:LEAD_QUALIFIED',
         value: null,
@@ -48,6 +50,7 @@ describe('GoogleDataManagerService', () => {
       advertisingSyncJob: {
         findUnique: jest.fn().mockImplementation(() => Promise.resolve(job)),
         update: jest.fn(),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
       advertisingConversionMapping: {
         findUnique: jest
@@ -83,6 +86,26 @@ describe('GoogleDataManagerService', () => {
     const body = post.mock.calls[0][1] as { events: Record<string, unknown>[] };
     expect(body.events[0]).not.toHaveProperty('conversionValue');
     expect(body.events[0]).not.toHaveProperty('currency');
+  });
+
+  it('cancels an invalidated qualification before acquiring a token or calling Google', async () => {
+    const { service, job, prisma } = readyJob();
+    job.conversion.invalidatedAt = new Date();
+    const accessToken = jest.fn();
+    Object.defineProperty(service, 'accessToken', { value: accessToken });
+    const post = jest.spyOn(axios, 'post');
+    await expect(service.ingest(job.id)).rejects.toMatchObject({
+      code: 'LEAD_STAGE_CORRECTED',
+    });
+    expect(prisma.advertisingSyncJob.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: AdvertisingSyncStatus.CANCELLED,
+        }),
+      }),
+    );
+    expect(accessToken).not.toHaveBeenCalled();
+    expect(post).not.toHaveBeenCalled();
   });
 
   it('uses the conversion owner and mapped WON action independently of login and metrics', async () => {

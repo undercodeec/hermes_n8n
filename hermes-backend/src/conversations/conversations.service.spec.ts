@@ -29,7 +29,12 @@ describe('ConversationsService', () => {
       findUnique: jest.fn(),
       count: jest.fn(),
     },
-    message: { findFirst: jest.fn(), groupBy: jest.fn() },
+    message: {
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+      count: jest.fn(),
+      groupBy: jest.fn(),
+    },
     $transaction: jest.fn((callback: (client: typeof tx) => unknown) =>
       callback(tx),
     ),
@@ -219,7 +224,7 @@ describe('ConversationsService', () => {
         lastHermesIncident: {
           category: 'PROVIDER_ERROR',
           code: 'HERMES_PROVIDER_UNAVAILABLE',
-          summary: 'HTTP 503 secret=provider-value',
+          summary: 'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE',
           attempts: 2,
           recovered: false,
           requiresHumanReview: true,
@@ -229,7 +234,21 @@ describe('ConversationsService', () => {
           providerStack: 'must not leave the server',
         },
       },
-      messages: [],
+      messages: [
+        {
+          id: 'outbound-1',
+          metadata: {
+            hermesIncident: {
+              category: 'PROVIDER_ERROR',
+              code: 'FAKE_PROVIDER_CODE_DO_NOT_USE',
+              summary: 'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE',
+              attempts: 2,
+              recovered: false,
+              requiresHumanReview: true,
+            },
+          },
+        },
+      ],
       tasks: [
         {
           id: 'task-1',
@@ -252,7 +271,7 @@ describe('ConversationsService', () => {
       expect.objectContaining({
         category: 'PROVIDER_ERROR',
         code: 'HERMES_PROVIDER_UNAVAILABLE',
-        summary: 'HTTP 503 secret=[REDACTED]',
+        summary: 'No se pudo completar la respuesta del proveedor.',
       }),
     );
     expect(result.hermesReviewTask).toEqual(
@@ -261,6 +280,20 @@ describe('ConversationsService', () => {
     expect(JSON.stringify(result.hermesIncident)).not.toContain(
       'providerStack',
     );
+    expect(JSON.stringify(result.hermesIncident)).not.toContain(
+      'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE',
+    );
+    expect(result.messages[0]).toEqual(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          hermesIncident: expect.objectContaining({
+            code: 'HERMES_PROVIDER_UNAVAILABLE',
+            summary: 'No se pudo completar la respuesta del proveedor.',
+          }),
+        }),
+      }),
+    );
+    expect(JSON.stringify(result.messages)).not.toContain('FAKE_');
     expect(JSON.stringify(result.hermesReviewTask)).not.toContain('metadata');
   });
 
@@ -312,5 +345,46 @@ describe('ConversationsService', () => {
     );
     expect(JSON.stringify(result.data[0])).not.toContain('rawPayload');
     expect(JSON.stringify(result.data[0])).not.toContain('private-value');
+  });
+
+  it('normalizes a stored provider incident in the messages endpoint', async () => {
+    (prisma.conversation.findUnique as unknown as jest.Mock).mockResolvedValue({
+      id: 'conversation-1',
+    });
+    (prisma.message.findMany as unknown as jest.Mock).mockResolvedValue([
+      {
+        id: 'outbound-1',
+        metadata: {
+          legitimateNote: 'Nota del usuario conservada',
+          hermesIncident: {
+            category: 'PROVIDER_ERROR',
+            code: 'FAKE_PROVIDER_CODE_DO_NOT_USE',
+            summary: 'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE',
+            attempts: 2,
+            recovered: false,
+            requiresHumanReview: true,
+          },
+        },
+      },
+    ]);
+    (prisma.message.count as unknown as jest.Mock).mockResolvedValue(1);
+
+    const result = await service.findMessages('conversation-1', {
+      page: 1,
+      limit: 20,
+    });
+
+    expect(JSON.stringify(result.data)).not.toContain('FAKE_');
+    expect(result.data[0]).toEqual(
+      expect.objectContaining({
+        metadata: expect.objectContaining({
+          legitimateNote: 'Nota del usuario conservada',
+          hermesIncident: expect.objectContaining({
+            code: 'HERMES_PROVIDER_UNAVAILABLE',
+            summary: 'No se pudo completar la respuesta del proveedor.',
+          }),
+        }),
+      }),
+    );
   });
 });

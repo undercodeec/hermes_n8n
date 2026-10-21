@@ -113,7 +113,7 @@ class DeliveryStore {
     },
     $executeRaw: jest.fn(async () => undefined),
     $transaction: jest.fn(async (callback: (tx: Row) => unknown) => {
-      if (this.failNextClaimTransaction) {
+      if (this.failNextClaimTransaction && this.rows.length > 0) {
         this.failNextClaimTransaction = false;
         throw new Error('claim transaction failed');
       }
@@ -322,6 +322,16 @@ describe('AutomatedDeliveryService', () => {
     expect(result).toEqual(
       expect.objectContaining({ terminal: true, reasonCode }),
     );
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('suppresses a prepared commercial reply after a complaint handoff', async () => {
+    await service.prepareBatch(batch('respuesta comercial pendiente'));
+    store.handoff = { id: 'complaint-handoff', status: 'PENDING' };
+    store.conversation.status = 'HANDED_OFF';
+    const result = await service.deliverPreparedBatch('inbound-1');
+    expect(result.reasonCode).toBe('HANDOFF_ACTIVE');
+    expect(store.rows[0].status).toBe('SUPPRESSED');
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
   });
 

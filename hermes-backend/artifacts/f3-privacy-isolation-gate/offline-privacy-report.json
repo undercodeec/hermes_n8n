@@ -1,0 +1,151 @@
+{
+  "result": "F3_PRIVACY_ISOLATION_GATE_PROVEN_OFFLINE",
+  "baseCommit": "a117e85c8eeb37eb96bb376c4a0a758ae94c6829",
+  "finalCommit": "SELF_REFERENTIAL_SHA_NOT_EMBEDDED_IN_SAME_COMMIT",
+  "fixture": {
+    "version": 1,
+    "sha256": "83d248654ef90d19b210129713f613006dbdf9ae0847ea0c27f355a08c39bfb6",
+    "path": "src/learning/f3-privacy-isolation.spec.ts",
+    "syntheticOnly": true
+  },
+  "engines": [
+    "gemini_direct",
+    "nous_hermes"
+  ],
+  "syntheticConversations": {
+    "source": "A",
+    "current": "B"
+  },
+  "tenantBoundary": "TENANT_BOUNDARY_NOT_APPLICABLE_CURRENT_SCHEMA",
+  "learning": {
+    "selected": [
+      {
+        "id": "123e4567-e89b-42d3-a456-426614174000",
+        "version": 1
+      },
+      {
+        "id": "safe-2",
+        "version": 1
+      }
+    ],
+    "excluded": [
+      {
+        "id": "private-email",
+        "version": 1,
+        "reason": "PRIVACY_VALIDATION_FAILED:EMAIL_PATTERN"
+      },
+      {
+        "id": "private-phone",
+        "version": 1,
+        "reason": "PRIVACY_VALIDATION_FAILED:PHONE_PATTERN"
+      },
+      {
+        "id": "high-risk",
+        "version": 1,
+        "reason": "HIGH_RISK"
+      },
+      {
+        "id": "invalid-evidence",
+        "version": 1,
+        "reason": "NO_EFFECTIVE_EVIDENCE"
+      }
+    ]
+  },
+  "requestInspection": {
+    "verifiedBy": [
+      "src/learning/f3-privacy-isolation.spec.ts",
+      "src/auto-replies/auto-reply.service.spec.ts"
+    ],
+    "gemini_direct": {
+      "foreignPrivateMarkers": 0,
+      "currentContactDistinctMarkersVerifiedAtLeast": 2,
+      "generalizedLearningPresent": true,
+      "result": "PASS"
+    },
+    "nous_hermes": {
+      "foreignPrivateMarkers": 0,
+      "currentContactDistinctMarkersVerifiedAtLeast": 2,
+      "generalizedLearningPresent": true,
+      "result": "PASS"
+    },
+    "sourceEvidenceIdsInRequest": 0,
+    "sourceReviewIdsInRequest": 0
+  },
+  "learningExposed": [
+    {
+      "id": "123e4567-e89b-42d3-a456-426614174000",
+      "version": 1
+    },
+    {
+      "id": "safe-2",
+      "version": 1
+    }
+  ],
+  "dbWriteCheck": {
+    "sourceAUnchanged": true,
+    "verifiedBy": "test/conversation-learning.integration-spec.ts"
+  },
+  "failureIsolation": {
+    "malformedItemExcluded": true,
+    "conversationContinues": true
+  },
+  "performance": {
+    "privacyFilterFourItems": {
+      "unit": "ms",
+      "warmupRuns": 500,
+      "samples": 2000,
+      "min": 0.001999999999497959,
+      "max": 0.032599999999547435,
+      "mean": 0.002467599999999493,
+      "median": 0.002199999999902502,
+      "p50": 0.002199999999902502,
+      "p95": 0.0033000000003085006
+    },
+    "selectorSixItems": {
+      "unit": "ms",
+      "warmupRuns": 500,
+      "samples": 2000,
+      "min": 0.14050000000042928,
+      "max": 0.47590000000036525,
+      "mean": 0.15672089999998526,
+      "median": 0.15099999999983993,
+      "p50": 0.15099999999983993,
+      "p95": 0.2084999999997308
+    },
+    "threshold": "THRESHOLD_NOT_DEFINED",
+    "note": "Local process timing only; no production latency inference."
+  },
+  "migrations": {
+    "prismaSchemaChanged": false,
+    "newMigrationDirectories": 0,
+    "migrationsRequired": false
+  },
+  "tests": {
+    "unit": {
+      "suites": 74,
+      "cases": 1219,
+      "passed": true
+    },
+    "isolatedPostgresRedis": {
+      "suites": 1,
+      "cases": 42,
+      "passed": true
+    },
+    "build": "PASS",
+    "productionTypecheck": "PASS",
+    "eslintDirected": "PASS",
+    "prettierDirected": "PASS",
+    "prismaValidate": "PASS",
+    "diffCheck": "PASS"
+  },
+  "externalTraffic": {
+    "geminiReviewer": 0,
+    "geminiConversational": 0,
+    "nous": 0,
+    "meta": 0,
+    "whatsapp": 0
+  },
+  "productionChanges": "NONE",
+  "flagsChanged": "NONE",
+  "f3State": "OPEN"
+}

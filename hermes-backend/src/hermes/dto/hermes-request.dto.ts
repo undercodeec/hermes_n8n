@@ -1,5 +1,6 @@
 import type { HermesDiagnostic } from '../hermes-diagnostics';
 import type { CommercialSnapshot } from '../commercial-authority.service';
+import type { ApprovedLearning } from '../../learning/learning-retrieval.service';
 
 export type CommercialProfile = {
   market?: 'EC' | 'ES';
@@ -82,6 +83,7 @@ export class HermesRequestDto {
   /** Ficha persistida de mensajes anteriores; no depende del historial completo. */
   commercialProfile?: CommercialProfile;
   commercialSnapshot?: CommercialSnapshot;
+  approvedLearning?: ApprovedLearning[];
   contact?: {
     id: string;
     /** Indica que WhatsApp ya proporciona un número utilizable; no se expone en el prompt. */
@@ -91,6 +93,12 @@ export class HermesRequestDto {
   conversationId?: string;
   /** Identificador interno del mensaje entrante para trazabilidad sin registrar su contenido. */
   correlationId?: string;
+  /** Claim issued only after the persisted inbound turn reserved generation. */
+  singleGenerationCanary?: {
+    turnId: string;
+    processingToken: string;
+    generationToken: string;
+  };
   currentIntent?: string;
   conversationGuidance?: ConversationGuidance;
   pendingQuestions?: string[];
@@ -109,6 +117,8 @@ export class HermesRequestDto {
 
 export class HermesResponseDto {
   response: string;
+  /** Present only when the provider boundary was observed with approved learning in the request. */
+  learningExposed?: Array<{ id: string; version: number }>;
   tokensUsed?: number;
   costEstimate?: number;
   suggestedTags?: string[];

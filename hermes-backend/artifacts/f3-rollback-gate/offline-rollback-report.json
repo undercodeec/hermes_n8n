@@ -1,0 +1,364 @@
+{
+  "gate": "F3_ROLLBACK_GATE",
+  "result": "F3_ROLLBACK_GATE_PROVEN_OFFLINE",
+  "baseSha": "83364e8d1175a05077d8e4b970fe2872bcdd6467",
+  "finalReference": "refs/heads/f3-rollback-gate",
+  "fixtureVersion": "f3-rollback-v1",
+  "fixtureSha256": "2eb4b52fd1c33972efa2f742f64766ce8d6290ec9d242cee5c06165e4e6130a0",
+  "boundary": "ConfigModule validated environment snapshot at process startup; OFF effective for new turns on restarted chat processes, after the per-turn flag read and before selector invocation",
+  "restartRequired": "YES",
+  "redisFlushRequired": "NO",
+  "engineSwitchRequired": "NO",
+  "shadowIndependent": true,
+  "reviewEnabled": false,
+  "summaryEnabled": false,
+  "corpus": [
+    "baseline OFF Gemini",
+    "ON Gemini",
+    "ON to OFF Gemini",
+    "OFF to ON Gemini",
+    "baseline OFF Nous",
+    "ON Nous",
+    "ON to OFF Nous",
+    "OFF to ON Nous",
+    "ACTIVE survives",
+    "evidence survives",
+    "approval audit survives",
+    "historical exposure survives",
+    "new OFF turn has no exposure",
+    "no stale learning over repeated OFF turns",
+    "concurrent flag boundary",
+    "in-flight provider retains prior request",
+    "PREPARED delivery preserved",
+    "CONFIRMED delivery preserved",
+    "SUPPRESSED delivery preserved",
+    "AMBIGUOUS delivery preserved",
+    "shadow ON retrieval OFF",
+    "shadow OFF retrieval OFF",
+    "privacy after re-enable",
+    "commercial authority after re-enable",
+    "approval matrix after re-enable",
+    "HIGH excluded",
+    "expired excluded",
+    "invalid flag fails closed",
+    "selector failure isolated while OFF",
+    "process recreation uses new flag snapshot"
+  ],
+  "engines": [
+    {
+      "engine": "gemini_direct",
+      "sequence": [
+        false,
+        true,
+        false,
+        false,
+        false,
+        true
+      ],
+      "exposures": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        1
+      ],
+      "requestLearningCounts": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        1
+      ],
+      "baselineNormalizedHash": "a2b52adc062389d7dcd74434a90cc625a1e42bb6b4ab8beb0a88af611f4f7aee",
+      "postRollbackNormalizedHash": "a2b52adc062389d7dcd74434a90cc625a1e42bb6b4ab8beb0a88af611f4f7aee"
+    },
+    {
+      "engine": "nous_hermes",
+      "sequence": [
+        false,
+        true,
+        false,
+        false,
+        false,
+        true
+      ],
+      "exposures": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        1
+      ],
+      "requestLearningCounts": [
+        0,
+        1,
+        0,
+        0,
+        0,
+        1
+      ],
+      "baselineNormalizedHash": "461a2c33ad42996f2eb5b474b753e0a193fd0571a5db316439bc78ef7b62e259",
+      "postRollbackNormalizedHash": "461a2c33ad42996f2eb5b474b753e0a193fd0571a5db316439bc78ef7b62e259",
+      "promptVersions": [
+        "3353f3740496",
+        "96f0cb643611",
+        "3353f3740496",
+        "3353f3740496",
+        "3353f3740496",
+        "96f0cb643611"
+      ]
+    }
+  ],
+  "database": {
+    "before": {
+      "learning": {
+        "count": 4,
+        "hash": "0b0994a9ec8060982585cd64602b2a125fafec00b5ce96acdd67dc010e892ead",
+        "statuses": [
+          "ACTIVE",
+          "RETIRED",
+          "PROPOSED",
+          "REJECTED"
+        ]
+      },
+      "evidence": {
+        "count": 4,
+        "hash": "6d0a78167e1f562ba89f071e25ab31a765f020302bbf3d89e14ed86a7bfe4942"
+      },
+      "audits": {
+        "count": 3,
+        "hash": "2483893495eb8895df85293376b94f7682ccc6bf036c2302d3d7013d57ebcec3"
+      },
+      "reviews": {
+        "count": 1,
+        "hash": "30ef72f84966011e738ed510d9a9eb134e88c6c6b4b2ac05dd6123346970978b"
+      },
+      "summary": "bab4f71941b3ee3bfba6b9ef42ab054ac5e364e9461a090e24f10d51e1516949",
+      "deliveries": {
+        "count": 5,
+        "hash": "93afe89c8f25b17892b10cbc691f3e755ebd24a987eabd303b2cf4d72bad2707",
+        "statuses": [
+          "SUPPRESSED",
+          "REJECTED",
+          "PREPARED",
+          "CONFIRMED",
+          "AMBIGUOUS"
+        ]
+      },
+      "commercial": {
+        "products": "b74ecabe60b79189aad1993c268968cccbe63be5b92b2cfe6e56728c9187330f",
+        "prices": "c7f3d9c3d3a39829f5354bb1da31d55eb44e65502ccbb51fc2d3989285672bba"
+      }
+    },
+    "afterOff": {
+      "learning": {
+        "count": 4,
+        "hash": "0b0994a9ec8060982585cd64602b2a125fafec00b5ce96acdd67dc010e892ead",
+        "statuses": [
+          "ACTIVE",
+          "RETIRED",
+          "PROPOSED",
+          "REJECTED"
+        ]
+      },
+      "evidence": {
+        "count": 4,
+        "hash": "6d0a78167e1f562ba89f071e25ab31a765f020302bbf3d89e14ed86a7bfe4942"
+      },
+      "audits": {
+        "count": 3,
+        "hash": "2483893495eb8895df85293376b94f7682ccc6bf036c2302d3d7013d57ebcec3"
+      },
+      "reviews": {
+        "count": 1,
+        "hash": "30ef72f84966011e738ed510d9a9eb134e88c6c6b4b2ac05dd6123346970978b"
+      },
+      "summary": "bab4f71941b3ee3bfba6b9ef42ab054ac5e364e9461a090e24f10d51e1516949",
+      "deliveries": {
+        "count": 5,
+        "hash": "93afe89c8f25b17892b10cbc691f3e755ebd24a987eabd303b2cf4d72bad2707",
+        "statuses": [
+          "SUPPRESSED",
+          "REJECTED",
+          "PREPARED",
+          "CONFIRMED",
+          "AMBIGUOUS"
+        ]
+      },
+      "commercial": {
+        "products": "b74ecabe60b79189aad1993c268968cccbe63be5b92b2cfe6e56728c9187330f",
+        "prices": "c7f3d9c3d3a39829f5354bb1da31d55eb44e65502ccbb51fc2d3989285672bba"
+      }
+    },
+    "selectedOnCount": 1,
+    "selectedOffCount": 0,
+    "selectedAgainCount": 1,
+    "historicalTraceHash": "dd4ebd55ce7f61cf4ee0a0be05a9a9775d0bcaf385c8636b32d740d14fdf8cf2",
+    "redis": {
+      "keyCountBefore": 64,
+      "keyCountAfter": 64,
+      "keyHashBefore": "27149d833d91aac99f307f18358d57b4ed22a2215347be75a12b3eb3c345633f",
+      "keyHashAfter": "27149d833d91aac99f307f18358d57b4ed22a2215347be75a12b3eb3c345633f"
+    }
+  },
+  "staleExposureCount": 0,
+  "migrations": {
+    "prismaSchemaChanged": false,
+    "newMigrationDirectories": 0,
+    "required": false
+  },
+  "tests": {
+    "unit": {
+      "suites": 78,
+      "passedSuites": 78,
+      "tests": 1270,
+      "passedTests": 1270,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "success": true
+    },
+    "relevantIntegration": {
+      "suites": 9,
+      "passedSuites": 9,
+      "tests": 101,
+      "passedTests": 101,
+      "failedTests": 0,
+      "skippedTests": 0,
+      "success": true
+    }
+  },
+  "performance": {
+    "scope": "actual engine adapters with local deterministic provider fakes; isolated PostgreSQL selector; 20 samples each",
+    "threshold": "THRESHOLD_NOT_DEFINED",
+    "byEngine": {
+      "gemini_direct": {
+        "baselineOff": {
+          "samples": 20,
+          "minMs": 0.003400000000056025,
+          "maxMs": 0.033599999999978536,
+          "meanMs": 0.008224999999993089,
+          "medianMs": 0.004350000000044929,
+          "p50Ms": 0.004200000000082582,
+          "p95Ms": 0.020800000000008367
+        },
+        "retrievalOn": {
+          "samples": 20,
+          "minMs": 0.003499999999803549,
+          "maxMs": 0.016000000000076398,
+          "meanMs": 0.0049749999999903595,
+          "medianMs": 0.004000000000019099,
+          "p50Ms": 0.0038999999999305146,
+          "p95Ms": 0.007100000000036744
+        },
+        "firstOff": {
+          "samples": 20,
+          "minMs": 0.0031999999998788553,
+          "maxMs": 0.010200000000168075,
+          "meanMs": 0.003760000000022501,
+          "medianMs": 0.0032999999998537533,
+          "p50Ms": 0.0032999999998537533,
+          "p95Ms": 0.004999999999881766
+        },
+        "repeatedOff": {
+          "samples": 20,
+          "minMs": 0.003100000000131331,
+          "maxMs": 0.005300000000033833,
+          "meanMs": 0.0036550000000033834,
+          "medianMs": 0.003400000000056025,
+          "p50Ms": 0.003400000000056025,
+          "p95Ms": 0.00430000000005748
+        },
+        "reenabledOn": {
+          "samples": 20,
+          "minMs": 0.0032999999998537533,
+          "maxMs": 0.004599999999982174,
+          "meanMs": 0.0034650000000056025,
+          "medianMs": 0.003400000000056025,
+          "p50Ms": 0.003400000000056025,
+          "p95Ms": 0.0036000000000058208
+        }
+      },
+      "nous_hermes": {
+        "baselineOff": {
+          "samples": 20,
+          "minMs": 0.040199999999913416,
+          "maxMs": 0.1959999999999127,
+          "meanMs": 0.0741800000000012,
+          "medianMs": 0.05560000000002674,
+          "p50Ms": 0.05510000000003856,
+          "p95Ms": 0.17180000000007567
+        },
+        "retrievalOn": {
+          "samples": 20,
+          "minMs": 0.042799999999942884,
+          "maxMs": 0.08750000000009095,
+          "meanMs": 0.053120000000001256,
+          "medianMs": 0.04499999999995907,
+          "p50Ms": 0.044399999999996,
+          "p95Ms": 0.0804000000000542
+        },
+        "firstOff": {
+          "samples": 20,
+          "minMs": 0.03840000000013788,
+          "maxMs": 0.10449999999991633,
+          "meanMs": 0.046349999999983994,
+          "medianMs": 0.0404999999999518,
+          "p50Ms": 0.040299999999888314,
+          "p95Ms": 0.07909999999992579
+        },
+        "repeatedOff": {
+          "samples": 20,
+          "minMs": 0.034199999999827924,
+          "maxMs": 0.057500000000118234,
+          "meanMs": 0.04066500000003544,
+          "medianMs": 0.036850000000072214,
+          "p50Ms": 0.03670000000010987,
+          "p95Ms": 0.05480000000011387
+        },
+        "reenabledOn": {
+          "samples": 20,
+          "minMs": 0.03759999999988395,
+          "maxMs": 0.049500000000080036,
+          "meanMs": 0.04155000000001792,
+          "medianMs": 0.039750000000026375,
+          "p50Ms": 0.03960000000006403,
+          "p95Ms": 0.04860000000007858
+        }
+      }
+    },
+    "selectorOn": {
+      "samples": 20,
+      "minMs": 2.856600000000981,
+      "maxMs": 4.5020999999997,
+      "meanMs": 3.3212050000001,
+      "medianMs": 3.1222500000003492,
+      "p50Ms": 3.1154999999998836,
+      "p95Ms": 4.313899999999194
+    }
+  },
+  "externalTraffic": {
+    "geminiReviewer": 0,
+    "geminiConversationalReal": 0,
+    "nousReal": 0,
+    "metaReal": 0,
+    "whatsappReal": 0
+  },
+  "productionChanges": "NONE",
+  "flagsChanged": "NONE",
+  "f3State": "OPEN",
+  "checks": {
+    "unit": true,
+    "integration": true,
+    "thirtyCases": true,
+    "engines": true,
+    "data": true,
+    "reenable": true,
+    "redis": true,
+    "historical": true,
+    "stale": true,
+    "migrations": true
+  }
+}

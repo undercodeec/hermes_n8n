@@ -112,6 +112,117 @@ describe('HandoffService', () => {
     });
   });
 
+  it.each([HandoffStatus.PENDING, HandoffStatus.IN_PROGRESS])(
+    'reuses an existing %s complaint handoff without changing ownership',
+    async (status) => {
+      const existing = {
+        id: 'existing-handoff',
+        conversationId: 'conversation-1',
+        reason: HandoffReason.COMPLAINT,
+        status,
+        assignedAgentId: status === HandoffStatus.IN_PROGRESS ? 'user-1' : null,
+        conversation: { contact: { id: 'contact-1' } },
+      };
+      const createTx = {
+        $executeRaw: jest.fn(),
+        conversation: {
+          findUnique: jest.fn().mockResolvedValue({
+            id: 'conversation-1',
+            status: ConversationStatus.ACTIVE,
+          }),
+          update: jest.fn(),
+        },
+        humanHandoff: {
+          findFirst: jest.fn().mockResolvedValue(existing),
+          create: jest.fn(),
+        },
+      };
+      const createService = new HandoffService(
+        {
+          $transaction: jest.fn((run: (client: typeof createTx) => unknown) =>
+            run(createTx),
+          ),
+        } as unknown as PrismaService,
+        { emit: jest.fn() } as unknown as EventEmitter2,
+        { isActive: jest.fn().mockReturnValue(false) } as unknown as ClsService,
+        { get: jest.fn() } as unknown as ConfigService,
+      );
+      await expect(
+        createService.create({
+          conversationId: 'conversation-1',
+          reason: HandoffReason.COMPLAINT,
+        }),
+      ).resolves.toBe(existing);
+      expect(createTx.$executeRaw).toHaveBeenCalledTimes(1);
+      expect(createTx.humanHandoff.create).not.toHaveBeenCalled();
+      expect(existing.assignedAgentId).toBe(
+        status === HandoffStatus.IN_PROGRESS ? 'user-1' : null,
+      );
+    },
+  );
+
+  it('creates at most one handoff for two concurrent complaint inbounds', async () => {
+    let existing: {
+      id: string;
+      conversationId: string;
+      reason: HandoffReason;
+      status: HandoffStatus;
+      assignedAgentId: null;
+      conversation: { contact: { id: string } };
+    } | null = null;
+    const createTx = {
+      $executeRaw: jest.fn(),
+      conversation: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'conversation-1',
+          status: ConversationStatus.ACTIVE,
+        }),
+        update: jest.fn(),
+      },
+      humanHandoff: {
+        findFirst: jest.fn(() => existing),
+        create: jest.fn(() => {
+          existing = {
+            id: 'handoff-1',
+            conversationId: 'conversation-1',
+            reason: HandoffReason.COMPLAINT,
+            status: HandoffStatus.PENDING,
+            assignedAgentId: null,
+            conversation: { contact: { id: 'contact-1' } },
+          };
+          return existing;
+        }),
+      },
+    };
+    // The transaction queue models PostgreSQL's conversation advisory lock.
+    let previous = Promise.resolve();
+    const createService = new HandoffService(
+      {
+        $transaction: jest.fn(
+          (run: (client: typeof createTx) => Promise<unknown>) => {
+            const current = previous.then(() => run(createTx));
+            previous = current.then(() => undefined);
+            return current;
+          },
+        ),
+      } as unknown as PrismaService,
+      { emit: jest.fn() } as unknown as EventEmitter2,
+      { isActive: jest.fn().mockReturnValue(false) } as unknown as ClsService,
+      { get: jest.fn() } as unknown as ConfigService,
+    );
+    const request = {
+      conversationId: 'conversation-1',
+      reason: HandoffReason.COMPLAINT,
+    };
+    const [first, second] = await Promise.all([
+      createService.create(request),
+      createService.create(request),
+    ]);
+    expect(first).toBe(second);
+    expect(createTx.$executeRaw).toHaveBeenCalledTimes(2);
+    expect(createTx.humanHandoff.create).toHaveBeenCalledTimes(1);
+  });
+
   it('does not let another operator take an assigned handoff', async () => {
     await expect(
       service.assign('handoff-1', 'user-2', 'user-2'),

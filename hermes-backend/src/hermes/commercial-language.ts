@@ -61,7 +61,7 @@ export function describesBuyerPayment(value: string): boolean {
 
 export function hasUnauthorizedPaymentTerms(normalized: string): boolean {
   return (
-    /\b(?:cuotas?|anticipo|abono|financiacion|50\s*\/\s*50|(?:paga\w*|abona\w*|pago)\s+(?:por adelantado|al\s+(?:recibir|finalizar|terminar)|despues|cuando)|contra entrega|pagarnos|abonarnos|pagos?\s+(?:a|en)\s+plazos?)\b/.test(
+    /\b(?:cuotas?|anticipo|abono|financiacion|50\s*\/\s*50|(?:paga\w*|abona\w*|pago)\s+(?:por adelantado|al\s+(?:recibir|finalizar|terminar)|despues|cuando)|contra entrega|pagarnos|abonarnos|pagos?\s+(?:a|en)\s+plazos?|pagos?\s+en\s+(?:dos|tres|cuatro|\d+)\s+partes?)\b/.test(
       normalized,
     ) && !describesBuyerPayment(normalized)
   );

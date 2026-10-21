@@ -36,6 +36,61 @@ type HermesProviderResponse = {
 };
 
 describe('HermesService commercial contract', () => {
+  it('keeps learning subordinate to the unchanged commercial snapshot in the Gemini prompt', async () => {
+    const { service, post } = setup(
+      JSON.stringify({ response: 'Con gusto le ayudo.' }),
+    );
+    const result = await service.generateResponse({
+      contactName: 'Cliente',
+      messageContent: 'Consulta',
+      conversationHistory: [],
+      commercialSnapshot: snapshot([offer('Plan A', '360.00', 'WEBSITE')]),
+      approvedLearning: [
+        {
+          id: 'safe',
+          version: 1,
+          kind: 'STYLE',
+          trigger: 'consulta actual',
+          guidance: 'Responder con brevedad',
+        },
+      ],
+    });
+    const body = post.mock.calls[0][1];
+    const prompt = body.messages[0].content;
+    expect(prompt).toContain('approvedLearning: pautas aprobadas');
+    expect(prompt).toContain(
+      'Product, PriceList, commercialSnapshot, approvedKnowledge',
+    );
+    expect(prompt).toContain('Plan A');
+    expect(prompt).toContain('Responder con brevedad');
+    expect(result.learningExposed).toEqual([{ id: 'safe', version: 1 }]);
+  });
+  it('keeps exposure when the provider answered with an HTTP failure', async () => {
+    const { service, post } = setup(JSON.stringify({ response: 'unused' }));
+    post.mockRejectedValue({
+      isAxiosError: true,
+      message: 'synthetic HTTP failure',
+      response: { status: 500 },
+    });
+    const result = await service.generateResponse({
+      contactName: 'Cliente',
+      messageContent: 'Consulta',
+      conversationHistory: [],
+      commercialSnapshot: snapshot([]),
+      approvedLearning: [
+        {
+          id: 'safe',
+          version: 2,
+          kind: 'STYLE',
+          trigger: 'consulta actual',
+          guidance: 'Responder con brevedad',
+        },
+      ],
+    });
+    expect(post).toHaveBeenCalled();
+    expect(result.learningExposed).toEqual([{ id: 'safe', version: 2 }]);
+    expect(result.diagnostic).toBeDefined();
+  });
   it.each(['USD 360e3', 'USD 360 EUR'])(
     'rejects malformed money at the model output boundary: %s',
     async (money) => {
@@ -140,6 +195,10 @@ describe('HermesService commercial contract', () => {
           HERMES_API_KEY: 'test-key',
           HERMES_MODEL: model,
           HERMES_STRUCTURED_OUTPUT: 'true',
+          F3_SINGLE_GENERATION_CANARY_ENABLED: 'true',
+          F3_SINGLE_GENERATION_CANARY_CONVERSATION_ID:
+            'd3e10ce6-996f-4e89-bc98-68bcbb3e28dc',
+          NOUS_HERMES_MAX_ATTEMPTS: '3',
         };
         return values[key] ?? fallback;
       }),
@@ -148,6 +207,10 @@ describe('HermesService commercial contract', () => {
       knowledgeDocument: { findMany: jest.fn().mockResolvedValue([]) },
       product: { findMany: jest.fn().mockResolvedValue([]) },
       salesPlaybook: { findMany: jest.fn().mockResolvedValue([]) },
+      inboundTurn: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
     } as unknown as PrismaService;
     const service = new HermesService(config, prisma);
     const contents = Array.isArray(content) ? content : [content];
@@ -174,6 +237,33 @@ describe('HermesService commercial contract', () => {
     ).httpClient.post = post;
     return { service, post };
   }
+
+  it.each([
+    ['valid', JSON.stringify({ response: 'Respuesta sintética.' })],
+    ['invalid', 'not-json'],
+    ['error', 'unused'],
+  ])(
+    'uses at most one Gemini POST for a canary %s response',
+    async (kind, content) => {
+      const { service, post } = setup(content);
+      if (kind === 'error')
+        post.mockRejectedValue(new Error('synthetic failure'));
+      await service.generateResponse({
+        contactName: 'Cliente',
+        messageContent: 'Consulta sintética',
+        conversationHistory: [],
+        commercialSnapshot: snapshot([]),
+        conversationId: 'd3e10ce6-996f-4e89-bc98-68bcbb3e28dc',
+        correlationId: 'synthetic-source',
+        singleGenerationCanary: {
+          turnId: 'synthetic-turn',
+          processingToken: 'synthetic-token',
+          generationToken: 'synthetic-token',
+        },
+      });
+      expect(post).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('sends the current inbound message exactly once and requests JSON schema', async () => {
     const { service, post } = setup(
@@ -1164,6 +1254,15 @@ describe('HermesService commercial contract', () => {
     const result = await service.generateResponse({
       contactName: 'Christopher',
       messageContent: '?',
+      approvedLearning: [
+        {
+          id: 'selected-only',
+          version: 1,
+          kind: 'STYLE',
+          trigger: 'consulta actual',
+          guidance: 'Responder con brevedad',
+        },
+      ],
       conversationHistory: [
         { role: 'user', content: 'Mostrar mis arreglos florales' },
         {
@@ -1185,6 +1284,7 @@ describe('HermesService commercial contract', () => {
     expect(result.response).not.toMatch(/plan de lanzamiento|horario/i);
     expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
     expect(post).not.toHaveBeenCalled();
+    expect(result.learningExposed).toBeUndefined();
   });
 
   it('repairs missing opening question marks and joins a continued question with a comma', async () => {

@@ -28,6 +28,7 @@ export type CommercialPolicyDecision = {
   intent?: string;
   pendingQuestions: PendingQuestion[];
   requestsHuman: boolean;
+  requiresComplaintHandoff: boolean;
   requestsCall: boolean;
   requestedCallAt?: Date;
   hasRelativeCallTime: boolean;
@@ -66,9 +67,48 @@ export function requestsCommercialContact(content: string): boolean {
   ].some((pattern) => pattern.test(normalized));
 }
 
+/** Escalation requests about our service, rather than general negative sentiment. */
+export function requiresComplaintHandoff(content: string): boolean {
+  const normalized = normalizeCommonSpanishTypos(
+    content
+      .toLocaleLowerCase('es')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim(),
+  );
+  if (
+    /\b(?:no quiero|no necesito|no voy a)\b.{0,35}\b(?:presentar|poner|hacer|registrar|reportar)\b.{0,25}\b(?:reclamo|queja)\b/.test(
+      normalized,
+    )
+  )
+    return false;
+  return [
+    /\b(?:quiero|necesito|deseo)\s+quejarme\b/,
+    /\b(?:quiero|necesito|voy a|deseo|puedo|podria)\b.{0,35}\b(?:presentar|poner|hacer|registrar|interponer|reportar)\b.{0,25}\b(?:reclamo|queja)\b/,
+    /\b(?:tengo|hay)\s+(?:un[ao]?\s+)?(?:reclamo|queja)\b/,
+    /\b(?:reclamo|queja)\b.{0,55}\b(?:revise[n]?|revisar|atienda[n]?|atender|resuelva[n]?|resolver|escale[n]?|escalar)\b/,
+    /\b(?:revise[n]?|revisar|atienda[n]?|atender|resuelva[n]?|resolver|escale[n]?|escalar)\b.{0,55}\b(?:reclamo|queja)\b/,
+    /\b(?:reportar|denunciar|escalar)\b.{0,35}\b(?:problema|falla|fallo|incidente)\b.{0,35}\b(?:servicio|proyecto|trabajo)\b/,
+    /\b(?:hablar|contactar)\s+con\s+(?:alguien|una persona|un asesor|una asesora)\b.{0,45}\b(?:problema serio|problema grave|reclamo|queja)\b/,
+  ].some((pattern) => pattern.test(normalized));
+}
+
 @Injectable()
 export class CommercialPolicyService {
   /** Conserva información válida y retira condiciones que la instantánea CRM no respalda. */
+  repairCommercialClaims(
+    response: string,
+    approvedKnowledge: string[],
+    hasActivePromotion = false,
+  ): { response: string; reasons: string[] } {
+    return this.repairNousCommercialClaims(
+      response,
+      approvedKnowledge,
+      hasActivePromotion,
+    );
+  }
+
   repairNousCommercialClaims(
     response: string,
     approvedKnowledge: string[],
@@ -102,7 +142,9 @@ export class CommercialPolicyService {
         /\b(?:gratis|gratuito|sin costo|de por vida|ilimitad\w*)\b/.test(
           normalized,
         ) ||
-        (/\b(?:descuento|rebaja|promocion)\b/.test(normalized) &&
+        (/\b(?:descuento|rebaja|promocion|bonificacion|precio especial)\b/.test(
+          normalized,
+        ) &&
           (!hasActivePromotion || /\b\d+(?:[.,]\d+)?\s*%/.test(normalized)));
       if (unsupportedOffer) {
         reasons.push('UNAUTHORIZED_DISCOUNT');
@@ -140,6 +182,22 @@ export class CommercialPolicyService {
       }
       if (hasUnauthorizedPaymentTerms(normalized)) {
         reasons.push('UNAUTHORIZED_PAYMENT_TERMS');
+        return false;
+      }
+      if (
+        /\b(?:disponibilidad|disponible|cupo|agenda libre)\b.{0,40}\b(?:confirmad[ao]|garantizad[ao]|inmediata|asegurad[ao])\b|\b(?:tenemos|hay|confirmamos|garantizamos)\b.{0,40}\b(?:disponibilidad|disponible|cupo|agenda libre)\b/.test(
+          normalized,
+        )
+      ) {
+        reasons.push('UNAUTHORIZED_AVAILABILITY');
+        return false;
+      }
+      if (
+        /\b(?:reunion|cita|llamada|reserva|pago|cobro|mensaje|escalamiento|derivacion)\b.{0,45}\b(?:ya\s+)?(?:(?:esta|quedo|ha sido|fue)\s+)?(?:confirmad[ao]|agendad[ao]|reservad[ao]|enviad[ao]|aprobad[ao]|procesad[ao]|realizad[ao]|completad[ao])\b|\b(?:ya\s+)?(?:hemos|he|se ha|se)\s+(?:agendad[ao]|reservad[ao]|procesad[ao]|enviad[ao]|completad[ao]|escalad[ao])\b/.test(
+          normalized,
+        )
+      ) {
+        reasons.push('UNCONFIRMED_ACTION_CLAIM');
         return false;
       }
       const inclusion = normalized.match(
@@ -188,6 +246,7 @@ export class CommercialPolicyService {
     }
 
     const requestsHuman = requestsCommercialContact(content);
+    const complaintHandoff = requiresComplaintHandoff(content);
     const requestsCall = this.matches(normalized, [
       /\b(llamada|llamarme|llamenme|me llamen|hablar por telefono)\b/,
       /\b(puede[n]? llamar|podemos hablar)\b/,
@@ -300,19 +359,22 @@ export class CommercialPolicyService {
       (!sufficientContext || Boolean(requiredClarification));
 
     return {
-      intent: requestsHuman
-        ? 'solicitud_humano'
-        : requestsCall || hasRelativeCallTime
-          ? 'agendar_cita'
-          : paymentContext === 'PROJECT_PAYMENT'
-            ? 'consulta_pago_proyecto'
-            : paymentContext === 'STORE_CHECKOUT'
-              ? 'consulta_cobro_tienda'
-              : pending.has('price')
-                ? 'consulta_precio'
-                : undefined,
+      intent: complaintHandoff
+        ? 'reclamo'
+        : requestsHuman
+          ? 'solicitud_humano'
+          : requestsCall || hasRelativeCallTime
+            ? 'agendar_cita'
+            : paymentContext === 'PROJECT_PAYMENT'
+              ? 'consulta_pago_proyecto'
+              : paymentContext === 'STORE_CHECKOUT'
+                ? 'consulta_cobro_tienda'
+                : pending.has('price')
+                  ? 'consulta_precio'
+                  : undefined,
       pendingQuestions: [...pending],
       requestsHuman,
+      requiresComplaintHandoff: complaintHandoff,
       requestsCall: requestsCall || hasRelativeCallTime,
       requestedCallAt,
       hasRelativeCallTime,

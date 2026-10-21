@@ -1,8 +1,9 @@
 import { spawnSync } from 'node:child_process';
 
+const postgresPort = process.env.LEARNING_TEST_POSTGRES_PORT || '55432';
 const databaseUrl =
   process.env.LEARNING_TEST_DATABASE_URL ||
-  'postgresql://learning_test:learning_test_only@127.0.0.1:55432/hermes_learning_test?schema=public';
+  `postgresql://learning_test:learning_test_only@127.0.0.1:${postgresPort}/hermes_learning_test?schema=public`;
 const redisUrl =
   process.env.LEARNING_TEST_REDIS_URL || 'redis://127.0.0.1:56379/0';
 
@@ -28,7 +29,7 @@ function assertIsolated(url, expectedPort, expectedName) {
   }
 }
 
-assertIsolated(databaseUrl, '55432', 'hermes_learning_test');
+assertIsolated(databaseUrl, postgresPort, 'hermes_learning_test');
 assertIsolated(redisUrl, '56379');
 
 const env = {
@@ -51,6 +52,7 @@ for (const command of [
       './test/jest-integration.json',
       '--runInBand',
       'test/conversation-learning.integration-spec.ts',
+      'test/f3-approval.integration-spec.ts',
     ],
   ],
 ]) {

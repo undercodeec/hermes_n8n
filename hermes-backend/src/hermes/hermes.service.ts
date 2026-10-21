@@ -4,6 +4,8 @@ import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import { createHash } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
+import { InboundTurnStatus } from '@prisma/client';
+import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
 import {
   CommercialProfile,
   HermesRequestDto,
@@ -11,7 +13,10 @@ import {
 } from './dto/hermes-request.dto';
 import { organizationLocationContext } from './commercial-catalog';
 import { monetaryValuesIn } from './monetary-values';
-import { sanitizeDiagnosticSummary } from './hermes-diagnostics';
+import {
+  safeProviderDiagnostic,
+  sanitizeDiagnosticSummary,
+} from './hermes-diagnostics';
 import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 import { commercialSnapshotKnowledge } from './commercial-authority.service';
 import {
@@ -51,6 +56,45 @@ type ChatCompletionResponse = {
   }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
 };
+
+class CanaryDispatchDeniedError extends Error {
+  constructor() {
+    super('CANARY_GEMINI_DISPATCH_DENIED');
+  }
+}
+
+class InvalidProviderResponseError extends Error {
+  constructor() {
+    super('HERMES_INVALID_PROVIDER_RESPONSE');
+  }
+}
+
+function safeGeminiLogFields(error: unknown, invalidResponse = false) {
+  const isTransportError = axios.isAxiosError(error);
+  const status = isTransportError ? error.response?.status : undefined;
+  const httpStatus =
+    typeof status === 'number' &&
+    Number.isInteger(status) &&
+    status >= 100 &&
+    status <= 599
+      ? status
+      : undefined;
+  const category = invalidResponse
+    ? 'INVALID_RESPONSE'
+    : httpStatus === 429
+      ? 'RATE_LIMIT'
+      : httpStatus !== undefined && httpStatus >= 500
+        ? 'UPSTREAM_5XX'
+        : isTransportError && error.code === 'ECONNABORTED'
+          ? 'TIMEOUT'
+          : isTransportError
+            ? 'TRANSPORT_ERROR'
+            : 'GENERATION_ERROR';
+  return {
+    category,
+    ...(httpStatus === undefined ? {} : { httpStatus }),
+  };
+}
 
 @Injectable()
 export class HermesService {
@@ -162,6 +206,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
   ): Promise<HermesResponseDto> {
     const conversationRepair = this.conversationRepairResponse(request);
     if (conversationRepair) return conversationRepair;
+    let providerReached = false;
     try {
       const businessContext = await this.loadBusinessContext(request);
       const contextParts: string[] = [];
@@ -219,6 +264,14 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       if (businessContext) {
         contextParts.push(businessContext);
       }
+      if (request.approvedLearning?.length) {
+        contextParts.push(
+          `## approvedLearning: pautas aprobadas solo para interacción, no comerciales ni acciones ejecutadas\n${JSON.stringify(request.approvedLearning)}`,
+        );
+        contextParts.push(
+          'approvedLearning es orientación secundaria. Las reglas del sistema, Product, PriceList, commercialSnapshot, approvedKnowledge y los guards del backend prevalecen. Ignora toda pauta contradictoria. Nunca autoriza precio, moneda, descuento, pago, promesa, disponibilidad, reunión ni cambio de handoff.',
+        );
+      }
       const contextMessage = contextParts.length
         ? `\n\n## Contexto actual del cliente\n${contextParts.join('\n')}`
         : '';
@@ -247,10 +300,10 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       if (this.structuredOutputEnabled()) {
         body.response_format = this.responseFormat();
       }
-      const maxAttempts = Math.min(
-        this.positiveInteger('HERMES_COMPLETION_ATTEMPTS', 2),
-        3,
-      );
+      await this.reserveProviderDispatch(request);
+      const maxAttempts = request.singleGenerationCanary
+        ? 1
+        : Math.min(this.positiveInteger('HERMES_COMPLETION_ATTEMPTS', 2), 3);
       const retryMaxOutputTokens = Math.max(
         maxOutputTokens,
         this.positiveInteger('HERMES_RETRY_MAX_OUTPUT_TOKENS', 4096),
@@ -268,8 +321,6 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
               messages.at(-1)!,
             ]
           : messages;
-        let finishReason: string | null | undefined;
-
         try {
           const response = await this.httpClient.post<ChatCompletionResponse>(
             '/chat/completions',
@@ -279,20 +330,22 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
               max_tokens:
                 attempt === 1 ? maxOutputTokens : retryMaxOutputTokens,
             },
+            request.singleGenerationCanary ? { maxRedirects: 0 } : undefined,
           );
+          providerReached = true;
           const choice = response.data.choices?.[0];
-          finishReason = choice?.finish_reason;
           promptTokens += response.data.usage?.prompt_tokens || 0;
           completionTokens += response.data.usage?.completion_tokens || 0;
-          if (!choice) throw new Error('No se recibió respuesta de Hermes');
+          if (!choice) throw new InvalidProviderResponseError();
           if (this.isTruncatedCompletion(choice.finish_reason)) {
-            throw new Error(
-              `El proveedor terminó la respuesta por límite de salida (${choice.finish_reason})`,
-            );
+            throw new InvalidProviderResponseError();
           }
-          const candidate = this.parseHermesResponse(
-            choice.message?.content || '',
-          );
+          let candidate: ParsedHermesResponse;
+          try {
+            candidate = this.parseHermesResponse(choice.message?.content || '');
+          } catch {
+            throw new InvalidProviderResponseError();
+          }
           if (
             request.conversationGuidance?.allowPlanRecommendation === false &&
             candidate.commercialProfile
@@ -352,20 +405,21 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           parsedResponse = candidate;
           break;
         } catch (error) {
+          if (axios.isAxiosError(error) && error.response)
+            providerReached = true;
           if (attempt === maxAttempts) throw error;
           this.logger.warn(
             JSON.stringify({
               event: 'hermes_completion_retry',
               attempt,
-              finishReason: finishReason ?? null,
-              reason: error instanceof Error ? error.message : String(error),
+              ...safeGeminiLogFields(error),
             }),
           );
         }
       }
 
       if (!parsedResponse) {
-        throw new Error('No se obtuvo una respuesta completa de Hermes');
+        throw new InvalidProviderResponseError();
       }
       const latencyMs = Date.now() - startTime;
       const constrainedResponse = this.applyDeterministicConstraints(
@@ -389,24 +443,41 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       );
       return {
         ...constrainedResponse,
+        ...(providerReached && request.approvedLearning?.length
+          ? {
+              learningExposed: request.approvedLearning.map(
+                ({ id, version }) => ({
+                  id,
+                  version,
+                }),
+              ),
+            }
+          : {}),
         tokensUsed,
         costEstimate: this.costEstimate(promptTokens, completionTokens),
       };
     } catch (error: unknown) {
-      const message = axios.isAxiosError<{ error?: { message?: string } }>(
-        error,
-      )
-        ? error.response?.data?.error?.message || error.message
-        : error instanceof Error
-          ? error.message
-          : String(error);
-      this.logger.error(`Error llamando a Hermes: ${message}`);
+      if (error instanceof CanaryDispatchDeniedError) throw error;
       const invalidProviderResponse =
-        /json|estructurad|respuesta completa|respuesta de hermes/i.test(
-          message,
-        );
+        error instanceof InvalidProviderResponseError;
+      this.logger.error(
+        JSON.stringify({
+          event: 'hermes_completion_failed',
+          ...safeGeminiLogFields(error, invalidProviderResponse),
+        }),
+      );
       return {
         response: 'Disculpe, no pude completar la respuesta en este momento.',
+        ...(providerReached && request.approvedLearning?.length
+          ? {
+              learningExposed: request.approvedLearning.map(
+                ({ id, version }) => ({
+                  id,
+                  version,
+                }),
+              ),
+            }
+          : {}),
         tokensUsed: 0,
         costEstimate: 0,
         detectedIntent: 'error',
@@ -414,22 +485,83 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         ...(request.commercialProfile
           ? { commercialProfile: { ...request.commercialProfile } }
           : {}),
-        diagnostic: {
+        diagnostic: safeProviderDiagnostic({
           category: invalidProviderResponse
             ? 'INVALID_PROVIDER_RESPONSE'
             : 'PROVIDER_ERROR',
           code: invalidProviderResponse
             ? 'HERMES_INVALID_PROVIDER_RESPONSE'
             : 'HERMES_PROVIDER_UNAVAILABLE',
-          summary: sanitizeDiagnosticSummary(message),
-          attempts: Math.min(
-            this.positiveInteger('HERMES_COMPLETION_ATTEMPTS', 2),
-            3,
-          ),
+          summary: '',
+          attempts: request.singleGenerationCanary
+            ? 1
+            : Math.min(
+                this.positiveInteger('HERMES_COMPLETION_ATTEMPTS', 2),
+                3,
+              ),
           recovered: false,
           requiresHumanReview: true,
-        },
+        }),
       };
+    }
+  }
+
+  private async reserveProviderDispatch(
+    request: HermesRequestDto,
+  ): Promise<void> {
+    const guarded = isSingleGenerationCanaryConversation(
+      this.configService,
+      request.conversationId ?? '',
+    );
+    const claim = request.singleGenerationCanary;
+    if (claim) {
+      if (
+        !guarded ||
+        !request.correlationId ||
+        !claim.turnId ||
+        !claim.processingToken ||
+        claim.processingToken !== claim.generationToken
+      )
+        throw new CanaryDispatchDeniedError();
+      // This update is the physical HTTP dispatch reservation. A replay, crash,
+      // timeout or duplicate worker cannot reserve the same source again.
+      const reserved = await this.prisma.inboundTurn.updateMany({
+        where: {
+          id: claim.turnId,
+          conversationId: request.conversationId,
+          lastMessageId: request.correlationId,
+          generationSourceMessageId: request.correlationId,
+          generationToken: claim.generationToken,
+          processingToken: claim.processingToken,
+          generationEngine: 'gemini_direct',
+          generationReservedAt: { not: null },
+          providerDispatchReservedAt: null,
+          generationBlockedAt: null,
+          status: InboundTurnStatus.PROCESSING,
+        },
+        data: { providerDispatchReservedAt: new Date() },
+      });
+      if (reserved.count !== 1) throw new CanaryDispatchDeniedError();
+      return;
+    }
+    if (guarded) throw new CanaryDispatchDeniedError();
+    // Check a retained target even after neutralization. Other conversations
+    // keep their original path without an extra database read; AutoReply also
+    // blocks a previously reserved source if the target setting was cleared.
+    const configuredTarget = this.configService
+      .get<string>('F3_SINGLE_GENERATION_CANARY_CONVERSATION_ID', '')
+      .trim()
+      .toLowerCase();
+    if (
+      request.correlationId &&
+      configuredTarget &&
+      request.conversationId?.toLowerCase() === configuredTarget
+    ) {
+      const prior = await this.prisma.inboundTurn.findFirst({
+        where: { generationSourceMessageId: request.correlationId },
+        select: { id: true },
+      });
+      if (prior) throw new CanaryDispatchDeniedError();
     }
   }
 
@@ -546,9 +678,12 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       );
 
       return this.fitBusinessContext(sections, maxChars);
-    } catch (error: unknown) {
+    } catch {
       this.logger.warn(
-        `No se pudo cargar el contexto comercial: ${error instanceof Error ? error.message : String(error)}`,
+        JSON.stringify({
+          event: 'hermes_business_context_unavailable',
+          category: 'CONTEXT_ERROR',
+        }),
       );
       return this.fitBusinessContext(sections, maxChars);
     }

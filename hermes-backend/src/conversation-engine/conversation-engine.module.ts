@@ -1,6 +1,7 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
 import { HermesModule } from '../hermes/hermes.module';
+import { InboundTurnService } from '../auto-replies/inbound-turn.service';
 import { AgentOutputValidator } from './agent-output.validator';
 import { ConversationEngineService } from './conversation-engine.service';
 import { DirectGeminiEngine } from './direct-gemini.engine';
@@ -27,6 +28,7 @@ import {
     NousHermesProcessor,
     NousHermesQueueEvents,
     NousHermesQueuePolicy,
+    InboundTurnService,
     NousHermesEngine,
     ConversationEngineService,
   ],

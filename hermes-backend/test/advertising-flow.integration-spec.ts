@@ -476,9 +476,10 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
     await leads.update(lead.id, { stage: LeadStage.QUALIFIED }, user.id);
     const conversion = await prisma.advertisingConversion.findUniqueOrThrow({
       where: {
-        leadId_eventType: {
+        leadId_eventType_qualificationCycle: {
           leadId: lead.id,
           eventType: AdvertisingEventType.LEAD_QUALIFIED,
+          qualificationCycle: 0,
         },
       },
       include: { syncJob: true },

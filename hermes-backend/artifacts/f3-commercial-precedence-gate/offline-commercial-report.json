@@ -1,0 +1,354 @@
+{
+  "gate": "F3_COMMERCIAL_PRECEDENCE_GATE",
+  "mode": "OFFLINE",
+  "baseCommit": "620c64de00e6efc4447d060a51f0d927da288121",
+  "fixtureVersion": "f3-commercial-synthetic-v1",
+  "fixtureSha256": "d529501a2d5cf7f1edcaf548eb3af0dc17fbdd48e2e8db710e873b13ebfa3e54",
+  "engines": [
+    "gemini_direct",
+    "nous_hermes"
+  ],
+  "selection": [
+    {
+      "id": "price_change",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "currency_change",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "discount",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "payment_50_50",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "installments",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "payment_parts",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "timeline",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "availability",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "promotion",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "guarantee",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "meeting",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "handoff",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "action",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "message_action",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "first_person_action",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "ambiguous_offer",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "ambiguous_terms",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "ambiguous_date",
+      "selected": [],
+      "excluded": true,
+      "reason": "COMMERCIAL_CONFLICT"
+    },
+    {
+      "id": "safe_question",
+      "selected": [
+        {
+          "id": "safe_question",
+          "version": 1
+        }
+      ],
+      "excluded": false,
+      "reason": null
+    },
+    {
+      "id": "safe_step",
+      "selected": [
+        {
+          "id": "safe_step",
+          "version": 1
+        }
+      ],
+      "excluded": false,
+      "reason": null
+    },
+    {
+      "id": "safe_explanation",
+      "selected": [
+        {
+          "id": "safe_explanation",
+          "version": 1
+        }
+      ],
+      "excluded": false,
+      "reason": null
+    },
+    {
+      "id": "safe_accepted_offer",
+      "selected": [
+        {
+          "id": "safe_accepted_offer",
+          "version": 1
+        }
+      ],
+      "excluded": false,
+      "reason": null
+    },
+    {
+      "id": "safe_confirmation",
+      "selected": [
+        {
+          "id": "safe_confirmation",
+          "version": 1
+        }
+      ],
+      "excluded": false,
+      "reason": null
+    },
+    {
+      "id": "high_risk",
+      "selected": [],
+      "excluded": true,
+      "reason": "HIGH_RISK"
+    }
+  ],
+  "postEngine": [
+    {
+      "id": "unauthorized_price",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "PRICE_NOT_AUTHORIZED"
+      ],
+      "unauthorizedClaimDelivered": false
+    },
+    {
+      "id": "wrong_currency",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "PRICE_NOT_AUTHORIZED"
+      ],
+      "unauthorizedClaimDelivered": false
+    },
+    {
+      "id": "payment",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "UNAUTHORIZED_PAYMENT_TERMS"
+      ],
+      "unauthorizedClaimDelivered": false
+    },
+    {
+      "id": "payment_parts",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "UNAUTHORIZED_PAYMENT_TERMS"
+      ],
+      "unauthorizedClaimDelivered": false
+    },
+    {
+      "id": "discount",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "UNAUTHORIZED_DISCOUNT"
+      ],
+      "unauthorizedClaimDelivered": false
+    },
+    {
+      "id": "promotion",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "UNAUTHORIZED_DISCOUNT"
+      ],
+      "unauthorizedClaimDelivered": false
+    },
+    {
+      "id": "timeline",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "UNAUTHORIZED_TIMELINE"
+      ],
+      "unauthorizedClaimDelivered": false
+    },
+    {
+      "id": "availability",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "UNAUTHORIZED_AVAILABILITY"
+      ],
+      "unauthorizedClaimDelivered": false
+    },
+    {
+      "id": "meeting",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "UNCONFIRMED_ACTION_CLAIM"
+      ],
+      "unauthorizedClaimDelivered": false
+    },
+    {
+      "id": "payment_action",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "UNCONFIRMED_ACTION_CLAIM"
+      ],
+      "unauthorizedClaimDelivered": false
+    },
+    {
+      "id": "available",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "UNAUTHORIZED_AVAILABILITY"
+      ],
+      "unauthorizedClaimDelivered": false
+    },
+    {
+      "id": "message_action",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "UNCONFIRMED_ACTION_CLAIM"
+      ],
+      "unauthorizedClaimDelivered": false
+    },
+    {
+      "id": "first_person_action",
+      "fakeOutputClassification": "UNAUTHORIZED_CLAIM",
+      "finalPolicyResult": "REPAIRED_OR_REJECTED",
+      "reasons": [
+        "UNCONFIRMED_ACTION_CLAIM"
+      ],
+      "unauthorizedClaimDelivered": false
+    }
+  ],
+  "authority": {
+    "price": "Product/PriceList/commercial snapshot",
+    "currency": "PriceList/commercial snapshot",
+    "payment": "approved commercial policy",
+    "discountPromotion": "active approved offer",
+    "timeline": "approved delivery policy/offer",
+    "availability": "approved operational state",
+    "handoff": "backend handoff guard",
+    "actions": "executed backend operation"
+  },
+  "integrationEvidence": {
+    "providerFakes": "src/auto-replies/auto-reply.service.spec.ts",
+    "database": "test/conversation-learning.integration-spec.ts",
+    "providerCallsExternal": 0,
+    "filteredItemExposed": false,
+    "commercialSnapshotMutated": false
+  },
+  "latency": {
+    "warmupPerSeries": 100,
+    "threshold": "THRESHOLD_NOT_DEFINED",
+    "selectorMixed": {
+      "sampleSize": 500,
+      "minMs": 0.1936999999999216,
+      "maxMs": 0.56899999999996,
+      "meanMs": 0.20689720000000192,
+      "medianMs": 0.19849999999996726,
+      "p50Ms": 0.19849999999996726,
+      "p95Ms": 0.23479999999995016
+    },
+    "postEngineRepair": {
+      "sampleSize": 500,
+      "minMs": 0.010199999999940701,
+      "maxMs": 0.1674000000000433,
+      "meanMs": 0.011789399999998295,
+      "medianMs": 0.010999999999967258,
+      "p50Ms": 0.010999999999967258,
+      "p95Ms": 0.013500000000021828
+    }
+  },
+  "violations": [],
+  "migrations": {
+    "prismaSchemaChanged": false,
+    "newMigrationDirectories": 0,
+    "required": false
+  },
+  "tests": "73 unit suites / 1194 cases passed; 1 isolated PostgreSQL-Redis integration suite / 41 cases passed",
+  "externalTraffic": {
+    "geminiReviewer": 0,
+    "geminiConversational": 0,
+    "nous": 0,
+    "meta": 0,
+    "whatsApp": 0
+  }
+}

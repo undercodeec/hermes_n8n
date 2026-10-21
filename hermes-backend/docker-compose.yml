@@ -20,9 +20,11 @@ services:
         source: /etc/hermes/secrets/google-adc.json
         target: /run/secrets/google-adc.json
         read_only: true
+      - hermes_backups:/var/lib/hermes/backups
     networks:
-      - default
-      - hermes_client_api
+      default:
+      hermes_client_api:
+        ipv4_address: 172.31.250.11
     ports:
       - '127.0.0.1:3003:3003'
     depends_on:
@@ -46,6 +48,20 @@ services:
     healthcheck:
       test:
         ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d "$${POSTGRES_DB}"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  restore-postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    profiles: [retention-check]
+    env_file:
+      - ${RESTORE_POSTGRES_ENV_FILE:-/etc/hermes/restore-postgres.env}
+    volumes:
+      - hermes_restore_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U "$${POSTGRES_USER}" -d postgres']
       interval: 10s
       timeout: 5s
       retries: 5
@@ -97,6 +113,10 @@ services:
 
 volumes:
   hermes_pgdata:
+    driver: local
+  hermes_backups:
+    driver: local
+  hermes_restore_pgdata:
     driver: local
   hermes_redis_data:
     driver: local

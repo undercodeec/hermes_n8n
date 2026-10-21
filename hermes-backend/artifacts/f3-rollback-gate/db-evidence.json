@@ -1,0 +1,125 @@
+{
+  "fixtureVersion": "f3-rollback-v1",
+  "before": {
+    "learning": {
+      "count": 4,
+      "hash": "0b0994a9ec8060982585cd64602b2a125fafec00b5ce96acdd67dc010e892ead",
+      "statuses": [
+        "ACTIVE",
+        "RETIRED",
+        "PROPOSED",
+        "REJECTED"
+      ]
+    },
+    "evidence": {
+      "count": 4,
+      "hash": "6d0a78167e1f562ba89f071e25ab31a765f020302bbf3d89e14ed86a7bfe4942"
+    },
+    "audits": {
+      "count": 3,
+      "hash": "2483893495eb8895df85293376b94f7682ccc6bf036c2302d3d7013d57ebcec3"
+    },
+    "reviews": {
+      "count": 1,
+      "hash": "30ef72f84966011e738ed510d9a9eb134e88c6c6b4b2ac05dd6123346970978b"
+    },
+    "summary": "bab4f71941b3ee3bfba6b9ef42ab054ac5e364e9461a090e24f10d51e1516949",
+    "deliveries": {
+      "count": 5,
+      "hash": "93afe89c8f25b17892b10cbc691f3e755ebd24a987eabd303b2cf4d72bad2707",
+      "statuses": [
+        "SUPPRESSED",
+        "REJECTED",
+        "PREPARED",
+        "CONFIRMED",
+        "AMBIGUOUS"
+      ]
+    },
+    "commercial": {
+      "products": "b74ecabe60b79189aad1993c268968cccbe63be5b92b2cfe6e56728c9187330f",
+      "prices": "c7f3d9c3d3a39829f5354bb1da31d55eb44e65502ccbb51fc2d3989285672bba"
+    }
+  },
+  "afterOff": {
+    "learning": {
+      "count": 4,
+      "hash": "0b0994a9ec8060982585cd64602b2a125fafec00b5ce96acdd67dc010e892ead",
+      "statuses": [
+        "ACTIVE",
+        "RETIRED",
+        "PROPOSED",
+        "REJECTED"
+      ]
+    },
+    "evidence": {
+      "count": 4,
+      "hash": "6d0a78167e1f562ba89f071e25ab31a765f020302bbf3d89e14ed86a7bfe4942"
+    },
+    "audits": {
+      "count": 3,
+      "hash": "2483893495eb8895df85293376b94f7682ccc6bf036c2302d3d7013d57ebcec3"
+    },
+    "reviews": {
+      "count": 1,
+      "hash": "30ef72f84966011e738ed510d9a9eb134e88c6c6b4b2ac05dd6123346970978b"
+    },
+    "summary": "bab4f71941b3ee3bfba6b9ef42ab054ac5e364e9461a090e24f10d51e1516949",
+    "deliveries": {
+      "count": 5,
+      "hash": "93afe89c8f25b17892b10cbc691f3e755ebd24a987eabd303b2cf4d72bad2707",
+      "statuses": [
+        "SUPPRESSED",
+        "REJECTED",
+        "PREPARED",
+        "CONFIRMED",
+        "AMBIGUOUS"
+      ]
+    },
+    "commercial": {
+      "products": "b74ecabe60b79189aad1993c268968cccbe63be5b92b2cfe6e56728c9187330f",
+      "prices": "c7f3d9c3d3a39829f5354bb1da31d55eb44e65502ccbb51fc2d3989285672bba"
+    }
+  },
+  "historicalTraceHash": "dd4ebd55ce7f61cf4ee0a0be05a9a9775d0bcaf385c8636b32d740d14fdf8cf2",
+  "selectedOn": [
+    {
+      "id": "238f0bab-5d26-4907-8792-44cc95645424",
+      "version": 1
+    }
+  ],
+  "selectedOff": [],
+  "selectedAgain": [
+    {
+      "id": "238f0bab-5d26-4907-8792-44cc95645424",
+      "version": 1
+    }
+  ],
+  "redis": {
+    "keyCountBefore": 64,
+    "keyCountAfter": 64,
+    "keyHashBefore": "27149d833d91aac99f307f18358d57b4ed22a2215347be75a12b3eb3c345633f",
+    "keyHashAfter": "27149d833d91aac99f307f18358d57b4ed22a2215347be75a12b3eb3c345633f"
+  },
+  "selectorSamplesMs": [
+    4.5020999999997,
+    4.313899999999194,
+    3.6193999999995867,
+    3.5337000000017724,
+    3.9857000000010885,
+    3.1154999999998836,
+    2.856600000000981,
+    2.876699999998891,
+    2.9346000000005006,
+    3.3048999999991793,
+    2.9791999999997643,
+    3.129000000000815,
+    3.52809999999954,
+    3.4732999999996537,
+    3.5392999999985477,
+    3.112200000001394,
+    2.9205000000001746,
+    2.858799999999974,
+    2.9112000000004628,
+    2.9294000000008964
+  ]
+}

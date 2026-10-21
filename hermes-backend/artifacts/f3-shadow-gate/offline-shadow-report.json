@@ -1,0 +1,305 @@
+{
+  "gate": "F3_SHADOW_GATE",
+  "mode": "OFFLINE",
+  "baseCommit": "231b11954b53d3a299e9dc98dee8048ce2e2e0c9",
+  "evaluatedHead": "231b11954b53d3a299e9dc98dee8048ce2e2e0c9",
+  "fixtureVersion": "f3-shadow-synthetic-v1",
+  "fixtureSha256": "c20f2967621a6144724c97c8d9f4fd12b704829553031219b9419ac8c7501188",
+  "engines": [
+    "gemini_direct",
+    "nous_hermes"
+  ],
+  "cases": [
+    {
+      "name": "active_relevant",
+      "expected": [
+        "safe"
+      ],
+      "observed": [
+        "safe"
+      ],
+      "deterministic": true
+    },
+    {
+      "name": "active_irrelevant",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "wrong_service",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "wrong_market",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "expired",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "retired",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "rejected",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "proposed",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "no_evidence",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "high_risk",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "commercial_conflict",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "pii_name",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "pii_email",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "pii_phone",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "pii_company",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "pii_budget",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "pii_conversation_id",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "prompt_injection",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "one_match",
+      "expected": [
+        "one"
+      ],
+      "observed": [
+        "one"
+      ],
+      "deterministic": true
+    },
+    {
+      "name": "three_matches",
+      "expected": [
+        "a",
+        "b",
+        "c"
+      ],
+      "observed": [
+        "a",
+        "b",
+        "c"
+      ],
+      "deterministic": true
+    },
+    {
+      "name": "over_three_matches",
+      "expected": [
+        "a",
+        "b",
+        "c"
+      ],
+      "observed": [
+        "a",
+        "b",
+        "c"
+      ],
+      "deterministic": true
+    },
+    {
+      "name": "zero_matches",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "price",
+      "expected": [
+        "price"
+      ],
+      "observed": [
+        "price"
+      ],
+      "deterministic": true
+    },
+    {
+      "name": "payment",
+      "expected": [
+        "payment"
+      ],
+      "observed": [
+        "payment"
+      ],
+      "deterministic": true
+    },
+    {
+      "name": "handoff",
+      "expected": [
+        "handoff"
+      ],
+      "observed": [
+        "handoff"
+      ],
+      "deterministic": true
+    },
+    {
+      "name": "normal_information",
+      "expected": [
+        "info"
+      ],
+      "observed": [
+        "info"
+      ],
+      "deterministic": true
+    },
+    {
+      "name": "content_budget",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    },
+    {
+      "name": "database_failure",
+      "expected": [],
+      "observed": [],
+      "deterministic": true
+    }
+  ],
+  "queryBound": {
+    "candidateTake": 100,
+    "evidenceTake": 1,
+    "selectedMax": 3,
+    "capturedCandidateRows": 10,
+    "indexes": [
+      "learning_items_fingerprint_version_key",
+      "learning_items_pkey",
+      "learning_items_status_serviceCode_market_validUntil_idx"
+    ]
+  },
+  "parity": {
+    "geminiRequest": "PASS",
+    "nousRequest": "PASS",
+    "geminiOutput": "PASS",
+    "nousOutput": "PASS",
+    "verifiedBy": "src/learning/f3-shadow-engine-parity.spec.ts and src/auto-replies/auto-reply.service.spec.ts",
+    "fakeProviderCalls": {
+      "gemini": {
+        "control": 1,
+        "shadow": 1
+      },
+      "nous": {
+        "control": 1,
+        "shadow": 1
+      }
+    }
+  },
+  "sideEffects": {
+    "before": {
+      "reviews": 1,
+      "items": 18,
+      "evidence": 17,
+      "deliveries": 1
+    },
+    "after": {
+      "reviews": 1,
+      "items": 18,
+      "evidence": 17,
+      "deliveries": 1
+    },
+    "unchanged": true,
+    "queueAdds": 0
+  },
+  "latency": {
+    "warmupPerSeries": 10,
+    "threshold": "THRESHOLD_NOT_DEFINED",
+    "selectorDb": {
+      "sampleSize": 100,
+      "minMs": 2.728599999999915,
+      "maxMs": 3.718599999999924,
+      "meanMs": 2.9837430000000063,
+      "medianMs": 2.956450000000018,
+      "p50Ms": 2.9546000000000276,
+      "p95Ms": 3.3562999999999192
+    },
+    "selectorFake": {
+      "sampleSize": 100,
+      "minMs": 0.3267000000000735,
+      "maxMs": 0.8994000000000142,
+      "meanMs": 0.3605720000000042,
+      "medianMs": 0.3447999999999638,
+      "p50Ms": 0.3446999999998752,
+      "p95Ms": 0.40840000000002874
+    },
+    "shadowFlowFake": {
+      "sampleSize": 100,
+      "minMs": 0.33910000000014406,
+      "maxMs": 0.6976000000001932,
+      "meanMs": 0.37044899999999414,
+      "medianMs": 0.3546999999998661,
+      "p50Ms": 0.3545999999998912,
+      "p95Ms": 0.41869999999994434
+    }
+  },
+  "externalTraffic": {
+    "geminiReviewer": 0,
+    "geminiConversational": 0,
+    "nous": 0,
+    "meta": 0,
+    "whatsApp": 0
+  },
+  "tests": "72 unit suites / 1144 cases passed; 1 isolated PostgreSQL-Redis integration suite / 40 cases passed"
+}
