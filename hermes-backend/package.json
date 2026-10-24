@@ -54,7 +54,7 @@
     "google-auth-library": "^10.9.1",
     "googleapis": "^182.0.0",
     "ioredis": "^5.11.1",
-    "multer": "2.4.0",
+    "multer": "2.5.0",
     "nestjs-cls": "^6.2.1",
     "passport": "^0.7.0",
     "passport-jwt": "^4.0.1",
@@ -93,6 +93,7 @@
     "@nestjs/swagger": {
       "js-yaml": "5.4.1"
     },
+    "multer": "2.5.0",
     "follow-redirects": "1.16.1",
     "proxy-addr": "2.0.8"
   },
