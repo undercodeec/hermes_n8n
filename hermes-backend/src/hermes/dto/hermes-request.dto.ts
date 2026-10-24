@@ -1,6 +1,7 @@
 import type { HermesDiagnostic } from '../hermes-diagnostics';
 import type { CommercialSnapshot } from '../commercial-authority.service';
 import type { ApprovedLearning } from '../../learning/learning-retrieval.service';
+import type { F3CallTrace, F3GeminiBudget } from '../f3-gemini-budget';
 
 export type CommercialProfile = {
   market?: 'EC' | 'ES';
@@ -99,6 +100,9 @@ export class HermesRequestDto {
     processingToken: string;
     generationToken: string;
   };
+  /** Provider inbound timestamp plus 24 hours, calculated by AutoReply. */
+  canaryServiceWindowExpiresAt?: string;
+  canaryReceivedAt?: string;
   currentIntent?: string;
   conversationGuidance?: ConversationGuidance;
   pendingQuestions?: string[];
@@ -117,6 +121,8 @@ export class HermesRequestDto {
 
 export class HermesResponseDto {
   response: string;
+  f3CapsBudget?: F3GeminiBudget;
+  f3CallTrace?: F3CallTrace;
   /** Present only when the provider boundary was observed with approved learning in the request. */
   learningExposed?: Array<{ id: string; version: number }>;
   tokensUsed?: number;

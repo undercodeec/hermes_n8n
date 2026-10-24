@@ -3,6 +3,12 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios, { AxiosInstance } from 'axios';
 import { createHash } from 'crypto';
+import {
+  F3CallTrace,
+  F3GeminiBudget,
+  parseF3EstimatedBudget,
+  parseF3GeminiBudget,
+} from './f3-gemini-budget';
 import { PrismaService } from '../prisma/prisma.service';
 import { InboundTurnStatus } from '@prisma/client';
 import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
@@ -55,11 +61,24 @@ type ChatCompletionResponse = {
     finish_reason?: string | null;
   }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
+  f3CallTrace?: F3CallTrace;
 };
 
 class CanaryDispatchDeniedError extends Error {
   constructor() {
     super('CANARY_GEMINI_DISPATCH_DENIED');
+  }
+}
+
+class CanaryCapsBlockError extends Error {
+  constructor(
+    readonly code:
+      | 'INPUT_12000_NOT_ENFORCEABLE'
+      | 'COST_CAP_NOT_ENFORCEABLE'
+      | 'OUTPUT_1500_NOT_ENFORCEABLE'
+      | 'F3_NATIVE_GENERATION_UNAVAILABLE',
+  ) {
+    super(code);
   }
 }
 
@@ -100,6 +119,7 @@ function safeGeminiLogFields(error: unknown, invalidResponse = false) {
 export class HermesService {
   private readonly logger = new Logger(HermesService.name);
   private readonly httpClient: AxiosInstance;
+  private readonly nativeClient: AxiosInstance;
   private readonly model: string;
   private readonly promptVersion: string;
 
@@ -191,6 +211,19 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       },
       timeout: 60000,
     });
+    this.nativeClient = axios.create({
+      baseURL: 'https://generativelanguage.googleapis.com/v1beta',
+      headers: {
+        'x-goog-api-key': this.configService.get<string>(
+          'F3_GEMINI_API_KEY',
+          '',
+        ),
+        'Content-Type': 'application/json',
+      },
+      timeout: 60000,
+      maxRedirects: 0,
+      transformRequest: [(data: string) => data],
+    });
   }
 
   getProviderModel(): string {
@@ -207,6 +240,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     const conversationRepair = this.conversationRepairResponse(request);
     if (conversationRepair) return conversationRepair;
     let providerReached = false;
+    const f3StartedAt = Date.now();
     try {
       const businessContext = await this.loadBusinessContext(request);
       const contextParts: string[] = [];
@@ -300,6 +334,106 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       if (this.structuredOutputEnabled()) {
         body.response_format = this.responseFormat();
       }
+      const canaryCapsEnabled =
+        Boolean(request.singleGenerationCanary) &&
+        this.configService.get<string>('F3_GEMINI_CAPS_ENABLED', 'false') ===
+          'true';
+      const effectiveMaxOutputTokens = canaryCapsEnabled
+        ? Math.min(maxOutputTokens, 1500)
+        : maxOutputTokens;
+      let nativeRequest:
+        | {
+            serialized: string;
+            hash: string;
+            budget: F3GeminiBudget;
+            count: number;
+            sourceMessageId: string;
+          }
+        | undefined;
+      if (canaryCapsEnabled) {
+        const mode = this.configService.get<string>(
+          'F3_GEMINI_BUDGET_MODE',
+          'hard',
+        );
+        const budget =
+          mode === 'estimated'
+            ? parseF3EstimatedBudget(
+                this.configService.get('F3_GEMINI_ESTIMATE_JSON'),
+                this.model,
+                request.conversationId,
+                this.configService.get<string>(
+                  'F3_SINGLE_GENERATION_CANARY_CONVERSATION_ID',
+                  '',
+                ),
+                this.configService.get<string>(
+                  'F3_GEMINI_CANARY_WINDOW_START_UTC',
+                  '',
+                ),
+                request.canaryReceivedAt,
+                request.canaryServiceWindowExpiresAt,
+              )
+            : mode === 'hard'
+              ? parseF3GeminiBudget(
+                  this.configService.get('F3_GEMINI_BUDGET_JSON'),
+                  this.model,
+                  request.conversationId,
+                  request.canaryServiceWindowExpiresAt,
+                )
+              : undefined;
+        if (!budget || !this.configService.get<string>('F3_GEMINI_API_KEY', ''))
+          throw new CanaryCapsBlockError('COST_CAP_NOT_ENFORCEABLE');
+        if (!/^gemini-[a-z0-9.-]+$/.test(this.model))
+          throw new CanaryCapsBlockError('INPUT_12000_NOT_ENFORCEABLE');
+        const nativeBody = {
+          systemInstruction: { parts: [{ text: messages[0].content }] },
+          contents: messages.slice(1).map((message) => ({
+            role: message.role === 'assistant' ? 'model' : 'user',
+            parts: [{ text: message.content }],
+          })),
+          generationConfig: {
+            maxOutputTokens: effectiveMaxOutputTokens,
+          },
+        };
+        const serialized = JSON.stringify(nativeBody);
+        const hash = createHash('sha256').update(serialized).digest('hex');
+        let count: number;
+        try {
+          const response = await this.nativeClient.post<{
+            totalTokens?: unknown;
+          }>(
+            `/models/${this.model}:countTokens`,
+            `{"generateContentRequest":{"model":"models/${this.model}",${serialized.slice(1)}}`,
+          );
+          count = response.data?.totalTokens as number;
+        } catch {
+          throw new CanaryCapsBlockError('INPUT_12000_NOT_ENFORCEABLE');
+        }
+        const countLimit = budget.mode === 'ESTIMATED' ? 10000 : 12000;
+        if (!Number.isSafeInteger(count) || count <= 0 || count > countLimit)
+          throw new CanaryCapsBlockError('INPUT_12000_NOT_ENFORCEABLE');
+        if (
+          Date.parse(budget.validUntil) <= Date.now() ||
+          Date.parse(budget.serviceWindowExpiresAt) <= Date.now()
+        )
+          throw new CanaryCapsBlockError('COST_CAP_NOT_ENFORCEABLE');
+        this.logger.log(
+          JSON.stringify({
+            event: 'f3_native_count',
+            model: this.model,
+            count,
+            payloadSha256: hash,
+            conversationId: request.conversationId,
+            correlationId: request.correlationId,
+          }),
+        );
+        nativeRequest = {
+          serialized,
+          hash,
+          budget,
+          count,
+          sourceMessageId: request.correlationId ?? '',
+        };
+      }
       await this.reserveProviderDispatch(request);
       const maxAttempts = request.singleGenerationCanary
         ? 1
@@ -311,6 +445,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       let parsedResponse: ParsedHermesResponse | undefined;
       let promptTokens = 0;
       let completionTokens = 0;
+      let f3CallTrace: F3CallTrace | undefined;
       let retryInstruction: string | undefined;
 
       for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
@@ -322,17 +457,24 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
             ]
           : messages;
         try {
-          const response = await this.httpClient.post<ChatCompletionResponse>(
-            '/chat/completions',
-            {
-              ...body,
-              messages: attemptMessages,
-              max_tokens:
-                attempt === 1 ? maxOutputTokens : retryMaxOutputTokens,
-            },
-            request.singleGenerationCanary ? { maxRedirects: 0 } : undefined,
-          );
+          const response = nativeRequest
+            ? await this.nativeCompletion(nativeRequest)
+            : await this.httpClient.post<ChatCompletionResponse>(
+                '/chat/completions',
+                {
+                  ...body,
+                  messages: attemptMessages,
+                  max_tokens:
+                    attempt === 1
+                      ? effectiveMaxOutputTokens
+                      : retryMaxOutputTokens,
+                },
+                request.singleGenerationCanary
+                  ? { maxRedirects: 0 }
+                  : undefined,
+              );
           providerReached = true;
+          f3CallTrace = response.data.f3CallTrace;
           const choice = response.data.choices?.[0];
           promptTokens += response.data.usage?.prompt_tokens || 0;
           completionTokens += response.data.usage?.completion_tokens || 0;
@@ -443,6 +585,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       );
       return {
         ...constrainedResponse,
+        ...(nativeRequest ? { f3CapsBudget: nativeRequest.budget } : {}),
+        ...(f3CallTrace ? { f3CallTrace } : {}),
         ...(providerReached && request.approvedLearning?.length
           ? {
               learningExposed: request.approvedLearning.map(
@@ -454,9 +598,37 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
             }
           : {}),
         tokensUsed,
-        costEstimate: this.costEstimate(promptTokens, completionTokens),
+        costEstimate: f3CallTrace
+          ? f3CallTrace.estimatedGeminiUsd
+          : this.costEstimate(promptTokens, completionTokens),
       };
     } catch (error: unknown) {
+      if (error instanceof CanaryCapsBlockError) {
+        this.logger.warn(
+          JSON.stringify({
+            event: 'f3_native_blocked',
+            sourceMessageId: request.correlationId ?? null,
+            model: this.model,
+            durationMs: Date.now() - f3StartedAt,
+            errorCode: error.code,
+          }),
+        );
+        return {
+          response: '',
+          tokensUsed: 0,
+          costEstimate: 0,
+          detectedIntent: 'error',
+          nextAction: 'sin_accion',
+          diagnostic: {
+            category: 'CONTEXT_ERROR',
+            code: error.code,
+            summary: '',
+            attempts: 0,
+            recovered: false,
+            requiresHumanReview: true,
+          },
+        };
+      }
       if (error instanceof CanaryDispatchDeniedError) throw error;
       const invalidProviderResponse =
         error instanceof InvalidProviderResponseError;
@@ -506,6 +678,110 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     }
   }
 
+  private async nativeCompletion(request: {
+    serialized: string;
+    hash: string;
+    budget: F3GeminiBudget;
+    count: number;
+    sourceMessageId: string;
+  }): Promise<{ data: ChatCompletionResponse }> {
+    if (
+      createHash('sha256').update(request.serialized).digest('hex') !==
+      request.hash
+    )
+      throw new CanaryCapsBlockError('INPUT_12000_NOT_ENFORCEABLE');
+    if (
+      Date.parse(request.budget.validUntil) <= Date.now() ||
+      Date.parse(request.budget.serviceWindowExpiresAt) <= Date.now()
+    )
+      throw new CanaryCapsBlockError('COST_CAP_NOT_ENFORCEABLE');
+    const model = request.budget.model;
+    let data: {
+      responseId?: unknown;
+      modelVersion?: unknown;
+      candidates?: Array<{
+        content?: { parts?: Array<{ text?: string }> };
+        finishReason?: string;
+      }>;
+      usageMetadata?: {
+        promptTokenCount?: number;
+        candidatesTokenCount?: number;
+        thoughtsTokenCount?: number;
+      };
+    };
+    const startedAt = Date.now();
+    try {
+      ({ data } = await this.nativeClient.post<typeof data>(
+        `/models/${model}:generateContent`,
+        request.serialized,
+      ));
+    } catch {
+      throw new CanaryCapsBlockError('F3_NATIVE_GENERATION_UNAVAILABLE');
+    }
+    if (data.modelVersion !== model && data.modelVersion !== `models/${model}`)
+      throw new CanaryCapsBlockError('INPUT_12000_NOT_ENFORCEABLE');
+    const usage = data.usageMetadata;
+    const input = usage?.promptTokenCount;
+    const visible = usage?.candidatesTokenCount;
+    const thoughts = usage?.thoughtsTokenCount ?? 0;
+    if (
+      ![input, visible, thoughts].every(
+        (n) => Number.isSafeInteger(n) && Number(n) >= 0,
+      )
+    )
+      throw new CanaryCapsBlockError('OUTPUT_1500_NOT_ENFORCEABLE');
+    if (Number(input) > 12000 || Number(visible) + Number(thoughts) > 1500)
+      throw new CanaryCapsBlockError('OUTPUT_1500_NOT_ENFORCEABLE');
+    const candidate = data.candidates?.[0];
+    if (
+      !candidate ||
+      data.candidates?.length !== 1 ||
+      candidate.finishReason !== 'STOP'
+    )
+      throw new CanaryCapsBlockError('F3_NATIVE_GENERATION_UNAVAILABLE');
+    const content = candidate.content?.parts
+      ?.map((part) => part.text || '')
+      .join('');
+    if (!content)
+      throw new CanaryCapsBlockError('F3_NATIVE_GENERATION_UNAVAILABLE');
+    const requestId =
+      typeof data.responseId === 'string' &&
+      /^[a-zA-Z0-9_-]{1,128}$/.test(data.responseId)
+        ? data.responseId
+        : null;
+    const trace: F3CallTrace = {
+      requestId,
+      sourceMessageId: request.sourceMessageId,
+      model,
+      countTokenCount: request.count,
+      promptTokenCount: Number(input),
+      candidatesTokenCount: Number(visible),
+      thoughtsTokenCount: Number(thoughts),
+      countUsageDelta: Number(input) - request.count,
+      durationMs: Date.now() - startedAt,
+      estimatedGeminiUsd:
+        (Number(input) * request.budget.inputUsdPerMillion +
+          (Number(visible) + Number(thoughts)) *
+            request.budget.outputUsdPerMillion) /
+        1_000_000,
+      rateSourceUrl: request.budget.sourceUrl,
+      inputUsdPerMillion: request.budget.inputUsdPerMillion,
+      outputUsdPerMillion: request.budget.outputUsdPerMillion,
+      metaBspUsd: null,
+    };
+    this.logger.log(JSON.stringify({ event: 'f3_native_usage', ...trace }));
+    return {
+      data: {
+        choices: [{ message: { content }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: input,
+          completion_tokens: Number(visible) + Number(thoughts),
+        },
+        f3CallTrace: trace,
+      },
+    };
+  }
+
   private async reserveProviderDispatch(
     request: HermesRequestDto,
   ): Promise<void> {
@@ -525,7 +801,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         throw new CanaryDispatchDeniedError();
       // This update is the physical HTTP dispatch reservation. A replay, crash,
       // timeout or duplicate worker cannot reserve the same source again.
-      const reserved = await this.prisma.inboundTurn.updateMany({
+      const reservation = {
         where: {
           id: claim.turnId,
           conversationId: request.conversationId,
@@ -540,7 +816,24 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           status: InboundTurnStatus.PROCESSING,
         },
         data: { providerDispatchReservedAt: new Date() },
-      });
+      } as const;
+      const reserved =
+        this.configService.get<string>('F3_GEMINI_CAPS_ENABLED', 'false') ===
+        'true'
+          ? await this.prisma.$transaction(async (tx) => {
+              await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${request.conversationId!}))`;
+              const earlier = await tx.inboundTurn.findFirst({
+                where: {
+                  conversationId: request.conversationId,
+                  providerDispatchReservedAt: { not: null },
+                  id: { not: claim.turnId },
+                },
+                select: { id: true },
+              });
+              if (earlier) throw new CanaryDispatchDeniedError();
+              return tx.inboundTurn.updateMany(reservation);
+            })
+          : await this.prisma.inboundTurn.updateMany(reservation);
       if (reserved.count !== 1) throw new CanaryDispatchDeniedError();
       return;
     }

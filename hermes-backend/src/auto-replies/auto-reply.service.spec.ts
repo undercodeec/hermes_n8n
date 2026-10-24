@@ -541,6 +541,83 @@ describe('AutoReplyService', () => {
     expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
   });
 
+  it('suppresses the Gemini caps diagnostic without preparing or sending a Meta batch', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: {
+        response: '',
+        diagnostic: {
+          category: 'CONTEXT_ERROR',
+          code: 'COST_CAP_NOT_ENFORCEABLE',
+          summary: '',
+          attempts: 0,
+          recovered: false,
+          requiresHumanReview: true,
+        },
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.deliveries.recordSuppressedInference).toHaveBeenCalledWith(
+      expect.objectContaining({ reasonCode: 'COST_CAP_NOT_ENFORCEABLE' }),
+    );
+    expect(harness.deliveries.prepareBatch).not.toHaveBeenCalled();
+    expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('persists a bounded F3 delivery budget with every prepared part', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'Le ayudo.' },
+    });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({ response: 'Le ayudo.' }),
+      f3CapsBudget: {
+        maxParts: 1,
+        upperBoundUsd: 0.2,
+        validUntil: new Date(Date.now() + 60_000).toISOString(),
+        serviceWindowExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.deliveries.prepareBatch).toHaveBeenCalledTimes(1);
+    expect(
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].metadata
+        .f3CapsBudget.maxParts,
+    ).toBe(1);
+    expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks F3 output exceeding the reserved physical part count before Meta', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'A '.repeat(600) },
+    });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({ response: 'A '.repeat(600) }),
+      f3CapsBudget: {
+        maxParts: 1,
+        upperBoundUsd: 0.2,
+        validUntil: new Date(Date.now() + 60_000).toISOString(),
+        serviceWindowExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.deliveries.recordSuppressedInference).toHaveBeenCalledWith(
+      expect.objectContaining({ reasonCode: 'COST_CAP_NOT_ENFORCEABLE' }),
+    );
+    expect(harness.deliveries.prepareBatch).not.toHaveBeenCalled();
+    expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
   it.each(['gemini_direct', 'nous_hermes'] as const)(
     'keeps the %s turn, output and delivery identical with shadow only',
     async (engineId) => {

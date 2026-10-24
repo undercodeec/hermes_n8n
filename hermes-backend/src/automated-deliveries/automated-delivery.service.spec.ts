@@ -364,6 +364,99 @@ describe('AutomatedDeliveryService', () => {
     expect(store.rows[0].status).toBe('PREPARED');
   });
 
+  it('never retries a canary part after Meta 429', async () => {
+    meta.sendTextMessage.mockRejectedValueOnce(
+      new MetaSendError('DEFINITIVE_REJECTION', true, 429, '429'),
+    );
+    const input = batch('respuesta');
+    input.parts[0].metadata = {
+      f3CapsBudget: {
+        maxParts: 1,
+        upperBoundUsd: 0.2,
+        validUntil: new Date(Date.now() + 60_000).toISOString(),
+        serviceWindowExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    };
+    await service.prepareBatch(input);
+    await service.deliverPreparedBatch('inbound-1');
+    await service.recoverBatch('inbound-1');
+    expect(store.rows[0].status).toBe('AMBIGUOUS');
+    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('blocks recovery of an expired canary budget before Meta', async () => {
+    store.rows.push(
+      preparedRow({
+        metadata: {
+          f3CapsBudget: {
+            maxParts: 1,
+            upperBoundUsd: 0.2,
+            validUntil: new Date(Date.now() - 1_000).toISOString(),
+            serviceWindowExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        },
+      }),
+    );
+    await service.recoverBatch('inbound-1');
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('allows one estimated F3 part and blocks it after the activation window', async () => {
+    const caps = {
+      mode: 'ESTIMATED',
+      model: 'gemini-3.8-flash',
+      targetConversationId: 'conversation-1',
+      maxParts: 1,
+      upperBoundUsd: null,
+      validUntil: new Date(Date.now() + 60_000).toISOString(),
+      serviceWindowExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    store.rows.push(preparedRow({ metadata: { f3CapsBudget: caps } }));
+    await service.recoverBatch('inbound-1', true);
+    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(store.rows[0].status).toBe('CONFIRMED');
+
+    meta.sendTextMessage.mockClear();
+    store.rows = [
+      preparedRow({
+        metadata: {
+          f3CapsBudget: {
+            ...caps,
+            validUntil: new Date(Date.now() - 1_000).toISOString(),
+          },
+        },
+      }),
+    ];
+    await service.recoverBatch('inbound-1', true);
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(store.rows[0].status).toBe('SUPPRESSED');
+  });
+
+  it('does not dispatch a canary PREPARED part with an earlier attempt', async () => {
+    store.rows.push(
+      preparedRow({
+        attempts: 1,
+        metadata: {
+          f3CapsBudget: {
+            maxParts: 1,
+            upperBoundUsd: 0.2,
+            validUntil: new Date(Date.now() + 60_000).toISOString(),
+            serviceWindowExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+          },
+        },
+      }),
+    );
+    await service.recoverBatch('inbound-1');
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('does not recover a F3 batch missing its persisted budget', async () => {
+    store.rows.push(preparedRow());
+    const result = await service.recoverBatch('inbound-1', true);
+    expect(result?.reasonCode).toBe('COST_CAP_NOT_ENFORCEABLE');
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
   it('marks an expired DISPATCHING claim ambiguous on restart', async () => {
     store.rows.push(expiredDispatchingRow());
     await service.onApplicationBootstrap();

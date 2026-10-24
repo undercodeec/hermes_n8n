@@ -46,6 +46,16 @@ type ClaimResult =
     }
   | { claimed: false; terminal: boolean; reasonCode: string };
 
+type F3DeliveryCaps = {
+  mode?: 'HARD' | 'ESTIMATED';
+  model?: string;
+  targetConversationId?: string;
+  maxParts: number;
+  upperBoundUsd: number | null;
+  validUntil: string;
+  serviceWindowExpiresAt: string;
+};
+
 @Injectable()
 export class AutomatedDeliveryService
   implements OnApplicationBootstrap, OnModuleDestroy
@@ -160,12 +170,42 @@ export class AutomatedDeliveryService
 
   async recoverBatch(
     sourceMessageId: string,
+    requireF3Caps = false,
   ): Promise<AutomatedDeliveryBatchResult | null> {
     const rows = await this.prisma.automatedDelivery.findMany({
       where: { sourceMessageId },
       orderBy: { partIndex: 'asc' },
     });
     if (!rows.length) return null;
+    if (requireF3Caps) {
+      const firstCaps = this.f3Caps(rows[0].metadata);
+      if (
+        !firstCaps ||
+        rows.length > firstCaps.maxParts ||
+        rows.some(
+          (row) =>
+            JSON.stringify(this.f3Caps(row.metadata)) !==
+            JSON.stringify(firstCaps),
+        )
+      ) {
+        await this.prisma.automatedDelivery.updateMany({
+          where: { sourceMessageId, status: AutomatedDeliveryStatus.PREPARED },
+          data: {
+            status: AutomatedDeliveryStatus.SUPPRESSED,
+            suppressedAt: new Date(),
+            reasonCode: 'COST_CAP_NOT_ENFORCEABLE',
+          },
+        });
+        return {
+          handled: true,
+          confirmed: rows.filter(
+            (row) => row.status === AutomatedDeliveryStatus.CONFIRMED,
+          ).length,
+          terminal: true,
+          reasonCode: 'COST_CAP_NOT_ENFORCEABLE',
+        };
+      }
+    }
     const result = await this.deliverPreparedBatch(sourceMessageId);
     return { ...result, handled: true };
   }
@@ -218,6 +258,24 @@ export class AutomatedDeliveryService
     });
     if (!operations.length) {
       return { handled: false, confirmed: 0, terminal: false };
+    }
+
+    const firstCaps = this.f3Caps(operations[0].metadata);
+    if (firstCaps && operations.length > firstCaps.maxParts) {
+      await this.prisma.automatedDelivery.updateMany({
+        where: { sourceMessageId, status: AutomatedDeliveryStatus.PREPARED },
+        data: {
+          status: AutomatedDeliveryStatus.SUPPRESSED,
+          suppressedAt: new Date(),
+          reasonCode: 'COST_CAP_NOT_ENFORCEABLE',
+        },
+      });
+      return {
+        handled: true,
+        confirmed: 0,
+        terminal: true,
+        reasonCode: 'COST_CAP_NOT_ENFORCEABLE',
+      };
     }
 
     let confirmed = operations.filter(
@@ -375,15 +433,38 @@ export class AutomatedDeliveryService
           }),
         ]);
 
-      const reasonCode = this.ineligibilityReason({
-        current,
-        conversation,
-        contact,
-        handoff,
-        sourceMessage,
-        latestInbound,
-        now,
-      });
+      const caps = this.f3Caps(current.metadata);
+      const capsReason =
+        caps &&
+        (!Number.isSafeInteger(caps.maxParts) ||
+          current.attempts > 0 ||
+          current.partIndex >= caps.maxParts ||
+          caps.maxParts < 1 ||
+          caps.maxParts > 9 ||
+          (caps.mode === 'ESTIMATED'
+            ? caps.model !== 'gemini-3.8-flash' ||
+              caps.targetConversationId !== current.conversationId ||
+              caps.upperBoundUsd !== null
+            : typeof caps.upperBoundUsd !== 'number' ||
+              !Number.isFinite(caps.upperBoundUsd) ||
+              caps.upperBoundUsd > 1) ||
+          !Number.isFinite(Date.parse(caps.validUntil)) ||
+          Date.parse(caps.validUntil) <= now.getTime() ||
+          !Number.isFinite(Date.parse(caps.serviceWindowExpiresAt)) ||
+          Date.parse(caps.serviceWindowExpiresAt) <= now.getTime())
+          ? 'COST_CAP_NOT_ENFORCEABLE'
+          : undefined;
+      const reasonCode =
+        capsReason ||
+        this.ineligibilityReason({
+          current,
+          conversation,
+          contact,
+          handoff,
+          sourceMessage,
+          latestInbound,
+          now,
+        });
       if (reasonCode) {
         await tx.automatedDelivery.updateMany({
           where: {
@@ -578,7 +659,11 @@ export class AutomatedDeliveryService
   ): Promise<{ retry: boolean; reasonCode: string }> {
     const now = new Date();
     const metaError = error instanceof MetaSendError ? error : null;
-    if (metaError?.retryable && metaError.providerStatus === 429) {
+    if (
+      !this.f3Caps(operation.metadata) &&
+      metaError?.retryable &&
+      metaError.providerStatus === 429
+    ) {
       await this.prisma.automatedDelivery.updateMany({
         where: {
           id: operation.id,
@@ -595,7 +680,9 @@ export class AutomatedDeliveryService
       return { retry: true, reasonCode: metaError.safeCode };
     }
 
-    const rejected = metaError?.outcome === 'DEFINITIVE_REJECTION';
+    const rejected =
+      !this.f3Caps(operation.metadata) &&
+      metaError?.outcome === 'DEFINITIVE_REJECTION';
     const status = rejected
       ? AutomatedDeliveryStatus.REJECTED
       : AutomatedDeliveryStatus.AMBIGUOUS;
@@ -616,6 +703,15 @@ export class AutomatedDeliveryService
     });
     this.logger.error(`Entrega ${status}: ${reasonCode}`);
     return { retry: false, reasonCode };
+  }
+
+  private f3Caps(metadata: unknown): F3DeliveryCaps | undefined {
+    if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata))
+      return undefined;
+    const caps = (metadata as Record<string, unknown>).f3CapsBudget;
+    if (!caps || typeof caps !== 'object' || Array.isArray(caps))
+      return undefined;
+    return caps as F3DeliveryCaps;
   }
 
   private safeError(error: unknown): string {

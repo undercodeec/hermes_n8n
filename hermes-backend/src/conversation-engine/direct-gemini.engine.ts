@@ -32,6 +32,8 @@ export class DirectGeminiEngine implements ConversationEngine {
       conversationId: input.conversationId,
       correlationId: input.inboundMessageId,
       singleGenerationCanary: input.singleGenerationCanary,
+      canaryServiceWindowExpiresAt: input.canaryServiceWindowExpiresAt,
+      canaryReceivedAt: input.canaryReceivedAt,
       currentIntent: input.approvedContext.currentIntent,
       conversationGuidance: input.approvedContext.conversationGuidance,
       pendingQuestions: input.approvedContext.pendingQuestions,
@@ -42,6 +44,8 @@ export class DirectGeminiEngine implements ConversationEngine {
 
     return {
       replyText: response.response,
+      ...(response.f3CapsBudget ? { f3CapsBudget: response.f3CapsBudget } : {}),
+      ...(response.f3CallTrace ? { f3CallTrace: response.f3CallTrace } : {}),
       proposedActions: [{ type: 'none' }],
       engine: this.id,
       providerModel: this.hermes.getProviderModel(),

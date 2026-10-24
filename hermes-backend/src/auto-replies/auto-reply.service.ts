@@ -309,7 +309,11 @@ export class AutoReplyService {
       ReturnType<AutomatedDeliveryService['recoverBatch']>
     >;
     try {
-      recovered = await this.deliveries.recoverBatch(inbound.id);
+      recovered = await this.deliveries.recoverBatch(
+        inbound.id,
+        canaryArmed &&
+          this.config.get<string>('F3_GEMINI_CAPS_ENABLED', 'false') === 'true',
+      );
     } finally {
       await this.reconcileDeliveryProfile(data, inbound.id, inbound);
     }
@@ -630,6 +634,14 @@ export class AutoReplyService {
       conversationId: data.conversationId,
       inboundMessageId: inbound.id,
       ...(canaryBatchClaim ? { singleGenerationCanary: canaryBatchClaim } : {}),
+      ...(canaryBatchClaim
+        ? {
+            canaryServiceWindowExpiresAt: new Date(
+              receivedAt.getTime() + 86_400_000,
+            ).toISOString(),
+            canaryReceivedAt: receivedAt.toISOString(),
+          }
+        : {}),
       customerMessage,
       approvedContext: {
         contactName: conversation.contact.name || 'Cliente',
@@ -678,6 +690,14 @@ export class AutoReplyService {
               ? { promptVersion: engineResult.promptVersion }
               : {}),
             traceId: engineResult.traceId,
+            ...(engineResult.f3CallTrace
+              ? {
+                  f3CallTrace: {
+                    ...engineResult.f3CallTrace,
+                    metaPartsPlanned: 0,
+                  },
+                }
+              : {}),
             ...(engineResult.learningExposed?.length
               ? { learningExposed: engineResult.learningExposed }
               : {}),
@@ -688,6 +708,27 @@ export class AutoReplyService {
         },
         ...(canaryBatchClaim ? ([canaryBatchClaim] as const) : ([] as const)),
       );
+    if (
+      engineResult.engine === 'gemini_direct' &&
+      (engineResult.diagnostic?.code === 'INPUT_12000_NOT_ENFORCEABLE' ||
+        engineResult.diagnostic?.code === 'COST_CAP_NOT_ENFORCEABLE' ||
+        engineResult.diagnostic?.code === 'OUTPUT_1500_NOT_ENFORCEABLE' ||
+        engineResult.diagnostic?.code === 'F3_NATIVE_GENERATION_UNAVAILABLE')
+    ) {
+      await recordSuppressedInference(engineResult.diagnostic.code);
+      this.logSkip(data, engineResult.diagnostic.code);
+      return;
+    }
+    if (
+      canaryArmed &&
+      this.config.get<string>('F3_GEMINI_CAPS_ENABLED', 'false') === 'true' &&
+      engineResult.engine === 'gemini_direct' &&
+      !engineResult.f3CapsBudget
+    ) {
+      await recordSuppressedInference('COST_CAP_NOT_ENFORCEABLE');
+      this.logSkip(data, 'COST_CAP_NOT_ENFORCEABLE');
+      return;
+    }
     const response: HermesResponseDto = {
       response: engineResult.replyText,
       tokensUsed: engineResult.usage?.totalTokens,
@@ -1199,6 +1240,17 @@ export class AutoReplyService {
         this.positiveInteger('AI_MESSAGE_SPLIT_THRESHOLD', 520),
       ),
     );
+    if (
+      engineResult.f3CapsBudget &&
+      (messageParts.length > engineResult.f3CapsBudget.maxParts ||
+        Date.parse(engineResult.f3CapsBudget.validUntil) <= Date.now() ||
+        Date.parse(engineResult.f3CapsBudget.serviceWindowExpiresAt) <=
+          Date.now())
+    ) {
+      this.logSkip(data, 'COST_CAP_NOT_ENFORCEABLE');
+      await recordSuppressedInference('COST_CAP_NOT_ENFORCEABLE');
+      return;
+    }
     if (messageParts.length > 9) {
       this.logSkip(data, 'TOO_MANY_REPLY_PARTS');
       await recordSuppressedInference('TOO_MANY_REPLY_PARTS');
@@ -1220,6 +1272,7 @@ export class AutoReplyService {
     const modality = this.config.get<string>('HERMES_REPLY_MODALITY', 'mirror');
     const wantsVoice = Boolean(
       data.inboundTurnId &&
+      !engineResult.f3CapsBudget &&
       this.voice &&
       (modality === 'voice' ||
         (modality === 'mirror' &&
@@ -1293,6 +1346,17 @@ export class AutoReplyService {
                   ...(voiceMediaIds[partIndex]
                     ? { voiceMediaId: voiceMediaIds[partIndex] }
                     : {}),
+                  ...(engineResult.f3CapsBudget
+                    ? { f3CapsBudget: engineResult.f3CapsBudget }
+                    : {}),
+                  ...(engineResult.f3CallTrace
+                    ? {
+                        f3CallTrace: {
+                          ...engineResult.f3CallTrace,
+                          metaPartsPlanned: messageParts.length,
+                        },
+                      }
+                    : {}),
                 },
               }
             : {}),
@@ -1334,6 +1398,17 @@ export class AutoReplyService {
                       }
                     : {}),
                   providerModel: engineResult.providerModel,
+                  ...(engineResult.f3CapsBudget
+                    ? { f3CapsBudget: engineResult.f3CapsBudget }
+                    : {}),
+                  ...(engineResult.f3CallTrace
+                    ? {
+                        f3CallTrace: {
+                          ...engineResult.f3CallTrace,
+                          metaPartsPlanned: messageParts.length,
+                        },
+                      }
+                    : {}),
                   ...(engineResult.promptVersion
                     ? { promptVersion: engineResult.promptVersion }
                     : {}),
@@ -1391,6 +1466,17 @@ export class AutoReplyService {
       );
     }
     const sentParts = delivery.confirmed;
+    if (engineResult.f3CallTrace) {
+      this.logger.log(
+        JSON.stringify({
+          event: 'f3_canary_call_outcome',
+          ...engineResult.f3CallTrace,
+          metaPartsPlanned: messageParts.length,
+          metaPartsConfirmed: sentParts,
+          deliveryReasonCode: delivery.reasonCode ?? null,
+        }),
+      );
+    }
     if (sentParts === 0) {
       this.logSkip(data, delivery.reasonCode || 'DELIVERY_NOT_CONFIRMED');
       return;

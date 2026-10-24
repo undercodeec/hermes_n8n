@@ -5,6 +5,7 @@ import type {
 import type { HermesDiagnostic } from '../hermes/hermes-diagnostics';
 import type { CommercialSnapshot } from '../hermes/commercial-authority.service';
 import type { ApprovedLearning } from '../learning/learning-retrieval.service';
+import type { F3CallTrace, F3GeminiBudget } from '../hermes/f3-gemini-budget';
 
 export type ConversationEngineId = 'gemini_direct' | 'nous_hermes';
 
@@ -30,6 +31,8 @@ export interface ConversationTurnInput {
     processingToken: string;
     generationToken: string;
   };
+  canaryServiceWindowExpiresAt?: string;
+  canaryReceivedAt?: string;
   customerMessage: string;
   approvedContext: {
     recentMessages: ApprovedConversationMessage[];
@@ -71,6 +74,8 @@ export interface ConversationTurnInput {
 
 export interface ConversationTurnResult {
   replyText: string;
+  f3CapsBudget?: F3GeminiBudget;
+  f3CallTrace?: F3CallTrace;
   /** Conversational WhatsApp messages proposed by the agent, in send order. */
   replyParts?: string[];
   proposedActions: ProposedAction[];
