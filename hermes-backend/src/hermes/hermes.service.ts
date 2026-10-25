@@ -12,6 +12,8 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { InboundTurnStatus } from '@prisma/client';
 import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
+import { activeCanaryRun } from '../auto-replies/canary-run.policy';
+import { InboundTurnService } from '../auto-replies/inbound-turn.service';
 import {
   CommercialProfile,
   HermesRequestDto,
@@ -348,6 +350,9 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         Boolean(request.singleGenerationCanary) &&
         this.configService.get<string>('F3_GEMINI_CAPS_ENABLED', 'false') ===
           'true';
+      const canaryRun = canaryCapsEnabled
+        ? activeCanaryRun(this.configService, request.conversationId ?? '')
+        : null;
       const effectiveMaxOutputTokens = canaryCapsEnabled
         ? Math.min(maxOutputTokens, 1500)
         : maxOutputTokens;
@@ -358,6 +363,9 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
             budget: F3GeminiBudget;
             count: number;
             sourceMessageId: string;
+            canaryRunId?: string;
+            conversationId?: string;
+            hasLearning: boolean;
           }
         | undefined;
       if (canaryCapsEnabled) {
@@ -406,8 +414,19 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         };
         const serialized = JSON.stringify(nativeBody);
         const hash = createHash('sha256').update(serialized).digest('hex');
+        if (canaryRun)
+          await this.persistNativeStage(request.correlationId ?? '', {
+            stage: 'INCLUDED_IN_COUNT_PAYLOAD',
+          });
         let count: number;
         try {
+          if (canaryRun)
+            await this.persistNativeStage(request.correlationId ?? '', {
+              stage: 'COUNT_HTTP_ATTEMPTED',
+              ...(request.approvedLearning?.length
+                ? { exposureStatus: 'UNKNOWN' }
+                : {}),
+            });
           const response = await this.nativeClient.post<{
             totalTokens?: unknown;
           }>(
@@ -415,7 +434,21 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
             `{"generateContentRequest":{"model":"models/${this.model}",${serialized.slice(1)}}`,
           );
           count = response.data?.totalTokens as number;
-        } catch {
+          if (canaryRun)
+            await this.persistNativeStage(request.correlationId ?? '', {
+              stage: 'COUNT_HTTP_RESPONSE_OBSERVED',
+              ...(request.approvedLearning?.length
+                ? { exposureStatus: 'CONFIRMED' }
+                : {}),
+            });
+        } catch (error) {
+          if (canaryRun && axios.isAxiosError(error) && error.response)
+            await this.persistNativeStage(request.correlationId ?? '', {
+              stage: 'COUNT_HTTP_RESPONSE_OBSERVED',
+              ...(request.approvedLearning?.length
+                ? { exposureStatus: 'CONFIRMED' }
+                : {}),
+            });
           throw new CanaryCapsBlockError('INPUT_12000_NOT_ENFORCEABLE');
         }
         const countLimit = budget.mode === 'ESTIMATED' ? 10000 : 12000;
@@ -439,9 +472,26 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         nativeRequest = {
           serialized,
           hash,
-          budget,
+          budget: canaryRun
+            ? {
+                ...budget,
+                validUntil: new Date(
+                  Math.min(
+                    Date.parse(budget.validUntil),
+                    canaryRun.deadline.getTime(),
+                  ),
+                ).toISOString(),
+              }
+            : budget,
           count,
           sourceMessageId: request.correlationId ?? '',
+          ...(canaryRun
+            ? {
+                canaryRunId: canaryRun.id,
+                conversationId: request.conversationId,
+              }
+            : {}),
+          hasLearning: Boolean(request.approvedLearning?.length),
         };
         nativeDiagnosticsStarted = true;
         await this.persistNativeStage(nativeRequest.sourceMessageId, {
@@ -454,6 +504,10 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       if (nativeRequest)
         await this.persistNativeStage(nativeRequest.sourceMessageId, {
           stage: 'DISPATCH_RESERVED',
+        });
+      if (nativeRequest?.canaryRunId)
+        await this.persistNativeStage(nativeRequest.sourceMessageId, {
+          stage: 'INCLUDED_IN_GENERATE_PAYLOAD',
         });
       const maxAttempts = request.singleGenerationCanary
         ? 1
@@ -810,6 +864,9 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     budget: F3GeminiBudget;
     count: number;
     sourceMessageId: string;
+    canaryRunId?: string;
+    conversationId?: string;
+    hasLearning: boolean;
   }): Promise<{ data: ChatCompletionResponse }> {
     if (
       createHash('sha256').update(request.serialized).digest('hex') !==
@@ -819,6 +876,12 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     if (
       Date.parse(request.budget.validUntil) <= Date.now() ||
       Date.parse(request.budget.serviceWindowExpiresAt) <= Date.now()
+    )
+      throw new CanaryCapsBlockError('COST_CAP_NOT_ENFORCEABLE');
+    if (
+      request.canaryRunId &&
+      activeCanaryRun(this.configService, request.conversationId ?? '')?.id !==
+        request.canaryRunId
     )
       throw new CanaryCapsBlockError('COST_CAP_NOT_ENFORCEABLE');
     const model = request.budget.model;
@@ -839,6 +902,11 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     await this.persistNativeStage(request.sourceMessageId, {
       stage: 'HTTP_ATTEMPT_STARTING_LOCAL',
     });
+    if (request.canaryRunId)
+      await this.persistNativeStage(request.sourceMessageId, {
+        stage: 'GENERATE_HTTP_ATTEMPTED',
+        ...(request.hasLearning ? { exposureStatus: 'UNKNOWN' } : {}),
+      });
     let httpStatus: number | undefined;
     try {
       const response = await this.nativeClient.post<typeof data>(
@@ -847,8 +915,18 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       );
       data = response.data;
       httpStatus = response.status ?? 200;
+      if (request.canaryRunId)
+        await this.persistNativeStage(request.sourceMessageId, {
+          stage: 'GENERATE_HTTP_RESPONSE_OBSERVED',
+          ...(request.hasLearning ? { exposureStatus: 'CONFIRMED' } : {}),
+        });
     } catch (error) {
       const detail = safeNativeError(error);
+      if (request.canaryRunId && detail.httpStatus !== undefined)
+        await this.persistNativeStage(request.sourceMessageId, {
+          stage: 'GENERATE_HTTP_RESPONSE_OBSERVED',
+          ...(request.hasLearning ? { exposureStatus: 'CONFIRMED' } : {}),
+        });
       if (detail.httpStatus !== undefined)
         await this.persistNativeStage(request.sourceMessageId, {
           stage: 'HTTP_RESPONSE_OBSERVED',
@@ -1047,19 +1125,33 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       const reserved =
         this.configService.get<string>('F3_GEMINI_CAPS_ENABLED', 'false') ===
         'true'
-          ? await this.prisma.$transaction(async (tx) => {
-              await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${request.conversationId!}))`;
-              const earlier = await tx.inboundTurn.findFirst({
-                where: {
-                  conversationId: request.conversationId,
-                  providerDispatchReservedAt: { not: null },
-                  id: { not: claim.turnId },
-                },
-                select: { id: true },
-              });
-              if (earlier) throw new CanaryDispatchDeniedError();
-              return tx.inboundTurn.updateMany(reservation);
-            })
+          ? activeCanaryRun(this.configService, request.conversationId ?? '')
+            ? {
+                count: (await new InboundTurnService(
+                  this.prisma,
+                  this.configService,
+                ).reserveCanaryRunDispatch({
+                  turnId: claim.turnId,
+                  conversationId: request.conversationId!,
+                  sourceMessageId: request.correlationId,
+                  generationToken: claim.generationToken,
+                }))
+                  ? 1
+                  : 0,
+              }
+            : await this.prisma.$transaction(async (tx) => {
+                await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${request.conversationId!}))`;
+                const earlier = await tx.inboundTurn.findFirst({
+                  where: {
+                    conversationId: request.conversationId,
+                    providerDispatchReservedAt: { not: null },
+                    id: { not: claim.turnId },
+                  },
+                  select: { id: true },
+                });
+                if (earlier) throw new CanaryDispatchDeniedError();
+                return tx.inboundTurn.updateMany(reservation);
+              })
           : await this.prisma.inboundTurn.updateMany(reservation);
       if (reserved.count !== 1) throw new CanaryDispatchDeniedError();
       return;

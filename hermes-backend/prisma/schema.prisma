@@ -417,6 +417,7 @@ model InboundTurn {
   processingAt               DateTime?
   processingToken            String?
   generationSourceMessageId  String?           @unique
+  canaryRunId                String?           @unique @db.Uuid
   generationReservedAt       DateTime?
   generationToken            String?
   generationEngine           String?

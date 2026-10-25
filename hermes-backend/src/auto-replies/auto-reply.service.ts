@@ -5,6 +5,7 @@ import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   ConversationStatus,
+  AutomatedDeliveryStatus,
   InboundTurn,
   HandoffReason,
   MessageDirection,
@@ -55,6 +56,7 @@ import {
   toIncidentMetadata,
 } from '../hermes/hermes-diagnostics';
 import {
+  appendNativeDiagnostic,
   F3NativeDiagnosticEvent,
   safeNativeEvent,
 } from '../hermes/f3-native-diagnostics';
@@ -68,6 +70,7 @@ import { ConversationReviewService } from '../learning/conversation-review.servi
 import { LearningRetrievalService } from '../learning/learning-retrieval.service';
 import { retrievalEnabledForConversation } from '../learning/retrieval-canary-scope';
 import { isSingleGenerationCanaryConversation } from './single-generation-canary.policy';
+import { activeCanaryRun } from './canary-run.policy';
 import { redactPaymentMessageForAi } from '../payments/payment-message-redaction';
 import {
   VoiceProcessingError,
@@ -154,6 +157,18 @@ export class AutoReplyService {
           (message) =>
             message.type === MessageType.AUDIO && message.content === '[Audio]',
         );
+        if (
+          audio.length &&
+          this.config.get<string>('F3_CANARY_RUN_GUARD_ENABLED', 'false') ===
+            'true' &&
+          this.conversationEngine.selectedEngine(data.conversationId) ===
+            'gemini_direct' &&
+          activeCanaryRun(this.config, data.conversationId)
+        ) {
+          this.logSkip(data, 'CANARY_AUDIO_REQUIRES_MANUAL_REVIEW');
+          await this.inboundTurns.complete(turn.id, turn.processingToken!);
+          return;
+        }
         if (audio.length) {
           try {
             if (!this.voice)
@@ -275,6 +290,14 @@ export class AutoReplyService {
       this.config,
       data.conversationId,
     );
+    const canaryRun =
+      canaryArmed &&
+      this.config.get<string>('F3_CANARY_RUN_GUARD_ENABLED', 'false') ===
+        'true' &&
+      this.conversationEngine.selectedEngine(data.conversationId) ===
+        'gemini_direct'
+        ? activeCanaryRun(this.config, data.conversationId)
+        : null;
     const inbound = await this.prisma.message.findUnique({
       where: { id: data.inboundMessageId },
       select: {
@@ -308,6 +331,28 @@ export class AutoReplyService {
           .join('\n')
       : inbound.content || '';
     const customerMessage = redactPaymentMessageForAi(rawCustomerMessage);
+
+    if (canaryRun) {
+      const existing = await this.prisma.automatedDelivery.findFirst({
+        where: { sourceMessageId: inbound.id },
+        select: { id: true },
+      });
+      if (existing) {
+        await this.prisma.automatedDelivery.updateMany({
+          where: {
+            sourceMessageId: inbound.id,
+            status: AutomatedDeliveryStatus.PREPARED,
+          },
+          data: {
+            status: AutomatedDeliveryStatus.SUPPRESSED,
+            suppressedAt: new Date(),
+            reasonCode: 'CANARY_REPLAY_UNCERTAIN',
+          },
+        });
+        this.logSkip(data, 'CANARY_EXISTING_DELIVERY_BATCH');
+        return;
+      }
+    }
 
     let recovered: Awaited<
       ReturnType<AutomatedDeliveryService['recoverBatch']>
@@ -374,6 +419,21 @@ export class AutoReplyService {
     if (await this.hasNewerInbound(data.conversationId, inbound)) {
       this.logSkip(data, 'NEWER_INBOUND');
       return;
+    }
+
+    // Run ownership precedes every branch able to create a reply or notice.
+    if (canaryRun && claimedTurn) {
+      const acquired = await this.inboundTurns!.reserveGeneration({
+        turnId: claimedTurn.id,
+        processingToken: claimedTurn.processingToken!,
+        sourceMessageId: inbound.id,
+        conversationId: data.conversationId,
+        engine: 'gemini_direct',
+      });
+      if (!acquired) {
+        this.logSkip(data, 'CANARY_RUN_RESERVATION_DENIED');
+        return;
+      }
     }
 
     const context = await this.buildConversationContext(
@@ -567,16 +627,27 @@ export class AutoReplyService {
     let approvedLearning: Awaited<
       ReturnType<LearningRetrievalService['select']>
     > = [];
+    let consideredCount = 0;
+    let selectorSelectedCount = 0;
+    let selectionFailed = false;
     if (retrievalEnabled) {
       try {
-        const selectedLearning =
-          (await this.learningRetrieval?.select({
-            customerMessage,
-            serviceCode: context.commercialProfile?.service,
-            market: commercialSnapshot.market,
-            approvedKnowledge,
-            traceId: inbound.id,
-          })) ?? [];
+        const selectionContext = {
+          customerMessage,
+          serviceCode: context.commercialProfile?.service,
+          market: commercialSnapshot.market,
+          approvedKnowledge,
+          traceId: inbound.id,
+        };
+        const traced = canaryRun
+          ? await this.learningRetrieval?.selectWithTrace(selectionContext)
+          : undefined;
+        const selectedLearning = canaryRun
+          ? (traced?.selected ?? [])
+          : ((await this.learningRetrieval?.select(selectionContext)) ?? []);
+        consideredCount = traced?.consideredCount ?? 0;
+        selectorSelectedCount = selectedLearning.length;
+        selectionFailed = canaryRun ? (traced?.selectionFailed ?? true) : false;
         // The first live canary permits at most one eligible item. Multiple
         // matches fail closed rather than silently choosing an arbitrary one.
         if (selectedLearning.length === 1) approvedLearning = selectedLearning;
@@ -588,12 +659,30 @@ export class AutoReplyService {
             }),
           );
       } catch {
+        selectionFailed = true;
         this.logger.warn(
           JSON.stringify({
             event: 'learning_retrieval_fallback',
             reason: 'SELECTOR_ERROR',
           }),
         );
+      }
+    }
+    if (canaryRun) {
+      await appendNativeDiagnostic(this.prisma, inbound.id, {
+        stage: 'SELECTED_FOR_CONTEXT',
+        consideredCount,
+        selectedCount: selectorSelectedCount,
+        learningItems: approvedLearning.map(({ id, version }) => ({
+          id,
+          version,
+        })),
+        selectionFailed,
+        retrievalEnabled,
+      });
+      if (selectionFailed) {
+        this.logSkip(data, 'CANARY_SELECTOR_UNAVAILABLE');
+        return;
       }
     }
     if (
@@ -624,7 +713,7 @@ export class AutoReplyService {
             generationToken: claimedTurn.processingToken!,
           }
         : undefined;
-    if (canaryBatchClaim) {
+    if (canaryBatchClaim && !canaryRun) {
       const acquired = await this.inboundTurns!.reserveGeneration({
         turnId: claimedTurn!.id,
         processingToken: canaryBatchClaim.processingToken,

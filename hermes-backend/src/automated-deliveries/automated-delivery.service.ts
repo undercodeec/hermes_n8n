@@ -3,7 +3,9 @@ import {
   Logger,
   OnApplicationBootstrap,
   OnModuleDestroy,
+  Optional,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import {
   AutomatedDelivery,
   AutomatedDeliveryStatus,
@@ -18,6 +20,7 @@ import { randomUUID } from 'crypto';
 import { MetaSendError, MetaService } from '../meta/meta.service';
 import { whatsappReplyWindow } from '../meta/whatsapp-service-window';
 import { PrismaService } from '../prisma/prisma.service';
+import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
 import {
   AutomatedDeliveryBatchResult,
   PrepareAutomatedDeliveryBatch,
@@ -66,6 +69,7 @@ export class AutomatedDeliveryService
   constructor(
     private readonly prisma: PrismaService,
     private readonly meta: MetaService,
+    @Optional() private readonly config?: ConfigService,
   ) {}
 
   async prepareBatch(
@@ -434,6 +438,14 @@ export class AutomatedDeliveryService
         ]);
 
       const caps = this.f3Caps(current.metadata);
+      const runNoticeBlocked =
+        current.deliveryKind === 'SYSTEM_NOTICE' &&
+        this.config?.get<string>('F3_CANARY_RUN_GUARD_ENABLED', 'false') ===
+          'true' &&
+        isSingleGenerationCanaryConversation(
+          this.config,
+          current.conversationId,
+        );
       const capsReason =
         caps &&
         (!Number.isSafeInteger(caps.maxParts) ||
@@ -455,6 +467,7 @@ export class AutomatedDeliveryService
           ? 'COST_CAP_NOT_ENFORCEABLE'
           : undefined;
       const reasonCode =
+        (runNoticeBlocked ? 'CANARY_RUN_SYSTEM_NOTICE_SUPPRESSED' : null) ||
         capsReason ||
         this.ineligibilityReason({
           current,

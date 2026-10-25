@@ -212,6 +212,16 @@ export class LearningRetrievalService {
   async select(
     context: Omit<LearningSelectionContext, 'now'>,
   ): Promise<ApprovedLearning[]> {
+    return (await this.selectWithTrace(context)).selected;
+  }
+
+  async selectWithTrace(
+    context: Omit<LearningSelectionContext, 'now'>,
+  ): Promise<{
+    selected: ApprovedLearning[];
+    consideredCount: number;
+    selectionFailed: boolean;
+  }> {
     const started = Date.now();
     let phase: 'DB_ERROR' | 'SELECTOR_ERROR' = 'DB_ERROR';
     try {
@@ -287,7 +297,11 @@ export class LearningRetrievalService {
           elapsedMs: Date.now() - started,
         }),
       );
-      return selected;
+      return {
+        selected,
+        consideredCount: candidates.length,
+        selectionFailed: false,
+      };
     } catch {
       this.logger.warn(
         JSON.stringify({
@@ -297,7 +311,7 @@ export class LearningRetrievalService {
           elapsedMs: Date.now() - started,
         }),
       );
-      return [];
+      return { selected: [], consideredCount: 0, selectionFailed: true };
     }
   }
 }

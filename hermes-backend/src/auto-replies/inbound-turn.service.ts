@@ -6,9 +6,11 @@ import {
   InboundTurnStatus,
   MessageDirection,
   MessageSender,
+  Prisma,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { isSingleGenerationCanaryConversation } from './single-generation-canary.policy';
+import { activeCanaryRun, CanaryRun } from './canary-run.policy';
 
 export const AMBIGUOUS_GENERATION = 'CANARY_BLOCKED_AMBIGUOUS_GENERATION';
 
@@ -199,7 +201,11 @@ export class InboundTurnService {
       !isSingleGenerationCanaryConversation(this.config, input.conversationId)
     )
       return false;
-    const reserved = await this.prisma.inboundTurn.updateMany({
+    const run =
+      input.engine === 'gemini_direct'
+        ? activeCanaryRun(this.config, input.conversationId)
+        : null;
+    const reservation = {
       where: {
         id: input.turnId,
         conversationId: input.conversationId,
@@ -213,9 +219,209 @@ export class InboundTurnService {
         generationReservedAt: new Date(),
         generationToken: input.processingToken,
         generationEngine: input.engine,
+        ...(run ? { canaryRunId: run.id } : {}),
+      },
+    } as const;
+    let reserved: { count: number };
+    try {
+      reserved = run
+        ? await this.prisma.$transaction(async (tx) => {
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.conversationId}))`;
+            if (
+              activeCanaryRun(this.config, input.conversationId)?.id !== run.id
+            )
+              return { count: 0 };
+            if (!(await this.runSourceEligible(tx, input, run)))
+              return { count: 0 };
+            if (
+              !(await this.previousCanaryWorkClosed(
+                tx,
+                input.conversationId,
+                input.turnId,
+                input.sourceMessageId,
+              ))
+            )
+              return { count: 0 };
+            return tx.inboundTurn.updateMany(reservation);
+          })
+        : await this.prisma.inboundTurn.updateMany(reservation);
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      )
+        return false;
+      throw error;
+    }
+    return reserved.count === 1;
+  }
+
+  /** Reserve one physical Gemini dispatch after rechecking the run under the conversation lock. */
+  async reserveCanaryRunDispatch(input: {
+    turnId: string;
+    conversationId: string;
+    sourceMessageId: string;
+    generationToken: string;
+  }): Promise<boolean> {
+    const run = activeCanaryRun(this.config, input.conversationId);
+    if (!run) return false;
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${input.conversationId}))`;
+      if (activeCanaryRun(this.config, input.conversationId)?.id !== run.id)
+        return false;
+      if (
+        !(await this.previousCanaryWorkClosed(
+          tx,
+          input.conversationId,
+          input.turnId,
+          input.sourceMessageId,
+        ))
+      )
+        return false;
+      if (
+        await tx.automatedDelivery.findFirst({
+          where: { sourceMessageId: input.sourceMessageId },
+          select: { id: true },
+        })
+      )
+        return false;
+      const latest = await tx.message.findFirst({
+        where: {
+          conversationId: input.conversationId,
+          direction: MessageDirection.INBOUND,
+        },
+        orderBy: { createdAt: 'desc' },
+        select: { id: true },
+      });
+      if (latest?.id !== input.sourceMessageId) return false;
+      const reserved = await tx.inboundTurn.updateMany({
+        where: {
+          id: input.turnId,
+          conversationId: input.conversationId,
+          lastMessageId: input.sourceMessageId,
+          generationSourceMessageId: input.sourceMessageId,
+          generationToken: input.generationToken,
+          processingToken: input.generationToken,
+          generationEngine: 'gemini_direct',
+          generationReservedAt: { not: null },
+          providerDispatchReservedAt: null,
+          generationBlockedAt: null,
+          canaryRunId: run.id,
+          status: InboundTurnStatus.PROCESSING,
+        },
+        data: { providerDispatchReservedAt: new Date() },
+      });
+      return reserved.count === 1;
+    });
+  }
+
+  private async runSourceEligible(
+    tx: Prisma.TransactionClient,
+    input: { turnId: string; conversationId: string; sourceMessageId: string },
+    run: CanaryRun,
+  ): Promise<boolean> {
+    const messages = await tx.message.findMany({
+      where: {
+        inboundTurnId: input.turnId,
+        direction: MessageDirection.INBOUND,
+      },
+      select: {
+        id: true,
+        conversationId: true,
+        sender: true,
+        createdAt: true,
+        rawPayload: true,
       },
     });
-    return reserved.count === 1;
+    if (
+      !messages.length ||
+      !messages.some((message) => message.id === input.sourceMessageId)
+    )
+      return false;
+    if (
+      await tx.automatedDelivery.findFirst({
+        where: { sourceMessageId: input.sourceMessageId },
+        select: { id: true },
+      })
+    )
+      return false;
+    if (
+      messages.some(
+        (message) =>
+          message.conversationId !== input.conversationId ||
+          message.sender !== MessageSender.CONTACT ||
+          !this.inRunWindow(message, run),
+      )
+    )
+      return false;
+    const latest = await tx.message.findFirst({
+      where: {
+        conversationId: input.conversationId,
+        direction: MessageDirection.INBOUND,
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { id: true },
+    });
+    return latest?.id === input.sourceMessageId;
+  }
+
+  private inRunWindow(
+    message: { createdAt: Date; rawPayload: Prisma.JsonValue | null },
+    run: CanaryRun,
+  ): boolean {
+    const raw = message.rawPayload;
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return false;
+    const timestamp = (raw as Record<string, unknown>).timestamp;
+    if (typeof timestamp !== 'string' || !/^\d{9,13}$/.test(timestamp))
+      return false;
+    const numeric = Number(timestamp);
+    const providerAt = new Date(
+      timestamp.length <= 10 ? numeric * 1000 : numeric,
+    );
+    return (
+      !Number.isNaN(providerAt.getTime()) &&
+      message.createdAt >= run.start &&
+      message.createdAt <= run.deadline &&
+      providerAt >= run.start &&
+      providerAt <= run.deadline
+    );
+  }
+
+  private async previousCanaryWorkClosed(
+    tx: Prisma.TransactionClient,
+    conversationId: string,
+    turnId: string,
+    sourceMessageId: string,
+  ): Promise<boolean> {
+    const previous = await tx.inboundTurn.findMany({
+      where: { conversationId, id: { not: turnId } },
+      select: {
+        status: true,
+        processingToken: true,
+        generationBlockedAt: true,
+      },
+    });
+    if (
+      previous.some(
+        (turn) =>
+          turn.processingToken !== null ||
+          (turn.status !== InboundTurnStatus.PROCESSED &&
+            !(
+              turn.status === InboundTurnStatus.BLOCKED &&
+              turn.generationBlockedAt !== null
+            )),
+      )
+    )
+      return false;
+    const unsafeDelivery = await tx.automatedDelivery.findFirst({
+      where: {
+        conversationId,
+        sourceMessageId: { not: sourceMessageId },
+        status: { in: ['PREPARED', 'DISPATCHING', 'AMBIGUOUS'] },
+      },
+      select: { id: true },
+    });
+    return !unsafeDelivery;
   }
 
   async reserveNousDispatch(input: {

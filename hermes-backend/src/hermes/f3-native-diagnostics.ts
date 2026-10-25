@@ -2,6 +2,13 @@ import axios from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 
 export type NativeStage =
+  | 'SELECTED_FOR_CONTEXT'
+  | 'INCLUDED_IN_COUNT_PAYLOAD'
+  | 'COUNT_HTTP_ATTEMPTED'
+  | 'COUNT_HTTP_RESPONSE_OBSERVED'
+  | 'INCLUDED_IN_GENERATE_PAYLOAD'
+  | 'GENERATE_HTTP_ATTEMPTED'
+  | 'GENERATE_HTTP_RESPONSE_OBSERVED'
   | 'COUNT_COMPLETED'
   | 'DISPATCH_RESERVED'
   | 'HTTP_ATTEMPT_STARTING_LOCAL'
@@ -57,6 +64,12 @@ export type F3NativeDiagnosticEvent = {
   providerReceipt?: 'UNKNOWN';
   billingReconciled?: 'UNKNOWN';
   durationMs?: number;
+  consideredCount?: number;
+  selectedCount?: number;
+  learningItems?: Array<{ id: string; version: number }>;
+  selectionFailed?: boolean;
+  retrievalEnabled?: boolean;
+  exposureStatus?: 'UNKNOWN' | 'CONFIRMED';
 };
 
 const TRANSPORT_CODES = new Set([
@@ -246,6 +259,8 @@ export function safeNativeEvent(
     'candidatesTokenCount',
     'thoughtsTokenCount',
     'durationMs',
+    'consideredCount',
+    'selectedCount',
   ] as const) {
     const value = safeCount(event[field]);
     if (value !== undefined) safe[field] = value;
@@ -262,9 +277,32 @@ export function safeNativeEvent(
     'modelVersionMatch',
     'requestAttemptedLocal',
     'httpResponseObserved',
+    'selectionFailed',
+    'retrievalEnabled',
   ] as const) {
     if (typeof event[field] === 'boolean') safe[field] = event[field];
   }
+  if (
+    event.exposureStatus === 'UNKNOWN' ||
+    event.exposureStatus === 'CONFIRMED'
+  )
+    safe.exposureStatus = event.exposureStatus;
+  if (
+    Array.isArray(event.learningItems) &&
+    event.learningItems.length <= 3 &&
+    event.learningItems.every(
+      (item) =>
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+          item.id,
+        ) &&
+        Number.isSafeInteger(item.version) &&
+        item.version > 0,
+    )
+  )
+    safe.learningItems = event.learningItems.map(({ id, version }) => ({
+      id,
+      version,
+    }));
   return safe;
 }
 
@@ -274,6 +312,22 @@ export async function appendNativeDiagnostic(
   sourceMessageId: string,
   event: F3NativeDiagnosticEvent,
 ): Promise<void> {
+  if (
+    event.stage === 'SELECTED_FOR_CONTEXT' &&
+    (!Number.isSafeInteger(event.consideredCount) ||
+      !Number.isSafeInteger(event.selectedCount) ||
+      (event.consideredCount ?? -1) < 0 ||
+      (event.selectedCount ?? -1) < 0 ||
+      (event.selectedCount ?? 0) > (event.consideredCount ?? -1) ||
+      (event.selectedCount ?? 0) > 3 ||
+      !Array.isArray(event.learningItems) ||
+      event.learningItems.length > (event.selectedCount ?? 0) ||
+      event.learningItems.length > 3 ||
+      typeof event.selectionFailed !== 'boolean' ||
+      typeof event.retrievalEnabled !== 'boolean' ||
+      safeNativeEvent(sourceMessageId, event).learningItems === undefined)
+  )
+    throw new Error('F3_DIAGNOSTIC_PERSISTENCE_FAILED');
   if (
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
       sourceMessageId,
@@ -292,6 +346,11 @@ export async function appendNativeDiagnostic(
         true
       )
       WHERE id = ${sourceMessageId} AND direction::text = 'INBOUND'
+        AND (CASE WHEN ${event.stage === 'SELECTED_FOR_CONTEXT'}
+          OR COALESCE(metadata->'f3NativeDiagnostics' @> '[{"stage":"SELECTED_FOR_CONTEXT"}]'::jsonb, false)
+          THEN (CASE WHEN jsonb_typeof(metadata->'f3NativeDiagnostics') = 'array'
+            THEN jsonb_array_length(metadata->'f3NativeDiagnostics') ELSE 0 END) < 32
+          ELSE true END)
     `;
     if (updated !== 1) throw new Error('F3_DIAGNOSTIC_PERSISTENCE_FAILED');
   } catch {
