@@ -413,6 +413,20 @@ export class AutoReplyService {
       });
       return;
     }
+    const assignedEngine =
+      conversation.metadata &&
+      typeof conversation.metadata === 'object' &&
+      !Array.isArray(conversation.metadata)
+        ? (conversation.metadata as Record<string, unknown>).pilotEngine
+        : undefined;
+    if (
+      assignedEngine !== undefined &&
+      assignedEngine !== 'nous_hermes' &&
+      assignedEngine !== 'gemini_direct'
+    ) {
+      this.logSkip(data, 'INVALID_PILOT_ENGINE');
+      return;
+    }
 
     // Si el cliente escribió de nuevo durante la pausa, el job más reciente
     // contestará con todo el contexto y este se descarta para no fragmentar el chat.
@@ -536,7 +550,10 @@ export class AutoReplyService {
           offer.priceType !== 'QUOTE_REQUIRED' && Boolean(offer.amount),
       );
     const selectedEngine = policy.requestsCall
-      ? this.conversationEngine.selectedEngine(data.conversationId)
+      ? this.conversationEngine.selectedEngine(
+          data.conversationId,
+          assignedEngine,
+        )
       : undefined;
 
     if (this.meetings) {
@@ -697,7 +714,10 @@ export class AutoReplyService {
           market: commercialSnapshot.market,
           approvedKnowledge,
           ...(retrievalEnabled ? { selectedLearning: approvedLearning } : {}),
-          engine: this.conversationEngine.selectedEngine(data.conversationId),
+          engine: this.conversationEngine.selectedEngine(
+            data.conversationId,
+            assignedEngine,
+          ),
         });
       } catch {
         this.logger.warn(
@@ -719,12 +739,16 @@ export class AutoReplyService {
         processingToken: canaryBatchClaim.processingToken,
         sourceMessageId: inbound.id,
         conversationId: data.conversationId,
-        engine: this.conversationEngine.selectedEngine(data.conversationId),
+        engine: this.conversationEngine.selectedEngine(
+          data.conversationId,
+          assignedEngine,
+        ),
       });
       if (!acquired) throw new Error('CANARY_GENERATION_RESERVATION_DENIED');
     }
     const engineResult = await this.conversationEngine.respond({
       conversationId: data.conversationId,
+      ...(assignedEngine ? { assignedEngine } : {}),
       inboundMessageId: inbound.id,
       ...(canaryBatchClaim ? { singleGenerationCanary: canaryBatchClaim } : {}),
       ...(canaryBatchClaim

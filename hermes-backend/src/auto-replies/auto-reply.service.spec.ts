@@ -170,6 +170,7 @@ describe('AutoReplyService', () => {
     retrievalAllowlist?: string;
     realShadow?: boolean;
     engineId?: 'gemini_direct' | 'nous_hermes';
+    conversationMetadata?: Record<string, unknown>;
     learningRows?: Array<Record<string, unknown>>;
     commercialSnapshot?: CommercialSnapshot;
   };
@@ -258,7 +259,7 @@ describe('AutoReplyService', () => {
         findUnique: jest.fn().mockResolvedValue({
           id: 'conversation-1',
           status: ConversationStatus.ACTIVE,
-          metadata: {},
+          metadata: options.conversationMetadata ?? {},
           contact: { name: 'Ana', waId: '593991234567', email: null },
         }),
         update: conversationUpdate,
@@ -506,6 +507,24 @@ describe('AutoReplyService', () => {
     ]);
     expect(metadata.promptVersion).toBe('prompt-digest-a');
     expect(JSON.stringify(metadata)).not.toContain('Responder brevemente');
+  });
+
+  it('passes the stored pilot engine to the inference call', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'Con gusto le ayudo.' },
+      conversationMetadata: {
+        pilotEngine: 'nous_hermes',
+        pilotRoutingVersion: 1,
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.engine.respond.mock.calls[0][0].assignedEngine).toBe(
+      'nous_hermes',
+    );
   });
 
   it('persists a compact exposure trace when post-inference policy suppresses a reply', async () => {

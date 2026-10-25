@@ -19,14 +19,26 @@ export class ConversationEngineService {
   ) {}
 
   async respond(input: ConversationTurnInput): Promise<ConversationTurnResult> {
-    return this.resolve(input.conversationId).respond(input);
+    return this.resolve(input.conversationId, input.assignedEngine).respond(
+      input,
+    );
   }
 
-  selectedEngine(conversationId: string): ConversationEngineId {
-    return this.resolve(conversationId).id;
+  selectedEngine(
+    conversationId: string,
+    assignedEngine?: ConversationEngineId,
+  ): ConversationEngineId {
+    return this.resolve(conversationId, assignedEngine).id;
   }
 
-  private resolve(conversationId: string): ConversationEngine {
+  private resolve(
+    conversationId: string,
+    assignedEngine?: ConversationEngineId,
+  ): ConversationEngine {
+    if (assignedEngine === 'gemini_direct') return this.directGemini;
+    if (assignedEngine === 'nous_hermes') return this.nousHermes;
+    if (assignedEngine)
+      throw new ConversationEngineConfigurationError('Invalid assigned engine');
     const configured = this.config
       .get<string>('HERMES_CONVERSATION_ENGINE', 'gemini_direct')
       .trim();

@@ -61,8 +61,7 @@ export class AgentOutputValidator {
     if (
       !choice ||
       typeof choice.finish_reason !== 'string' ||
-      !choice.finish_reason.trim() ||
-      choice.finish_reason.trim().toLowerCase() === 'error'
+      choice.finish_reason.trim().toLowerCase() !== 'stop'
     ) {
       throw new InvalidAgentOutputError(
         'Agent response has an invalid finish reason',

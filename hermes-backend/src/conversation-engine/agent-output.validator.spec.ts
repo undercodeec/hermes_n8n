@@ -20,6 +20,24 @@ describe('AgentOutputValidator', () => {
     ).toBe('Hola, ¿en qué puedo ayudarle?');
   });
 
+  it('rejects a syntactically valid proposal when Nous reports a truncated completion', () => {
+    expect(() =>
+      validator.validate(
+        {
+          choices: [
+            {
+              finish_reason: 'MAX_TOKENS',
+              message: {
+                content: JSON.stringify({ replyText: 'Respuesta incompleta.' }),
+              },
+            },
+          ],
+        },
+        900,
+      ),
+    ).toThrow(InvalidAgentOutputError);
+  });
+
   it('accepts ordered conversational parts and derives legacy replyText', () => {
     const result = validator.validate(
       completion({

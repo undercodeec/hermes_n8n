@@ -97,4 +97,18 @@ describe('ConversationEngineService', () => {
     expect(directRespond).toHaveBeenCalledTimes(1);
     expect(nousRespond).not.toHaveBeenCalled();
   });
+
+  it('keeps a conversation on its assigned engine after the weekly default changes', async () => {
+    const values = {
+      HERMES_CONVERSATION_ENGINE: 'nous_hermes',
+      NOUS_HERMES_OPEN_INBOUND_TEST: 'true',
+    };
+    const { service, directRespond, nousRespond } = setup(values);
+    await service.respond({ ...input('old'), assignedEngine: 'nous_hermes' });
+    values.HERMES_CONVERSATION_ENGINE = 'gemini_direct';
+    await service.respond({ ...input('old'), assignedEngine: 'nous_hermes' });
+    await service.respond({ ...input('new'), assignedEngine: 'gemini_direct' });
+    expect(nousRespond).toHaveBeenCalledTimes(2);
+    expect(directRespond).toHaveBeenCalledTimes(1);
+  });
 });

@@ -863,6 +863,49 @@ describe('WebhookService campaign replies', () => {
     );
   });
 
+  it.each(['nous_hermes', 'gemini_direct'])(
+    'pins %s on a newly created inbound conversation',
+    async (engine) => {
+      const prismaMock = {
+        $executeRaw: jest.fn(),
+        $transaction: jest.fn(),
+        conversation: {
+          findFirst: jest.fn().mockResolvedValue(null),
+          create: jest.fn().mockResolvedValue({ id: 'new-conversation' }),
+        },
+      };
+      prismaMock.$transaction.mockImplementation((callback: any) =>
+        callback(prismaMock),
+      );
+      const service = new WebhookService(
+        {
+          get: jest.fn((key: string) =>
+            key === 'HERMES_PILOT_NEW_CONVERSATION_ENGINE' ? engine : undefined,
+          ),
+        } as unknown as ConfigService,
+        prismaMock as unknown as PrismaService,
+        {} as MetaService,
+        {} as HermesService,
+        {} as HandoffService,
+        {} as LeadsService,
+        {} as CampaignsService,
+        {} as AutoReplyService,
+        {} as ConversationGuardService,
+        {} as AdvertisingService,
+        {} as ConversationEventsService,
+      );
+      await (service as any).getOrCreateConversation('contact-new');
+      expect(prismaMock.conversation.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          metadata: expect.objectContaining({
+            pilotEngine: engine,
+            pilotRoutingVersion: 1,
+          }),
+        }),
+      });
+    },
+  );
+
   it('preserves an open handoff when an inbound message resumes a closed conversation', async () => {
     const closedConversation = {
       id: 'conversation-closed',

@@ -687,9 +687,29 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
           contactId,
           status: ConversationStatus.ACTIVE,
           channel: 'whatsapp',
+          ...(this.configService.get<string>(
+            'HERMES_PILOT_NEW_CONVERSATION_ENGINE',
+            '',
+          )
+            ? {
+                metadata: {
+                  pilotEngine: this.pilotNewConversationEngine(),
+                  pilotRoutingVersion: 1,
+                },
+              }
+            : {}),
         },
       });
     });
+  }
+
+  private pilotNewConversationEngine(): 'nous_hermes' | 'gemini_direct' {
+    const engine = this.configService.get<string>(
+      'HERMES_PILOT_NEW_CONVERSATION_ENGINE',
+      '',
+    );
+    if (engine === 'nous_hermes' || engine === 'gemini_direct') return engine;
+    throw new Error('Invalid HERMES_PILOT_NEW_CONVERSATION_ENGINE');
   }
 
   /**

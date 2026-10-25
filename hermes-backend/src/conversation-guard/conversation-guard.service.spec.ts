@@ -128,6 +128,19 @@ describe('ConversationGuardService', () => {
     ).resolves.toEqual({ action: 'ALLOW' });
   });
 
+  it('stops AI quota consumption when the Redis kill switch is set', async () => {
+    const guard = new ConversationGuardService(config);
+    const transaction = { incr: jest.fn(), expire: jest.fn(), exec: jest.fn() };
+    const get = jest.fn().mockResolvedValue('1');
+    jest.spyOn(guard as unknown as GuardInternals, 'redis').mockResolvedValue({
+      multi: jest.fn().mockReturnValue(transaction),
+      get,
+    });
+    await expect(guard.consumeAiQuota('contact-1')).resolves.toBe(false);
+    expect(get).toHaveBeenCalledWith('hermes:ai:disabled');
+    expect(transaction.exec).not.toHaveBeenCalled();
+  });
+
   it('preserves an explicit advisor request during a natural message burst', async () => {
     const guard = new ConversationGuardService(config);
     const transaction = {

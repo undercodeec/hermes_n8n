@@ -106,6 +106,10 @@ export class ConversationGuardService implements OnModuleDestroy {
 
   async consumeAiQuota(contactId: string): Promise<boolean> {
     try {
+      if ((await (await this.redis()).get('hermes:ai:disabled')) === '1') {
+        this.logger.warn('AI dispatch disabled by operator kill switch');
+        return false;
+      }
       const now = new Date();
       const contactKey = `hermes:guard:ai-contact:${contactId}:${now.toISOString().slice(0, 10)}`;
       const globalKey = `hermes:guard:ai-global:${now.toISOString().slice(0, 13)}`;

@@ -113,6 +113,26 @@ describe('NousHermesTransport', () => {
     );
   });
 
+  it('returns a reviewable failure instead of truncated Nous text', async () => {
+    post.mockResolvedValue({
+      data: {
+        model: 'hermes-agent',
+        choices: [
+          {
+            finish_reason: 'MAX_TOKENS',
+            message: {
+              content: JSON.stringify({ replyText: 'Respuesta incompleta.' }),
+            },
+          },
+        ],
+      },
+    });
+    const result = await configuredTransport().execute(baseInput());
+    expect(result.diagnostic?.code).toBe('NOUS_HERMES_INVALID_RESPONSE');
+    expect(result.diagnostic?.requiresHumanReview).toBe(true);
+    expect(result.replyText).not.toContain('Respuesta incompleta.');
+  });
+
   it('serializes approved learning separately and reports only actual request exposure', async () => {
     post.mockResolvedValue({
       data: {

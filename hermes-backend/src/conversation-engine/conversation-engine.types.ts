@@ -23,6 +23,8 @@ export type ApprovedConversationMessage = {
 export interface ConversationTurnInput {
   /** Internal CRM identifier. Never use a phone number or e-mail here. */
   conversationId: string;
+  /** Pinned on conversation creation for a controlled pilot; never derived from customer text. */
+  assignedEngine?: ConversationEngineId;
   /** Persisted inbound message identifier used for correlation and deduplication. */
   inboundMessageId: string;
   /** Durable canary claim. The token is the original InboundTurn processing token. */
