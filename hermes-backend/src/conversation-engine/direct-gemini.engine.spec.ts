@@ -9,6 +9,10 @@ describe('DirectGeminiEngine', () => {
       response: '¿En qué podemos ayudarle?',
       tokensUsed: 12,
       costEstimate: 0.001,
+      f3NativeDiagnostic: {
+        stage: 'GENERATION_SUPPRESSED',
+        failureClass: 'HTTP_429',
+      },
       detectedIntent: 'info_general',
       nextAction: 'continuar_descubrimiento',
       commercialProfile: { sector: 'reparación' },
@@ -57,6 +61,10 @@ describe('DirectGeminiEngine', () => {
         traceId: 'inbound-1',
         proposedActions: [{ type: 'none' }],
         usage: { totalTokens: 12 },
+        f3NativeDiagnostic: {
+          stage: 'GENERATION_SUPPRESSED',
+          failureClass: 'HTTP_429',
+        },
       }),
     );
   });

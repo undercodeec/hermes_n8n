@@ -123,6 +123,7 @@ export class HermesResponseDto {
   response: string;
   f3CapsBudget?: F3GeminiBudget;
   f3CallTrace?: F3CallTrace;
+  f3NativeDiagnostic?: Record<string, unknown>;
   /** Present only when the provider boundary was observed with approved learning in the request. */
   learningExposed?: Array<{ id: string; version: number }>;
   tokensUsed?: number;

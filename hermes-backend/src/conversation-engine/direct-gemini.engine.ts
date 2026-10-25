@@ -46,6 +46,9 @@ export class DirectGeminiEngine implements ConversationEngine {
       replyText: response.response,
       ...(response.f3CapsBudget ? { f3CapsBudget: response.f3CapsBudget } : {}),
       ...(response.f3CallTrace ? { f3CallTrace: response.f3CallTrace } : {}),
+      ...(response.f3NativeDiagnostic
+        ? { f3NativeDiagnostic: response.f3NativeDiagnostic }
+        : {}),
       proposedActions: [{ type: 'none' }],
       engine: this.id,
       providerModel: this.hermes.getProviderModel(),

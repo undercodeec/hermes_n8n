@@ -24,6 +24,13 @@ import {
   sanitizeDiagnosticSummary,
 } from './hermes-diagnostics';
 import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
+import {
+  appendNativeDiagnostic,
+  F3NativeDiagnosticEvent,
+  safeFinishReason,
+  safeNativeError,
+  safeNativeEvent,
+} from './f3-native-diagnostics';
 import { commercialSnapshotKnowledge } from './commercial-authority.service';
 import {
   answerExplicitPriceIfMissing,
@@ -77,6 +84,7 @@ class CanaryCapsBlockError extends Error {
       | 'COST_CAP_NOT_ENFORCEABLE'
       | 'OUTPUT_1500_NOT_ENFORCEABLE'
       | 'F3_NATIVE_GENERATION_UNAVAILABLE',
+    readonly detail?: Partial<F3NativeDiagnosticEvent>,
   ) {
     super(code);
   }
@@ -240,6 +248,8 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     const conversationRepair = this.conversationRepairResponse(request);
     if (conversationRepair) return conversationRepair;
     let providerReached = false;
+    let nativeDiagnosticsStarted = false;
+    let nativeReservationComplete = false;
     const f3StartedAt = Date.now();
     try {
       const businessContext = await this.loadBusinessContext(request);
@@ -433,8 +443,18 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           count,
           sourceMessageId: request.correlationId ?? '',
         };
+        nativeDiagnosticsStarted = true;
+        await this.persistNativeStage(nativeRequest.sourceMessageId, {
+          stage: 'COUNT_COMPLETED',
+          countTokenCount: count,
+        });
       }
       await this.reserveProviderDispatch(request);
+      if (nativeRequest) nativeReservationComplete = true;
+      if (nativeRequest)
+        await this.persistNativeStage(nativeRequest.sourceMessageId, {
+          stage: 'DISPATCH_RESERVED',
+        });
       const maxAttempts = request.singleGenerationCanary
         ? 1
         : Math.min(this.positiveInteger('HERMES_COMPLETION_ATTEMPTS', 2), 3);
@@ -547,6 +567,15 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           parsedResponse = candidate;
           break;
         } catch (error) {
+          if (nativeRequest && error instanceof InvalidProviderResponseError) {
+            await this.persistNativeStage(nativeRequest.sourceMessageId, {
+              stage: 'GENERATION_SUPPRESSED',
+              failureClass: 'PARSER_INVALID',
+              reasonCode: 'HERMES_INVALID_PROVIDER_RESPONSE',
+              requestAttemptedLocal: true,
+              httpResponseObserved: true,
+            });
+          }
           if (axios.isAxiosError(error) && error.response)
             providerReached = true;
           if (attempt === maxAttempts) throw error;
@@ -569,6 +598,12 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         request,
       );
       const tokensUsed = promptTokens + completionTokens;
+      if (nativeRequest)
+        await this.persistNativeStage(nativeRequest.sourceMessageId, {
+          stage: 'GENERATION_ACCEPTED',
+          requestAttemptedLocal: true,
+          httpResponseObserved: true,
+        });
       this.logger.log(
         JSON.stringify({
           event: 'hermes_response_generated',
@@ -604,6 +639,45 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       };
     } catch (error: unknown) {
       if (error instanceof CanaryCapsBlockError) {
+        const safeDetail = request.correlationId
+          ? safeNativeEvent(request.correlationId, {
+              stage: 'GENERATION_SUPPRESSED',
+              reasonCode: error.code,
+              ...error.detail,
+            })
+          : undefined;
+        if (
+          nativeDiagnosticsStarted &&
+          request.correlationId &&
+          error.detail?.failureClass !== 'PERSISTENCE_FAILED'
+        ) {
+          try {
+            if (
+              error.detail?.failureClass &&
+              [
+                'MODEL_VERSION_MISMATCH',
+                'USAGE_MISSING_OR_INVALID',
+                'USAGE_LIMIT_EXCEEDED',
+                'CANDIDATES_ZERO',
+                'CANDIDATES_MULTIPLE',
+                'FINISH_NOT_STOP',
+                'STOP_WITHOUT_TEXT',
+              ].includes(error.detail.failureClass)
+            )
+              await appendNativeDiagnostic(this.prisma, request.correlationId, {
+                stage: 'RESPONSE_VALIDATION_FAILED',
+                reasonCode: error.code,
+                ...error.detail,
+              });
+            await appendNativeDiagnostic(this.prisma, request.correlationId, {
+              stage: 'GENERATION_SUPPRESSED',
+              reasonCode: error.code,
+              ...error.detail,
+            });
+          } catch {
+            // Persistence failure is itself a blocked outcome; no second dispatch.
+          }
+        }
         this.logger.warn(
           JSON.stringify({
             event: 'f3_native_blocked',
@@ -627,11 +701,35 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
             recovered: false,
             requiresHumanReview: true,
           },
+          ...(safeDetail ? { f3NativeDiagnostic: safeDetail } : {}),
         };
       }
       if (error instanceof CanaryDispatchDeniedError) throw error;
       const invalidProviderResponse =
         error instanceof InvalidProviderResponseError;
+      const failureClass = invalidProviderResponse
+        ? 'PARSER_INVALID'
+        : nativeReservationComplete
+          ? 'UNKNOWN'
+          : 'DISPATCH_RESERVATION_FAILED';
+      const requestAttemptedLocal = providerReached || invalidProviderResponse;
+      if (
+        nativeDiagnosticsStarted &&
+        request.correlationId &&
+        !invalidProviderResponse
+      ) {
+        try {
+          await appendNativeDiagnostic(this.prisma, request.correlationId, {
+            stage: 'GENERATION_SUPPRESSED',
+            failureClass,
+            reasonCode: 'HERMES_PROVIDER_UNAVAILABLE',
+            requestAttemptedLocal,
+            httpResponseObserved: requestAttemptedLocal,
+          });
+        } catch {
+          // Best effort after an unexpected local error; delivery remains blocked.
+        }
+      }
       this.logger.error(
         JSON.stringify({
           event: 'hermes_completion_failed',
@@ -674,7 +772,35 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
           recovered: false,
           requiresHumanReview: true,
         }),
+        ...(nativeDiagnosticsStarted && request.correlationId
+          ? {
+              f3NativeDiagnostic: safeNativeEvent(request.correlationId, {
+                stage: 'GENERATION_SUPPRESSED',
+                failureClass,
+                reasonCode: invalidProviderResponse
+                  ? 'HERMES_INVALID_PROVIDER_RESPONSE'
+                  : 'HERMES_PROVIDER_UNAVAILABLE',
+                requestAttemptedLocal,
+                httpResponseObserved: requestAttemptedLocal,
+              }),
+            }
+          : {}),
       };
+    }
+  }
+
+  private async persistNativeStage(
+    sourceMessageId: string,
+    event: F3NativeDiagnosticEvent,
+  ): Promise<void> {
+    try {
+      await appendNativeDiagnostic(this.prisma, sourceMessageId, event);
+    } catch {
+      throw new CanaryCapsBlockError('F3_NATIVE_GENERATION_UNAVAILABLE', {
+        failureClass: 'PERSISTENCE_FAILED',
+        requestAttemptedLocal: event.requestAttemptedLocal === true,
+        httpResponseObserved: event.httpResponseObserved === true,
+      });
     }
   }
 
@@ -710,44 +836,145 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       };
     };
     const startedAt = Date.now();
+    await this.persistNativeStage(request.sourceMessageId, {
+      stage: 'HTTP_ATTEMPT_STARTING_LOCAL',
+    });
+    let httpStatus: number | undefined;
     try {
-      ({ data } = await this.nativeClient.post<typeof data>(
+      const response = await this.nativeClient.post<typeof data>(
         `/models/${model}:generateContent`,
         request.serialized,
-      ));
-    } catch {
-      throw new CanaryCapsBlockError('F3_NATIVE_GENERATION_UNAVAILABLE');
+      );
+      data = response.data;
+      httpStatus = response.status ?? 200;
+    } catch (error) {
+      const detail = safeNativeError(error);
+      if (detail.httpStatus !== undefined)
+        await this.persistNativeStage(request.sourceMessageId, {
+          stage: 'HTTP_RESPONSE_OBSERVED',
+          ...detail,
+          requestAttemptedLocal: true,
+          httpResponseObserved: true,
+          durationMs: Date.now() - startedAt,
+        });
+      throw new CanaryCapsBlockError('F3_NATIVE_GENERATION_UNAVAILABLE', {
+        ...detail,
+        requestAttemptedLocal: true,
+        httpResponseObserved: detail.httpStatus !== undefined,
+        durationMs: Date.now() - startedAt,
+      });
     }
-    if (data.modelVersion !== model && data.modelVersion !== `models/${model}`)
-      throw new CanaryCapsBlockError('INPUT_12000_NOT_ENFORCEABLE');
-    const usage = data.usageMetadata;
+    const payload =
+      data && typeof data === 'object' && !Array.isArray(data)
+        ? (data as Record<string, unknown>)
+        : {};
+    const candidates = Array.isArray(payload.candidates)
+      ? payload.candidates
+      : [];
+    const candidate =
+      candidates[0] &&
+      typeof candidates[0] === 'object' &&
+      !Array.isArray(candidates[0])
+        ? (candidates[0] as Record<string, unknown>)
+        : {};
+    const candidateContent =
+      candidate.content &&
+      typeof candidate.content === 'object' &&
+      !Array.isArray(candidate.content)
+        ? (candidate.content as Record<string, unknown>)
+        : {};
+    const parts = Array.isArray(candidateContent.parts)
+      ? candidateContent.parts
+      : [];
+    const content = parts
+      .map((part: unknown) =>
+        part &&
+        typeof part === 'object' &&
+        !Array.isArray(part) &&
+        typeof (part as Record<string, unknown>).text === 'string'
+          ? (part as { text: string }).text
+          : '',
+      )
+      .join('');
+    const usage =
+      payload.usageMetadata &&
+      typeof payload.usageMetadata === 'object' &&
+      !Array.isArray(payload.usageMetadata)
+        ? (payload.usageMetadata as Record<string, unknown>)
+        : undefined;
     const input = usage?.promptTokenCount;
     const visible = usage?.candidatesTokenCount;
     const thoughts = usage?.thoughtsTokenCount ?? 0;
+    const modelVersionMatch =
+      payload.modelVersion === model ||
+      payload.modelVersion === `models/${model}`;
+    const detail: Partial<F3NativeDiagnosticEvent> = {
+      candidatesCount: candidates.length,
+      finishReason: safeFinishReason(candidate.finishReason),
+      textPresent: Boolean(content.trim()),
+      usagePresent: Boolean(usage),
+      modelVersionMatch,
+      ...(Number.isSafeInteger(input) && Number(input) >= 0
+        ? { promptTokenCount: Number(input) }
+        : {}),
+      ...(Number.isSafeInteger(visible) && Number(visible) >= 0
+        ? { candidatesTokenCount: Number(visible) }
+        : {}),
+      ...(Number.isSafeInteger(thoughts) && Number(thoughts) >= 0
+        ? { thoughtsTokenCount: Number(thoughts) }
+        : {}),
+      requestAttemptedLocal: true,
+      httpResponseObserved: true,
+      durationMs: Date.now() - startedAt,
+    };
+    await this.persistNativeStage(request.sourceMessageId, {
+      stage: 'HTTP_RESPONSE_OBSERVED',
+      httpStatus,
+      ...detail,
+    });
+    if (!modelVersionMatch)
+      throw new CanaryCapsBlockError('INPUT_12000_NOT_ENFORCEABLE', {
+        ...detail,
+        failureClass: 'MODEL_VERSION_MISMATCH',
+      });
     if (
       ![input, visible, thoughts].every(
         (n) => Number.isSafeInteger(n) && Number(n) >= 0,
       )
     )
-      throw new CanaryCapsBlockError('OUTPUT_1500_NOT_ENFORCEABLE');
+      throw new CanaryCapsBlockError('OUTPUT_1500_NOT_ENFORCEABLE', {
+        ...detail,
+        failureClass: 'USAGE_MISSING_OR_INVALID',
+      });
     if (Number(input) > 12000 || Number(visible) + Number(thoughts) > 1500)
-      throw new CanaryCapsBlockError('OUTPUT_1500_NOT_ENFORCEABLE');
-    const candidate = data.candidates?.[0];
-    if (
-      !candidate ||
-      data.candidates?.length !== 1 ||
-      candidate.finishReason !== 'STOP'
-    )
-      throw new CanaryCapsBlockError('F3_NATIVE_GENERATION_UNAVAILABLE');
-    const content = candidate.content?.parts
-      ?.map((part) => part.text || '')
-      .join('');
-    if (!content)
-      throw new CanaryCapsBlockError('F3_NATIVE_GENERATION_UNAVAILABLE');
+      throw new CanaryCapsBlockError('OUTPUT_1500_NOT_ENFORCEABLE', {
+        ...detail,
+        failureClass: 'USAGE_LIMIT_EXCEEDED',
+      });
+    if (candidates.length !== 1)
+      throw new CanaryCapsBlockError('F3_NATIVE_GENERATION_UNAVAILABLE', {
+        ...detail,
+        failureClass:
+          candidates.length === 0 ? 'CANDIDATES_ZERO' : 'CANDIDATES_MULTIPLE',
+      });
+    if (candidate.finishReason !== 'STOP')
+      throw new CanaryCapsBlockError('F3_NATIVE_GENERATION_UNAVAILABLE', {
+        ...detail,
+        failureClass: 'FINISH_NOT_STOP',
+      });
+    if (!content.trim())
+      throw new CanaryCapsBlockError('F3_NATIVE_GENERATION_UNAVAILABLE', {
+        ...detail,
+        failureClass: 'STOP_WITHOUT_TEXT',
+      });
+    await this.persistNativeStage(request.sourceMessageId, {
+      stage: 'CANDIDATE_VALIDATED',
+      ...detail,
+    });
     const requestId =
-      typeof data.responseId === 'string' &&
-      /^[a-zA-Z0-9_-]{1,128}$/.test(data.responseId)
-        ? data.responseId
+      typeof payload.responseId === 'string' &&
+      /^[a-zA-Z0-9_-]{1,128}$/.test(payload.responseId)
+        ? payload.responseId
         : null;
     const trace: F3CallTrace = {
       requestId,
@@ -774,7 +1001,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
       data: {
         choices: [{ message: { content }, finish_reason: 'stop' }],
         usage: {
-          prompt_tokens: input,
+          prompt_tokens: Number(input),
           completion_tokens: Number(visible) + Number(thoughts),
         },
         f3CallTrace: trace,

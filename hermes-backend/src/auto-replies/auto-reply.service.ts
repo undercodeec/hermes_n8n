@@ -54,6 +54,10 @@ import {
   safeProviderDiagnostic,
   toIncidentMetadata,
 } from '../hermes/hermes-diagnostics';
+import {
+  F3NativeDiagnosticEvent,
+  safeNativeEvent,
+} from '../hermes/f3-native-diagnostics';
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 import { reviewAgentProposal } from '../conversation-engine/agent-proposal-policy';
 import { AGENT_DEFAULT_INTENTS } from '../conversation-engine/agent-output.contract';
@@ -690,6 +694,14 @@ export class AutoReplyService {
               ? { promptVersion: engineResult.promptVersion }
               : {}),
             traceId: engineResult.traceId,
+            ...(engineResult.f3NativeDiagnostic
+              ? {
+                  f3NativeDiagnostic: safeNativeEvent(inbound.id, {
+                    ...(engineResult.f3NativeDiagnostic as F3NativeDiagnosticEvent),
+                    stage: 'GENERATION_SUPPRESSED',
+                  }),
+                }
+              : {}),
             ...(engineResult.f3CallTrace
               ? {
                   f3CallTrace: {
@@ -713,7 +725,8 @@ export class AutoReplyService {
       (engineResult.diagnostic?.code === 'INPUT_12000_NOT_ENFORCEABLE' ||
         engineResult.diagnostic?.code === 'COST_CAP_NOT_ENFORCEABLE' ||
         engineResult.diagnostic?.code === 'OUTPUT_1500_NOT_ENFORCEABLE' ||
-        engineResult.diagnostic?.code === 'F3_NATIVE_GENERATION_UNAVAILABLE')
+        engineResult.diagnostic?.code === 'F3_NATIVE_GENERATION_UNAVAILABLE' ||
+        (engineResult.f3NativeDiagnostic && engineResult.diagnostic))
     ) {
       await recordSuppressedInference(engineResult.diagnostic.code);
       this.logSkip(data, engineResult.diagnostic.code);

@@ -567,6 +567,91 @@ describe('AutoReplyService', () => {
     expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
   });
 
+  it('suppresses an invalid native parser result and stores only safe detail', async () => {
+    const harness = setupProcessHarness({ hermesResponse: { response: '' } });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({ response: '' }),
+      f3NativeDiagnostic: {
+        stage: 'GENERATION_SUPPRESSED',
+        failureClass: 'PARSER_INVALID',
+        sourceMessageId: 'inbound-recovery',
+        extra: 'SENTINEL_SECRET_PROMPT_RESPONSE',
+      },
+      diagnostic: {
+        category: 'INVALID_PROVIDER_RESPONSE',
+        code: 'HERMES_INVALID_PROVIDER_RESPONSE',
+        summary: '',
+        attempts: 1,
+        recovered: false,
+        requiresHumanReview: true,
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.deliveries.recordSuppressedInference).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reasonCode: 'HERMES_INVALID_PROVIDER_RESPONSE',
+        metadata: expect.objectContaining({
+          f3NativeDiagnostic: expect.objectContaining({
+            failureClass: 'PARSER_INVALID',
+          }),
+        }),
+      }),
+    );
+    const metadata =
+      harness.deliveries.recordSuppressedInference.mock.calls[0][0].metadata;
+    expect(JSON.stringify(metadata)).not.toContain(
+      'SENTINEL_SECRET_PROMPT_RESPONSE',
+    );
+    expect(harness.deliveries.prepareBatch).not.toHaveBeenCalled();
+    expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('keeps the native HTTP failure reason and suppresses Meta delivery', async () => {
+    const harness = setupProcessHarness({ hermesResponse: { response: '' } });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({ response: '' }),
+      f3NativeDiagnostic: {
+        stage: 'GENERATION_SUPPRESSED',
+        failureClass: 'HTTP_429',
+        httpStatus: 429,
+        requestAttemptedLocal: true,
+        httpResponseObserved: true,
+      },
+      diagnostic: {
+        category: 'CONTEXT_ERROR',
+        code: 'F3_NATIVE_GENERATION_UNAVAILABLE',
+        summary: '',
+        attempts: 0,
+        recovered: false,
+        requiresHumanReview: true,
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.deliveries.recordSuppressedInference).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reasonCode: 'F3_NATIVE_GENERATION_UNAVAILABLE',
+        metadata: expect.objectContaining({
+          f3NativeDiagnostic: expect.objectContaining({
+            failureClass: 'HTTP_429',
+            httpStatus: 429,
+            providerReceipt: 'UNKNOWN',
+            billingReconciled: 'UNKNOWN',
+          }),
+        }),
+      }),
+    );
+    expect(harness.deliveries.prepareBatch).not.toHaveBeenCalled();
+    expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
   it('persists a bounded F3 delivery budget with every prepared part', async () => {
     const harness = setupProcessHarness({
       hermesResponse: { response: 'Le ayudo.' },

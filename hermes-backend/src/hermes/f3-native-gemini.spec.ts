@@ -1,9 +1,11 @@
 import { ConfigService } from '@nestjs/config';
+import { AxiosError } from 'axios';
 import { PrismaService } from '../prisma/prisma.service';
 import { HermesService } from './hermes.service';
 
 const target = 'd3e10ce6-996f-4e89-bc98-68bcbb3e28dc';
 const model = 'gemini-3-synthetic';
+const sourceId = '13d6ef41-8384-4f2e-a0d0-1486d39a9080';
 const budget = {
   model,
   targetConversationId: target,
@@ -36,12 +38,17 @@ function setup(override: Record<string, unknown> = {}) {
     get: (key: string, fallback?: unknown) => values[key] ?? fallback,
   } as ConfigService;
   const reserve = jest.fn().mockResolvedValue({ count: 1 });
+  const persisted: Array<Record<string, unknown>> = [];
   const prisma = {
     inboundTurn: {
       updateMany: reserve,
       findFirst: jest.fn().mockResolvedValue(null),
     },
-    $executeRaw: jest.fn().mockResolvedValue(undefined),
+    $executeRaw: jest.fn((_sql: TemplateStringsArray, raw?: string) => {
+      if (typeof raw === 'string' && raw.startsWith('{'))
+        persisted.push(JSON.parse(raw) as Record<string, unknown>);
+      return Promise.resolve(1);
+    }),
     $transaction: jest.fn(async (callback: (tx: unknown) => Promise<unknown>) =>
       callback(prisma),
     ),
@@ -85,7 +92,7 @@ function setup(override: Record<string, unknown> = {}) {
     conversationId: target,
     canaryServiceWindowExpiresAt: new Date(Date.now() + 120_000).toISOString(),
     canaryReceivedAt: new Date().toISOString(),
-    correlationId: 'synthetic-source',
+    correlationId: sourceId,
     singleGenerationCanary: {
       turnId: 'synthetic-turn',
       processingToken: 'synthetic-token',
@@ -97,7 +104,16 @@ function setup(override: Record<string, unknown> = {}) {
       { id: 'approved-1', version: 1, content: 'Orientación aprobada' },
     ],
   };
-  return { service, prisma, reserve, count, generate, nativePost, request };
+  return {
+    service,
+    prisma,
+    reserve,
+    count,
+    generate,
+    nativePost,
+    request,
+    persisted,
+  };
 }
 
 function estimatedSetup() {
@@ -160,7 +176,7 @@ describe('F3 native Gemini canary', () => {
     expect(result.f3CallTrace).toEqual(
       expect.objectContaining({
         requestId: 'safe-request-id',
-        sourceMessageId: 'synthetic-source',
+        sourceMessageId: sourceId,
         model: 'gemini-3.8-flash',
         countTokenCount: 10000,
         promptTokenCount: 10001,
@@ -438,5 +454,365 @@ describe('F3 native Gemini canary', () => {
     expect(result.diagnostic?.code).toBe('COST_CAP_NOT_ENFORCEABLE');
     expect(generate).not.toHaveBeenCalled();
     expect(reserve).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [400, 'HTTP_400'],
+    [401, 'HTTP_401'],
+    [403, 'HTTP_403'],
+    [429, 'HTTP_429'],
+    [503, 'HTTP_5XX'],
+  ] as const)(
+    'persists safe HTTP %i failure and suppresses generation',
+    async (status, failureClass) => {
+      const { service, request, generate, persisted } = setup();
+      const error = new AxiosError(
+        'SENTINEL_SECRET_PROMPT_RESPONSE',
+        'ERR_BAD_RESPONSE',
+      );
+      error.response = {
+        status,
+        data: {
+          error: {
+            code: status,
+            status: 'UNAVAILABLE',
+            message: 'SENTINEL_SECRET_PROMPT_RESPONSE',
+          },
+        },
+        statusText: 'SENTINEL_SECRET_PROMPT_RESPONSE',
+        headers: {},
+        config: {} as never,
+      };
+      generate.mockRejectedValueOnce(error);
+      const result = await service.generateResponse(request);
+      expect(result.diagnostic?.code).toBe('F3_NATIVE_GENERATION_UNAVAILABLE');
+      expect(generate).toHaveBeenCalledTimes(1);
+      expect(persisted).toContainEqual(
+        expect.objectContaining({
+          stage: 'HTTP_RESPONSE_OBSERVED',
+          failureClass,
+          httpStatus: status,
+          requestAttemptedLocal: true,
+          httpResponseObserved: true,
+          providerReceipt: 'UNKNOWN',
+          billingReconciled: 'UNKNOWN',
+        }),
+      );
+      expect(persisted).toContainEqual(
+        expect.objectContaining({
+          stage: 'GENERATION_SUPPRESSED',
+          failureClass,
+        }),
+      );
+      expect(JSON.stringify(persisted)).not.toContain(
+        'SENTINEL_SECRET_PROMPT_RESPONSE',
+      );
+    },
+  );
+
+  it.each([
+    ['ENOTFOUND', 'DNS'],
+    ['ECONNABORTED', 'TIMEOUT'],
+    ['CERT_HAS_EXPIRED', 'TLS'],
+  ] as const)(
+    'persists %s transport class after one local attempt',
+    async (code, failureClass) => {
+      const { service, request, generate, persisted } = setup();
+      generate.mockRejectedValueOnce(
+        new AxiosError('SENTINEL_SECRET_PROMPT_RESPONSE', code),
+      );
+      const result = await service.generateResponse(request);
+      expect(result.diagnostic?.code).toBe('F3_NATIVE_GENERATION_UNAVAILABLE');
+      expect(generate).toHaveBeenCalledTimes(1);
+      expect(persisted).toContainEqual(
+        expect.objectContaining({
+          stage: 'GENERATION_SUPPRESSED',
+          failureClass,
+          transportCode: code,
+          requestAttemptedLocal: true,
+          httpResponseObserved: false,
+        }),
+      );
+      expect(JSON.stringify(persisted)).not.toContain(
+        'SENTINEL_SECRET_PROMPT_RESPONSE',
+      );
+    },
+  );
+
+  it.each([
+    ['zero', [], 'CANDIDATES_ZERO', 'F3_NATIVE_GENERATION_UNAVAILABLE'],
+    [
+      'multiple',
+      [
+        {
+          content: { parts: [{ text: '{"response":"Hola."}' }] },
+          finishReason: 'STOP',
+        },
+        {
+          content: { parts: [{ text: '{"response":"Hola."}' }] },
+          finishReason: 'STOP',
+        },
+      ],
+      'CANDIDATES_MULTIPLE',
+      'F3_NATIVE_GENERATION_UNAVAILABLE',
+    ],
+    [
+      'max tokens',
+      [{ content: { parts: [] }, finishReason: 'MAX_TOKENS' }],
+      'FINISH_NOT_STOP',
+      'F3_NATIVE_GENERATION_UNAVAILABLE',
+    ],
+    [
+      'safety',
+      [{ content: { parts: [] }, finishReason: 'SAFETY' }],
+      'FINISH_NOT_STOP',
+      'F3_NATIVE_GENERATION_UNAVAILABLE',
+    ],
+    [
+      'empty STOP',
+      [{ content: { parts: [] }, finishReason: 'STOP' }],
+      'STOP_WITHOUT_TEXT',
+      'F3_NATIVE_GENERATION_UNAVAILABLE',
+    ],
+  ] as const)(
+    'persists %s candidate class without sending fallback',
+    async (_name, candidates, failureClass, reasonCode) => {
+      const { service, request, generate, persisted } = setup();
+      generate.mockResolvedValueOnce({
+        data: {
+          modelVersion: model,
+          candidates,
+          usageMetadata: {
+            promptTokenCount: 20,
+            candidatesTokenCount: 3,
+            thoughtsTokenCount: 4,
+          },
+        },
+      });
+      const result = await service.generateResponse(request);
+      expect(result.diagnostic?.code).toBe(reasonCode);
+      expect(generate).toHaveBeenCalledTimes(1);
+      expect(persisted).toContainEqual(
+        expect.objectContaining({
+          stage: 'GENERATION_SUPPRESSED',
+          failureClass,
+          candidatesCount: candidates.length,
+          usagePresent: true,
+        }),
+      );
+      expect(persisted).toContainEqual(
+        expect.objectContaining({
+          stage: 'RESPONSE_VALIDATION_FAILED',
+          failureClass,
+        }),
+      );
+    },
+  );
+
+  it('classifies malformed 2xx payload without throwing into a fallback send', async () => {
+    const { service, request, generate, persisted } = setup();
+    generate.mockResolvedValueOnce({ data: null });
+    const result = await service.generateResponse(request);
+    expect(result.diagnostic?.code).toBe('INPUT_12000_NOT_ENFORCEABLE');
+    expect(persisted).toContainEqual(
+      expect.objectContaining({
+        stage: 'RESPONSE_VALIDATION_FAILED',
+        failureClass: 'MODEL_VERSION_MISMATCH',
+        candidatesCount: 0,
+        usagePresent: false,
+      }),
+    );
+  });
+
+  it.each([
+    [
+      'missing usage',
+      undefined,
+      'USAGE_MISSING_OR_INVALID',
+      'OUTPUT_1500_NOT_ENFORCEABLE',
+    ],
+    [
+      'invalid usage',
+      { promptTokenCount: '20', candidatesTokenCount: 1 },
+      'USAGE_MISSING_OR_INVALID',
+      'OUTPUT_1500_NOT_ENFORCEABLE',
+    ],
+    [
+      'output over limit',
+      {
+        promptTokenCount: 20,
+        candidatesTokenCount: 1000,
+        thoughtsTokenCount: 501,
+      },
+      'USAGE_LIMIT_EXCEEDED',
+      'OUTPUT_1500_NOT_ENFORCEABLE',
+    ],
+    [
+      'input over limit',
+      {
+        promptTokenCount: 12001,
+        candidatesTokenCount: 1,
+        thoughtsTokenCount: 1,
+      },
+      'USAGE_LIMIT_EXCEEDED',
+      'OUTPUT_1500_NOT_ENFORCEABLE',
+    ],
+  ] as const)(
+    'persists %s while keeping the public cap code',
+    async (_name, usageMetadata, failureClass, reasonCode) => {
+      const { service, request, generate, persisted } = setup();
+      generate.mockResolvedValueOnce({
+        data: {
+          modelVersion: model,
+          candidates: [
+            {
+              content: { parts: [{ text: '{"response":"Hola."}' }] },
+              finishReason: 'STOP',
+            },
+          ],
+          usageMetadata,
+        },
+      });
+      const result = await service.generateResponse(request);
+      expect(result.diagnostic?.code).toBe(reasonCode);
+      expect(persisted).toContainEqual(
+        expect.objectContaining({
+          stage: 'GENERATION_SUPPRESSED',
+          failureClass,
+        }),
+      );
+    },
+  );
+
+  it('persists model mismatch separately from usage and candidate checks', async () => {
+    const { service, request, generate, persisted } = setup();
+    generate.mockResolvedValueOnce({
+      data: { modelVersion: 'wrong-model', candidates: [], usageMetadata: {} },
+    });
+    const result = await service.generateResponse(request);
+    expect(result.diagnostic?.code).toBe('INPUT_12000_NOT_ENFORCEABLE');
+    expect(persisted).toContainEqual(
+      expect.objectContaining({
+        stage: 'GENERATION_SUPPRESSED',
+        failureClass: 'MODEL_VERSION_MISMATCH',
+        modelVersionMatch: false,
+      }),
+    );
+  });
+
+  it('persists valid STOP stages before accepting the parsed response', async () => {
+    const { service, request, persisted, generate } = setup();
+    const result = await service.generateResponse(request);
+    expect(result.response).toBe('Hola.');
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(persisted.map((event) => event.stage)).toEqual([
+      'COUNT_COMPLETED',
+      'DISPATCH_RESERVED',
+      'HTTP_ATTEMPT_STARTING_LOCAL',
+      'HTTP_RESPONSE_OBSERVED',
+      'CANDIDATE_VALIDATED',
+      'GENERATION_ACCEPTED',
+    ]);
+    expect(
+      persisted.find((event) => event.stage === 'CANDIDATE_VALIDATED'),
+    ).toEqual(
+      expect.objectContaining({
+        candidatesCount: 1,
+        finishReason: 'STOP',
+        textPresent: true,
+        promptTokenCount: 11999,
+        candidatesTokenCount: 4,
+        thoughtsTokenCount: 2,
+        modelVersionMatch: true,
+      }),
+    );
+  });
+
+  it('suppresses an invalid JSON candidate and persists parser class', async () => {
+    const { service, request, generate, persisted } = setup();
+    generate.mockResolvedValueOnce({
+      data: {
+        modelVersion: model,
+        candidates: [
+          {
+            content: { parts: [{ text: 'SENTINEL_SECRET_PROMPT_RESPONSE' }] },
+            finishReason: 'STOP',
+          },
+        ],
+        usageMetadata: {
+          promptTokenCount: 20,
+          candidatesTokenCount: 3,
+          thoughtsTokenCount: 0,
+        },
+      },
+    });
+    const result = await service.generateResponse(request);
+    expect(result.diagnostic?.code).toBe('HERMES_INVALID_PROVIDER_RESPONSE');
+    expect(persisted).toContainEqual(
+      expect.objectContaining({
+        stage: 'GENERATION_SUPPRESSED',
+        failureClass: 'PARSER_INVALID',
+      }),
+    );
+    expect(JSON.stringify(persisted)).not.toContain(
+      'SENTINEL_SECRET_PROMPT_RESPONSE',
+    );
+  });
+
+  it('stops before generation if the durable diagnostic store fails', async () => {
+    const { service, prisma, request, generate } = setup();
+    (prisma.$executeRaw as jest.Mock).mockImplementationOnce(() =>
+      Promise.resolve(0),
+    );
+    const result = await service.generateResponse(request);
+    expect(result.diagnostic?.code).toBe('F3_NATIVE_GENERATION_UNAVAILABLE');
+    expect(generate).not.toHaveBeenCalled();
+  });
+
+  it('does not claim a local HTTP attempt when dispatch reservation fails', async () => {
+    const { service, prisma, request, generate, persisted } = setup();
+    (prisma.inboundTurn.updateMany as jest.Mock).mockRejectedValueOnce(
+      new Error('synthetic reservation failure'),
+    );
+    const result = await service.generateResponse(request);
+    expect(generate).not.toHaveBeenCalled();
+    expect(result.f3NativeDiagnostic).toEqual(
+      expect.objectContaining({ requestAttemptedLocal: false }),
+    );
+    expect(persisted).toContainEqual(
+      expect.objectContaining({
+        stage: 'GENERATION_SUPPRESSED',
+        requestAttemptedLocal: false,
+      }),
+    );
+  });
+
+  it('leaves receipt and local attempt unknown while the HTTP call is in flight', async () => {
+    const { service, request, generate, persisted } = setup();
+    let release: ((value: unknown) => void) | undefined;
+    const originalImplementation =
+      generate.getMockImplementation() as () => Promise<unknown>;
+    const defaultResponse = await originalImplementation();
+    generate.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          release = resolve;
+        }),
+    );
+    const pending = service.generateResponse(request);
+    for (let i = 0; i < 100 && !release; i += 1)
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(release).toBeDefined();
+    const starting = persisted.find(
+      (event) => event.stage === 'HTTP_ATTEMPT_STARTING_LOCAL',
+    );
+    expect(starting).toBeDefined();
+    expect(starting).not.toHaveProperty('requestAttemptedLocal');
+    expect(starting).toMatchObject({
+      providerReceipt: 'UNKNOWN',
+      billingReconciled: 'UNKNOWN',
+    });
+    release?.(defaultResponse);
+    await pending;
   });
 });

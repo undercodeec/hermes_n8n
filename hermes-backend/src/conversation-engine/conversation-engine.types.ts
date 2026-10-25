@@ -76,6 +76,7 @@ export interface ConversationTurnResult {
   replyText: string;
   f3CapsBudget?: F3GeminiBudget;
   f3CallTrace?: F3CallTrace;
+  f3NativeDiagnostic?: Record<string, unknown>;
   /** Conversational WhatsApp messages proposed by the agent, in send order. */
   replyParts?: string[];
   proposedActions: ProposedAction[];
