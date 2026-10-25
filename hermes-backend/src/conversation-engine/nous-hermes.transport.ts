@@ -118,14 +118,23 @@ export class NousHermesTransport {
           }))
         )
           throw new Error('CANARY_NOUS_DISPATCH_DENIED');
+      } else if (input.normalNousClaim) {
+        if (
+          guarded ||
+          !this.inboundTurns ||
+          !(await this.inboundTurns.reserveNousDispatch({
+            turnId: input.normalNousClaim.turnId,
+            conversationId: input.conversationId,
+            sourceMessageId: input.inboundMessageId,
+            generationToken: input.normalNousClaim.processingToken,
+            normal: true,
+          }))
+        )
+          throw new Error('NOUS_DISPATCH_DENIED');
       } else if (guarded) {
         throw new Error('CANARY_NOUS_RESERVATION_REQUIRED');
-      } else if (this.prisma) {
-        const prior = await this.prisma.inboundTurn.findFirst({
-          where: { generationSourceMessageId: input.inboundMessageId },
-          select: { id: true },
-        });
-        if (prior) throw new Error('CANARY_NOUS_RESERVATION_REQUIRED');
+      } else {
+        throw new Error('NOUS_DISPATCH_CLAIM_REQUIRED');
       }
       const response = await axios.post(
         NOUS_HERMES_ENDPOINT,
@@ -178,9 +187,13 @@ export class NousHermesTransport {
         proposalEvidence: validated.fieldEvidence,
       };
     } catch (error) {
-      if (error instanceof Error && error.message.startsWith('CANARY_NOUS_'))
+      if (
+        error instanceof Error &&
+        (error.message.startsWith('CANARY_NOUS_') ||
+          error.message.startsWith('NOUS_DISPATCH_'))
+      )
         throw error;
-      if (this.httpStatus(error) === 429) {
+      if (this.httpStatus(error) === 429 && !input.normalNousClaim) {
         throw new NousHermesRateLimitError(
           submittedLearning,
           submittedPromptVersion,
@@ -534,11 +547,13 @@ export class NousHermesTransport {
     const timedOut = axiosError.code === 'ECONNABORTED';
     const code = timedOut
       ? 'NOUS_HERMES_TIMEOUT'
-      : status === 401 || status === 403
-        ? 'NOUS_HERMES_AUTH_REJECTED'
-        : typeof status === 'number' && status >= 500
-          ? 'NOUS_HERMES_UNAVAILABLE'
-          : 'NOUS_HERMES_REQUEST_FAILED';
+      : status === 429
+        ? 'NOUS_HERMES_RATE_LIMITED'
+        : status === 401 || status === 403
+          ? 'NOUS_HERMES_AUTH_REJECTED'
+          : typeof status === 'number' && status >= 500
+            ? 'NOUS_HERMES_UNAVAILABLE'
+            : 'NOUS_HERMES_REQUEST_FAILED';
     return {
       category: 'PROVIDER_ERROR',
       code,

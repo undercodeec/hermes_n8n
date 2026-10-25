@@ -1,13 +1,22 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import {
+  ConflictException,
   Injectable,
   Logger,
+  Optional,
   OnModuleDestroy,
   OnModuleInit,
 } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import { AUTO_REPLY_QUEUE, AutoReplyJobData } from './auto-reply.constants';
 import { InboundTurnService } from './inbound-turn.service';
+import {
+  NOUS_DISPATCH_AMBIGUOUS,
+  NORMAL_NOUS_GENERATION_ENGINE,
+} from './inbound-turn.service';
+import { TasksService } from '../tasks/tasks.service';
+import { HandoffReason } from '@prisma/client';
+import { HandoffService } from '../handoff/handoff.service';
 
 @Injectable()
 export class InboundTurnRecoveryService
@@ -21,6 +30,8 @@ export class InboundTurnRecoveryService
     private readonly turns: InboundTurnService,
     @InjectQueue(AUTO_REPLY_QUEUE)
     private readonly queue: Queue<AutoReplyJobData>,
+    @Optional() private readonly tasks?: TasksService,
+    @Optional() private readonly handoffs?: HandoffService,
   ) {}
 
   onModuleInit(): void {
@@ -45,12 +56,20 @@ export class InboundTurnRecoveryService
         ) {
           this.logger.warn(
             JSON.stringify({
-              event: 'canary_generation_blocked',
+              event:
+                turn.generationEngine === NORMAL_NOUS_GENERATION_ENGINE
+                  ? 'nous_generation_blocked'
+                  : 'canary_generation_blocked',
               turnId: turn.id,
               sourceMessageId: turn.generationSourceMessageId,
-              reasonCode: 'CANARY_BLOCKED_AMBIGUOUS_GENERATION',
+              reasonCode:
+                turn.generationEngine === NORMAL_NOUS_GENERATION_ENGINE
+                  ? NOUS_DISPATCH_AMBIGUOUS
+                  : 'CANARY_BLOCKED_AMBIGUOUS_GENERATION',
             }),
           );
+          if (turn.generationEngine === NORMAL_NOUS_GENERATION_ENGINE)
+            await this.requestNousReview(turn);
           continue;
         }
         await this.queue.add(
@@ -66,12 +85,56 @@ export class InboundTurnRecoveryService
           },
         );
       }
+      for (const turn of await this.turns.pendingNousReviews())
+        await this.requestNousReview(turn);
     } catch (error) {
       this.logger.warn(
         `No se pudieron recuperar turnos pendientes: ${error instanceof Error ? error.message : String(error)}`,
       );
     } finally {
       this.scanning = false;
+    }
+  }
+
+  private async requestNousReview(turn: {
+    id: string;
+    conversationId: string;
+    contactId: string;
+    lastMessageId: string;
+    generationSourceMessageId: string | null;
+    generationBlockReason: string | null;
+  }): Promise<void> {
+    if (!this.tasks) return;
+    const reason = turn.generationBlockReason ?? NOUS_DISPATCH_AMBIGUOUS;
+    try {
+      await this.tasks.requestHermesReview({
+        conversationId: turn.conversationId,
+        contactId: turn.contactId,
+        sourceMessageId: turn.generationSourceMessageId ?? turn.lastMessageId,
+        category: 'PROVIDER_ERROR',
+        code: reason,
+        summary: 'Resultado de Nous incierto; revisar y continuar manualmente.',
+      });
+      if (this.handoffs) {
+        try {
+          await this.handoffs.create({
+            conversationId: turn.conversationId,
+            reason: HandoffReason.INFO_ERROR,
+            reasonDetail:
+              'Nous no confirmó la generación; requiere atención humana.',
+          });
+        } catch (error) {
+          if (!(error instanceof ConflictException)) throw error;
+        }
+      }
+      await this.turns.markNousReviewed(turn.id, reason);
+    } catch {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'nous_review_task_pending_recovery',
+          turnId: turn.id,
+        }),
+      );
     }
   }
 }

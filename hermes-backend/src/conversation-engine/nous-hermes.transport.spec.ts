@@ -5,17 +5,16 @@ import {
   NOUS_HERMES_ENDPOINT,
   NOUS_HERMES_MODEL,
 } from './nous-hermes.constants';
-import {
-  NousHermesRateLimitError,
-  NousHermesTransport,
-} from './nous-hermes.transport';
+import { NousHermesTransport } from './nous-hermes.transport';
 import type { ConversationTurnInput } from './conversation-engine.types';
+import { InboundTurnService } from '../auto-replies/inbound-turn.service';
 
 const baseInput = (
   overrides: Partial<ConversationTurnInput> = {},
 ): ConversationTurnInput => ({
   conversationId: 'conversation-a',
   inboundMessageId: 'inbound-1',
+  normalNousClaim: { turnId: 'turn-1', processingToken: 'token-1' },
   customerMessage: 'canary-a',
   approvedContext: {
     recentMessages: [{ role: 'assistant', text: 'Contexto previo' }],
@@ -61,6 +60,9 @@ describe('NousHermesTransport', () => {
       config,
       new AgentOutputValidator(),
       secretReader,
+      {
+        reserveNousDispatch: jest.fn().mockResolvedValue(true),
+      } as unknown as InboundTurnService,
     );
   }
 
@@ -234,7 +236,8 @@ describe('NousHermesTransport', () => {
         ],
       },
     });
-    await expect(configuredTransport().execute(input)).rejects.toMatchObject({
+    await expect(configuredTransport().execute(input)).resolves.toMatchObject({
+      diagnostic: { code: 'NOUS_HERMES_RATE_LIMITED' },
       learningExposed: [{ id: 'safe', version: 2 }],
     });
   });
@@ -353,11 +356,13 @@ describe('NousHermesTransport', () => {
     );
   });
 
-  it('throws a typed rate limit for queue retry and maps other failures safely', async () => {
+  it('does not retry a rate limit after a normal Nous dispatch', async () => {
     post.mockRejectedValueOnce({ response: { status: 429 } });
     await expect(
       configuredTransport().execute(baseInput()),
-    ).rejects.toBeInstanceOf(NousHermesRateLimitError);
+    ).resolves.toMatchObject({
+      diagnostic: { code: 'NOUS_HERMES_RATE_LIMITED' },
+    });
     post.mockRejectedValueOnce({ response: { status: 500 } });
     const result = await configuredTransport().execute(baseInput());
     expect(result.diagnostic?.code).toBe('NOUS_HERMES_UNAVAILABLE');

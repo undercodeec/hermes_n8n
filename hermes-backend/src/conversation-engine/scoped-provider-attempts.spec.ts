@@ -81,6 +81,14 @@ function nousInput(
     inboundMessageId: source,
     customerMessage: source,
     ...(conversationId === TARGET ? { singleGenerationCanary: CLAIM } : {}),
+    ...(conversationId !== TARGET
+      ? {
+          normalNousClaim: {
+            turnId: `turn-${source}`,
+            processingToken: `token-${source}`,
+          },
+        }
+      : {}),
     approvedContext: {
       recentMessages: [],
       approvedKnowledge: [],
@@ -306,7 +314,7 @@ describe('scoped provider dispatch at the HTTP adapter', () => {
     expect(physicalPosts).toBe(0);
   });
 
-  it('keeps Nous QA at one dispatch while other sources retain three 429 attempts', async () => {
+  it('keeps Nous QA and each ordinary inbound at one HTTP dispatch', async () => {
     const dispatched = new Set<string>();
     const turns = {
       reserveNousDispatch: jest.fn(
@@ -366,7 +374,7 @@ describe('scoped provider dispatch at the HTTP adapter', () => {
       await expect(transport.execute(qa)).rejects.toThrow(
         'CANARY_NOUS_DISPATCH_DENIED',
       );
-      expect(posts).toEqual({ 'source-qa': 1, 'source-a': 3, 'source-b': 3 });
+      expect(posts).toEqual({ 'source-qa': 1, 'source-a': 1, 'source-b': 1 });
     } finally {
       axios.defaults.adapter = previousAdapter;
     }

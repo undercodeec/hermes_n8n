@@ -33,6 +33,8 @@ export interface ConversationTurnInput {
     processingToken: string;
     generationToken: string;
   };
+  /** Normal Nous dispatch is bound to the claimed inbound turn, not the conversation. */
+  normalNousClaim?: { turnId: string; processingToken: string };
   canaryServiceWindowExpiresAt?: string;
   canaryReceivedAt?: string;
   customerMessage: string;

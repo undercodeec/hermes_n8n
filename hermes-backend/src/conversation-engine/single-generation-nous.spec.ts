@@ -168,6 +168,10 @@ describe('Nous canary HTTP boundary', () => {
       conversationId: 'other-conversation',
       inboundMessageId: 'other-source',
       singleGenerationCanary: undefined,
+      normalNousClaim: {
+        turnId: 'normal-turn',
+        processingToken: 'normal-token',
+      },
     };
     await expect(engine.respond(other)).resolves.toBe(result);
     expect(add).toHaveBeenCalledWith(

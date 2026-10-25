@@ -36,7 +36,7 @@ const redisUrl = process.env.REDIS_INTEGRATION_URL;
 if (!databaseUrl) throw new Error('DATABASE_INTEGRATION_URL is required');
 if (!redisUrl || !redisUrl.startsWith('redis://127.0.0.1:56379/'))
   throw new Error('Refusing non-isolated Redis');
-if (!databaseUrl.includes('127.0.0.1:55432/hermes_learning_test'))
+if (!/127\.0\.0\.1:(?:55432|55888)\/hermes_learning_test/.test(databaseUrl))
   throw new Error('Refusing non-isolated database');
 
 describe('F3 single-generation canary with PostgreSQL', () => {
@@ -182,6 +182,406 @@ describe('F3 single-generation canary with PostgreSQL', () => {
       (await prisma.inboundTurn.findUniqueOrThrow({ where: { id: f.turn.id } }))
         .providerDispatchReservedAt,
     ).not.toBeNull();
+  });
+
+  it('reserves one normal Nous dispatch per inbound across workers and later turns', async () => {
+    const first = await fixture();
+    const normal = new InboundTurnService(
+      prisma,
+      configFor(first.conversation.id, false),
+    );
+    const claim = await normal.claim(first.turn.id);
+    const dispatch = {
+      turnId: first.turn.id,
+      conversationId: first.conversation.id,
+      sourceMessageId: first.source.id,
+      generationToken: claim!.processingToken!,
+      normal: true,
+    };
+    expect(
+      (
+        await Promise.all([
+          normal.reserveNousDispatch(dispatch),
+          normal.reserveNousDispatch(dispatch),
+        ])
+      ).sort(),
+    ).toEqual([false, true]);
+    await normal.release(first.turn.id, claim!.processingToken!);
+    expect(
+      (
+        await prisma.inboundTurn.findUniqueOrThrow({
+          where: { id: first.turn.id },
+        })
+      ).status,
+    ).toBe(InboundTurnStatus.BLOCKED);
+    expect(await normal.reserveNousDispatch(dispatch)).toBe(false);
+
+    const second = await prisma.message.create({
+      data: {
+        conversationId: first.conversation.id,
+        contactId: first.contact.id,
+        direction: MessageDirection.INBOUND,
+        sender: MessageSender.CONTACT,
+        content: 'Otro mensaje',
+        wamid: `wamid.${randomUUID()}`,
+      },
+    });
+    const next = await prisma.inboundTurn.create({
+      data: {
+        conversationId: first.conversation.id,
+        contactId: first.contact.id,
+        firstAt: new Date(Date.now() - 2000),
+        lastAt: new Date(Date.now() - 2000),
+        dueAt: new Date(Date.now() - 1000),
+        lastMessageId: second.id,
+      },
+    });
+    const nextClaim = await normal.claim(next.id);
+    expect(
+      await normal.reserveNousDispatch({
+        turnId: next.id,
+        conversationId: first.conversation.id,
+        sourceMessageId: second.id,
+        generationToken: nextClaim!.processingToken!,
+        normal: true,
+      }),
+    ).toBe(true);
+  });
+
+  it('releases a normal turn after a proven pre-HTTP configuration failure', async () => {
+    const f = await fixture();
+    const normal = new InboundTurnService(
+      prisma,
+      configFor(f.conversation.id, false),
+    );
+    const claim = await normal.claim(f.turn.id);
+    const endpoint = jest.spyOn(axios, 'post');
+    try {
+      const transport = new NousHermesTransport(
+        configFor(f.conversation.id, false),
+        new AgentOutputValidator(),
+        { read: jest.fn().mockRejectedValue(new Error('missing file')) },
+        normal,
+        prisma,
+      );
+      const result = await transport.execute({
+        conversationId: f.conversation.id,
+        inboundMessageId: f.source.id,
+        customerMessage: 'Consulta sintética',
+        normalNousClaim: {
+          turnId: f.turn.id,
+          processingToken: claim!.processingToken!,
+        },
+        approvedContext: {
+          recentMessages: [],
+          approvedKnowledge: [],
+          handoffActive: false,
+          contactName: 'Cliente',
+        },
+      });
+      expect(result.diagnostic?.code).toBe('NOUS_HERMES_CONFIGURATION_INVALID');
+      expect(endpoint).not.toHaveBeenCalled();
+      await normal.release(f.turn.id, claim!.processingToken!);
+      expect(
+        (
+          await prisma.inboundTurn.findUniqueOrThrow({
+            where: { id: f.turn.id },
+          })
+        ).status,
+      ).toBe(InboundTurnStatus.OPEN);
+      expect(await normal.claim(f.turn.id)).not.toBeNull();
+    } finally {
+      endpoint.mockRestore();
+    }
+  });
+
+  it('blocks a normal timeout after one HTTP dispatch and denies restart replay', async () => {
+    const f = await fixture();
+    const normal = new InboundTurnService(
+      prisma,
+      configFor(f.conversation.id, false),
+    );
+    const claim = await normal.claim(f.turn.id);
+    const endpoint = jest
+      .spyOn(axios, 'post')
+      .mockRejectedValue({ code: 'ECONNABORTED' });
+    const input: ConversationTurnInput = {
+      conversationId: f.conversation.id,
+      inboundMessageId: f.source.id,
+      customerMessage: 'Consulta sintética',
+      normalNousClaim: {
+        turnId: f.turn.id,
+        processingToken: claim!.processingToken!,
+      },
+      approvedContext: {
+        recentMessages: [],
+        approvedKnowledge: [],
+        handoffActive: false,
+        contactName: 'Cliente',
+      },
+    };
+    try {
+      const transport = new NousHermesTransport(
+        configFor(f.conversation.id, false),
+        new AgentOutputValidator(),
+        { read: jest.fn().mockResolvedValue('synthetic-secret') },
+        normal,
+        prisma,
+      );
+      expect((await transport.execute(input)).diagnostic?.code).toBe(
+        'NOUS_HERMES_TIMEOUT',
+      );
+      await normal.release(f.turn.id, claim!.processingToken!);
+      expect(
+        (
+          await prisma.inboundTurn.findUniqueOrThrow({
+            where: { id: f.turn.id },
+          })
+        ).status,
+      ).toBe(InboundTurnStatus.BLOCKED);
+      expect(await normal.claim(f.turn.id)).toBeNull();
+      await expect(transport.execute(input)).rejects.toThrow(
+        'NOUS_DISPATCH_DENIED',
+      );
+      expect(endpoint).toHaveBeenCalledTimes(1);
+    } finally {
+      endpoint.mockRestore();
+    }
+  });
+
+  it('lets only one of two normal workers reach HTTP for the same inbound', async () => {
+    const f = await fixture();
+    const normal = new InboundTurnService(
+      prisma,
+      configFor(f.conversation.id, false),
+    );
+    const claim = await normal.claim(f.turn.id);
+    const endpoint = jest.spyOn(axios, 'post').mockResolvedValue({
+      data: {
+        model: 'hermes-agent',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content: '{"replyText":"Respuesta sintética."}' },
+          },
+        ],
+      },
+    });
+    try {
+      const transport = new NousHermesTransport(
+        configFor(f.conversation.id, false),
+        new AgentOutputValidator(),
+        { read: jest.fn().mockResolvedValue('synthetic-secret') },
+        normal,
+        prisma,
+      );
+      const input: ConversationTurnInput = {
+        conversationId: f.conversation.id,
+        inboundMessageId: f.source.id,
+        customerMessage: 'Consulta sintética',
+        normalNousClaim: {
+          turnId: f.turn.id,
+          processingToken: claim!.processingToken!,
+        },
+        approvedContext: {
+          recentMessages: [],
+          approvedKnowledge: [],
+          handoffActive: false,
+          contactName: 'Cliente',
+        },
+      };
+      const results = await Promise.allSettled([
+        transport.execute(input),
+        transport.execute(input),
+      ]);
+      expect(
+        results.filter((result) => result.status === 'fulfilled'),
+      ).toHaveLength(1);
+      expect(
+        results.filter((result) => result.status === 'rejected'),
+      ).toHaveLength(1);
+      expect(endpoint).toHaveBeenCalledTimes(1);
+    } finally {
+      endpoint.mockRestore();
+    }
+  });
+
+  it('revokes a queued normal job before HTTP when its outcome is unknown', async () => {
+    const f = await fixture();
+    const normal = new InboundTurnService(
+      prisma,
+      configFor(f.conversation.id, false),
+    );
+    const claim = await normal.claim(f.turn.id);
+    expect(
+      await normal.blockAmbiguous(f.turn.id, claim!.processingToken!, true),
+    ).toBe(true);
+    expect(
+      await normal.reserveNousDispatch({
+        turnId: f.turn.id,
+        conversationId: f.conversation.id,
+        sourceMessageId: f.source.id,
+        generationToken: claim!.processingToken!,
+        normal: true,
+      }),
+    ).toBe(false);
+    expect(
+      (await prisma.inboundTurn.findUniqueOrThrow({ where: { id: f.turn.id } }))
+        .generationBlockReason,
+    ).toBe('NOUS_QUEUE_OUTCOME_UNKNOWN');
+  });
+
+  it('creates one durable human review after recovery blocks an uncertain Nous turn', async () => {
+    const f = await fixture();
+    const normal = new InboundTurnService(
+      prisma,
+      configFor(f.conversation.id, false),
+    );
+    const claim = await normal.claim(f.turn.id);
+    expect(
+      await normal.reserveNousDispatch({
+        turnId: f.turn.id,
+        conversationId: f.conversation.id,
+        sourceMessageId: f.source.id,
+        generationToken: claim!.processingToken!,
+        normal: true,
+      }),
+    ).toBe(true);
+    await prisma.inboundTurn.update({
+      where: { id: f.turn.id },
+      data: { processingAt: new Date(Date.now() - 16 * 60_000) },
+    });
+    const queueAdd = jest.fn();
+    const requestHermesReview = jest
+      .fn()
+      .mockResolvedValue({ id: 'synthetic-review' });
+    const handoff = jest.fn().mockResolvedValue({ id: 'synthetic-handoff' });
+    const recovery = new InboundTurnRecoveryService(
+      normal,
+      { add: queueAdd } as unknown as Queue<AutoReplyJobData>,
+      { requestHermesReview } as unknown as TasksService,
+      { create: handoff } as unknown as HandoffService,
+    );
+    await recovery.scan();
+    expect(queueAdd).not.toHaveBeenCalled();
+    expect(requestHermesReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceMessageId: f.source.id,
+        code: 'NOUS_DISPATCH_AMBIGUOUS',
+      }),
+    );
+    expect(handoff).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: f.conversation.id,
+        reason: 'INFO_ERROR',
+      }),
+    );
+    expect(
+      (await prisma.inboundTurn.findUniqueOrThrow({ where: { id: f.turn.id } }))
+        .generationBlockReason,
+    ).toBe('NOUS_DISPATCH_AMBIGUOUS_REVIEWED');
+    await recovery.scan();
+    const reviewCalls = requestHermesReview.mock.calls as Array<
+      [{ sourceMessageId: string }]
+    >;
+    expect(
+      reviewCalls.filter(([params]) => params.sourceMessageId === f.source.id),
+    ).toHaveLength(1);
+  });
+
+  it('recovers a persisted normal reply batch without another Nous dispatch', async () => {
+    const f = await fixture();
+    const normal = new InboundTurnService(
+      prisma,
+      configFor(f.conversation.id, false),
+    );
+    const claim = await normal.claim(f.turn.id);
+    expect(
+      await normal.reserveNousDispatch({
+        turnId: f.turn.id,
+        conversationId: f.conversation.id,
+        sourceMessageId: f.source.id,
+        generationToken: claim!.processingToken!,
+        normal: true,
+      }),
+    ).toBe(true);
+    const deliveries = new AutomatedDeliveryService(prisma, {} as MetaService);
+    await deliveries.prepareBatch(
+      {
+        deliveryKind: 'HERMES_REPLY',
+        conversationId: f.conversation.id,
+        contactId: f.contact.id,
+        sourceMessageId: f.source.id,
+        sender: 'HERMES',
+        allowHandedOff: false,
+        parts: [{ partIndex: 0, content: 'Respuesta válida persistida' }],
+      },
+      {
+        turnId: f.turn.id,
+        processingToken: claim!.processingToken!,
+        generationToken: claim!.processingToken!,
+      },
+    );
+    await normal.release(f.turn.id, claim!.processingToken!);
+    const recovered = {
+      recoverBatch: jest
+        .fn()
+        .mockResolvedValue({ handled: true, confirmed: 1, terminal: true }),
+      getBatchProgress: jest.fn().mockResolvedValue(undefined),
+    };
+    const { service, engine } = replayService(f, recovered, false);
+    await service.process(jobFor(f));
+    expect(recovered.recoverBatch).toHaveBeenCalledWith(f.source.id, false);
+    expect(engine.respond).not.toHaveBeenCalled();
+    expect(
+      (await prisma.inboundTurn.findUniqueOrThrow({ where: { id: f.turn.id } }))
+        .status,
+    ).toBe(InboundTurnStatus.PROCESSED);
+  });
+
+  it('does not persist a late normal reply after its generation claim is blocked', async () => {
+    const f = await fixture();
+    const normal = new InboundTurnService(
+      prisma,
+      configFor(f.conversation.id, false),
+    );
+    const claim = await normal.claim(f.turn.id);
+    expect(
+      await normal.reserveNousDispatch({
+        turnId: f.turn.id,
+        conversationId: f.conversation.id,
+        sourceMessageId: f.source.id,
+        generationToken: claim!.processingToken!,
+        normal: true,
+      }),
+    ).toBe(true);
+    expect(
+      await normal.blockAmbiguous(f.turn.id, claim!.processingToken!),
+    ).toBe(true);
+    const deliveries = new AutomatedDeliveryService(prisma, {} as MetaService);
+    await expect(
+      deliveries.prepareBatch(
+        {
+          deliveryKind: 'HERMES_REPLY',
+          conversationId: f.conversation.id,
+          contactId: f.contact.id,
+          sourceMessageId: f.source.id,
+          sender: 'HERMES',
+          allowHandedOff: false,
+          parts: [{ partIndex: 0, content: 'Respuesta tardía' }],
+        },
+        {
+          turnId: f.turn.id,
+          processingToken: claim!.processingToken!,
+          generationToken: claim!.processingToken!,
+        },
+      ),
+    ).rejects.toThrow('CANARY_GENERATION_CLAIM_LOST');
+    expect(
+      await prisma.automatedDelivery.count({
+        where: { sourceMessageId: f.source.id },
+      }),
+    ).toBe(0);
   });
 
   it('enforces unique source identity across distinct turns in PostgreSQL', async () => {
@@ -492,6 +892,18 @@ describe('F3 single-generation canary with PostgreSQL', () => {
     expect(blocked.generationSourceMessageId).toBe(f.source.id);
   });
 
+  it('keeps the F3 Nous block reason separate from normal Nous review', async () => {
+    const f = await fixture();
+    const claim = await reserve(f, 'nous_hermes');
+    await f.turns.release(f.turn.id, claim.processingToken!);
+    const blocked = await prisma.inboundTurn.findUniqueOrThrow({
+      where: { id: f.turn.id },
+    });
+    expect(blocked.generationBlockReason).toBe(
+      'CANARY_BLOCKED_AMBIGUOUS_GENERATION',
+    );
+  });
+
   it('keeps a historical reservation closed after flag OFF even if an old job reopens the turn', async () => {
     const f = await fixture();
     await reserve(f);
@@ -551,7 +963,7 @@ describe('F3 single-generation canary with PostgreSQL', () => {
     };
     const { service, engine } = replayService(f, recovered);
     await service.process(jobFor(f));
-    expect(recovered.recoverBatch).toHaveBeenCalledWith(f.source.id);
+    expect(recovered.recoverBatch).toHaveBeenCalledWith(f.source.id, false);
     expect(engine.respond).not.toHaveBeenCalled();
     expect(
       (await prisma.inboundTurn.findUniqueOrThrow({ where: { id: f.turn.id } }))

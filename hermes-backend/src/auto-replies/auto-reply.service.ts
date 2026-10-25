@@ -63,7 +63,11 @@ import {
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 import { reviewAgentProposal } from '../conversation-engine/agent-proposal-policy';
 import { AGENT_DEFAULT_INTENTS } from '../conversation-engine/agent-output.contract';
-import { InboundTurnService } from './inbound-turn.service';
+import {
+  InboundTurnService,
+  NOUS_DISPATCH_AMBIGUOUS,
+  NOUS_QUEUE_OUTCOME_UNKNOWN,
+} from './inbound-turn.service';
 import { MeetingsService } from '../integrations/google-calendar/meetings.service';
 import { PaymentsService } from '../payments/payments.service';
 import { ConversationReviewService } from '../learning/conversation-review.service';
@@ -274,11 +278,58 @@ export class AutoReplyService {
         await this.inboundTurns.complete(turn.id, turn.processingToken!);
       } catch (error) {
         await this.inboundTurns.release(turn.id, turn.processingToken!);
+        await this.requestBlockedNousReview(turn.id);
         throw error;
       }
       return;
     }
     await this.processTurn(data);
+  }
+
+  private async requestBlockedNousReview(turnId: string): Promise<void> {
+    if (!this.inboundTurns) return;
+    const turn = await this.prisma.inboundTurn.findUnique({
+      where: { id: turnId },
+    });
+    if (
+      !turn ||
+      ![NOUS_DISPATCH_AMBIGUOUS, NOUS_QUEUE_OUTCOME_UNKNOWN].includes(
+        turn.generationBlockReason ?? '',
+      )
+    )
+      return;
+    try {
+      await this.tasks.requestHermesReview({
+        conversationId: turn.conversationId,
+        contactId: turn.contactId,
+        sourceMessageId: turn.generationSourceMessageId ?? turn.lastMessageId,
+        category: 'PROVIDER_ERROR',
+        code: turn.generationBlockReason!,
+        summary: 'Resultado de Nous incierto; revisar y continuar manualmente.',
+      });
+      const conversation = await this.prisma.conversation.findUnique({
+        where: { id: turn.conversationId },
+        select: { status: true },
+      });
+      if (conversation && conversation.status !== ConversationStatus.CLOSED)
+        await this.handoffs.create({
+          conversationId: turn.conversationId,
+          reason: HandoffReason.INFO_ERROR,
+          reasonDetail:
+            'Nous no confirmó la generación; requiere atención humana.',
+        });
+      await this.inboundTurns.markNousReviewed(
+        turn.id,
+        turn.generationBlockReason!,
+      );
+    } catch {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'nous_review_task_pending_recovery',
+          turnId: turn.id,
+        }),
+      );
+    }
   }
 
   private async processTurn(
@@ -733,6 +784,18 @@ export class AutoReplyService {
             generationToken: claimedTurn.processingToken!,
           }
         : undefined;
+    const normalNousClaim =
+      !canaryBatchClaim &&
+      claimedTurn &&
+      this.conversationEngine.selectedEngine(
+        data.conversationId,
+        assignedEngine,
+      ) === 'nous_hermes'
+        ? {
+            turnId: claimedTurn.id,
+            processingToken: claimedTurn.processingToken!,
+          }
+        : undefined;
     if (canaryBatchClaim && !canaryRun) {
       const acquired = await this.inboundTurns!.reserveGeneration({
         turnId: claimedTurn!.id,
@@ -750,6 +813,7 @@ export class AutoReplyService {
       conversationId: data.conversationId,
       ...(assignedEngine ? { assignedEngine } : {}),
       inboundMessageId: inbound.id,
+      ...(normalNousClaim ? { normalNousClaim } : {}),
       ...(canaryBatchClaim ? { singleGenerationCanary: canaryBatchClaim } : {}),
       ...(canaryBatchClaim
         ? {
@@ -793,6 +857,33 @@ export class AutoReplyService {
         },
       },
     });
+    if (normalNousClaim && engineResult.diagnostic) {
+      await this.inboundTurns!.blockAmbiguous(
+        normalNousClaim.turnId,
+        normalNousClaim.processingToken,
+      );
+      const persisted = await this.prisma.inboundTurn.findUnique({
+        where: { id: normalNousClaim.turnId },
+        select: { status: true, providerDispatchReservedAt: true },
+      });
+      if (
+        persisted?.providerDispatchReservedAt ||
+        persisted?.status === 'BLOCKED'
+      ) {
+        if ((await this.deliveries.recoverBatch(inbound.id))?.handled) return;
+        await this.requestBlockedNousReview(normalNousClaim.turnId);
+        this.logSkip(data, 'NOUS_DISPATCH_AMBIGUOUS');
+        return;
+      }
+    }
+    const deliveryClaim =
+      canaryBatchClaim ??
+      (normalNousClaim && !engineResult.diagnostic
+        ? {
+            ...normalNousClaim,
+            generationToken: normalNousClaim.processingToken,
+          }
+        : undefined);
     const recordSuppressedInference = (reasonCode: string) =>
       this.deliveries.recordSuppressedInference(
         {
@@ -831,7 +922,7 @@ export class AutoReplyService {
               : {}),
           },
         },
-        ...(canaryBatchClaim ? ([canaryBatchClaim] as const) : ([] as const)),
+        ...(deliveryClaim ? ([deliveryClaim] as const) : ([] as const)),
       );
     if (
       engineResult.engine === 'gemini_direct' &&
@@ -1564,7 +1655,7 @@ export class AutoReplyService {
             : {}),
         })),
       },
-      ...(canaryBatchClaim ? ([canaryBatchClaim] as const) : ([] as const)),
+      ...(deliveryClaim ? ([deliveryClaim] as const) : ([] as const)),
     );
     if (data.inboundTurnId) {
       const configured = Number(

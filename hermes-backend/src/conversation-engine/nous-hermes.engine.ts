@@ -9,7 +9,6 @@ import type {
 } from './conversation-engine.types';
 import { NOUS_HERMES_INFERENCE_QUEUE } from './nous-hermes.constants';
 import { NousHermesQueueEvents } from './nous-hermes.queue-events';
-import { NousHermesRateLimitError } from './nous-hermes.transport';
 import { InboundTurnService } from '../auto-replies/inbound-turn.service';
 import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
 
@@ -36,6 +35,8 @@ export class NousHermesEngine implements ConversationEngine {
     );
     if (guarded !== Boolean(input.singleGenerationCanary))
       throw new Error('CANARY_NOUS_SCOPE_OR_CLAIM_MISMATCH');
+    if (!guarded && !input.normalNousClaim)
+      throw new Error('NOUS_DISPATCH_CLAIM_REQUIRED');
     if (input.approvedContext.handoffActive) {
       return this.failureResult(
         input,
@@ -70,7 +71,8 @@ export class NousHermesEngine implements ConversationEngine {
         await this.blockAmbiguousCanary(input);
         throw new Error('CANARY_NOUS_QUEUE_AMBIGUOUS');
       }
-      return this.queueUnavailable(input);
+      await this.blockUnknownNormal(input);
+      throw new Error('NOUS_QUEUE_ADMISSION_AMBIGUOUS');
     }
 
     try {
@@ -78,24 +80,26 @@ export class NousHermesEngine implements ConversationEngine {
         this.queueEvents.queueEvents,
         waitTimeout,
       );
-    } catch (error) {
+    } catch {
       if (input.singleGenerationCanary) {
         await this.blockAmbiguousCanary(input);
         throw new Error('CANARY_NOUS_RESULT_AMBIGUOUS');
       }
-      if (this.isTerminalRateLimit(error)) {
-        return this.failureResult(
-          input,
-          'NOUS_HERMES_RATE_LIMITED',
-          'Agent inference remained rate limited after bounded retries',
-          'PROVIDER_ERROR',
-          attempts,
-          true,
-          this.rateLimitTrace(error),
-        );
-      }
-      return this.queueUnavailable(input);
+      await this.blockUnknownNormal(input);
+      throw new Error('NOUS_QUEUE_RESULT_AMBIGUOUS');
     }
+  }
+
+  private async blockUnknownNormal(
+    input: ConversationTurnInput,
+  ): Promise<void> {
+    if (!this.inboundTurns || !input.normalNousClaim)
+      throw new Error('NOUS_TURN_GUARD_UNAVAILABLE');
+    await this.inboundTurns.blockAmbiguous(
+      input.normalNousClaim.turnId,
+      input.normalNousClaim.processingToken,
+      true,
+    );
   }
 
   private async blockAmbiguousCanary(
@@ -107,66 +111,6 @@ export class NousHermesEngine implements ConversationEngine {
       input.singleGenerationCanary.turnId,
       input.singleGenerationCanary.processingToken,
     );
-  }
-
-  private queueUnavailable(
-    input: ConversationTurnInput,
-  ): ConversationTurnResult {
-    return this.failureResult(
-      input,
-      'NOUS_HERMES_QUEUE_UNAVAILABLE',
-      'Agent inference queue is unavailable',
-      'PROVIDER_ERROR',
-      0,
-      true,
-    );
-  }
-
-  private isTerminalRateLimit(error: unknown): boolean {
-    return (
-      error instanceof NousHermesRateLimitError ||
-      (error instanceof Error &&
-        (error.message === 'Nous Hermes rate limit' ||
-          error.message.startsWith('Nous Hermes rate limit|')))
-    );
-  }
-
-  private rateLimitTrace(error: unknown): {
-    learningExposed?: Array<{ id: string; version: number }>;
-    promptVersion?: string;
-  } {
-    if (!(error instanceof Error)) return {};
-    const encoded = error.message.split('|', 2)[1];
-    if (!encoded) return {};
-    try {
-      const trace = JSON.parse(encoded) as {
-        learningExposed?: Array<{ id: string; version: number }>;
-        promptVersion?: string;
-      };
-      const validExposure =
-        Array.isArray(trace.learningExposed) &&
-        trace.learningExposed.length <= 3 &&
-        trace.learningExposed.every(
-          (item) =>
-            item &&
-            typeof item.id === 'string' &&
-            item.id.length > 0 &&
-            item.id.length <= 100 &&
-            Number.isSafeInteger(item.version) &&
-            item.version > 0 &&
-            Object.keys(item).every((key) => key === 'id' || key === 'version'),
-        );
-      return {
-        ...(validExposure ? { learningExposed: trace.learningExposed } : {}),
-        ...(typeof trace.promptVersion === 'string' &&
-        trace.promptVersion.length > 0 &&
-        trace.promptVersion.length <= 64
-          ? { promptVersion: trace.promptVersion }
-          : {}),
-      };
-    } catch {
-      return {};
-    }
   }
 
   private failureResult(

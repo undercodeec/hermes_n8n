@@ -6,13 +6,14 @@ import type {
 } from './conversation-engine.types';
 import { NousHermesEngine } from './nous-hermes.engine';
 import { NousHermesQueueEvents } from './nous-hermes.queue-events';
-import { NousHermesRateLimitError } from './nous-hermes.transport';
+import { InboundTurnService } from '../auto-replies/inbound-turn.service';
 
 const baseInput = (
   overrides: Partial<ConversationTurnInput> = {},
 ): ConversationTurnInput => ({
   conversationId: 'conversation-1',
   inboundMessageId: 'inbound-1',
+  normalNousClaim: { turnId: 'turn-1', processingToken: 'token-1' },
   customerMessage: 'Hola',
   approvedContext: {
     recentMessages: [],
@@ -36,6 +37,7 @@ describe('NousHermesEngine queue routing', () => {
       add: jest.fn().mockResolvedValue({ waitUntilFinished }),
     };
     const queueEvents = { queueEvents: { id: 'events' } };
+    const blockAmbiguous = jest.fn().mockResolvedValue(true);
     const config = {
       get: jest.fn((_key: string, fallback?: unknown) => fallback),
     };
@@ -47,8 +49,9 @@ describe('NousHermesEngine queue routing', () => {
         string
       >,
       queueEvents as unknown as NousHermesQueueEvents,
+      { blockAmbiguous } as unknown as InboundTurnService,
     );
-    return { engine, queue, queueEvents, waitUntilFinished };
+    return { engine, queue, queueEvents, waitUntilFinished, blockAmbiguous };
   }
 
   it('enqueues with bounded retries and waits on the shared event host', async () => {
@@ -72,19 +75,13 @@ describe('NousHermesEngine queue routing', () => {
     );
   });
 
-  it('keeps request exposure when a terminal rate limit crosses the queue boundary', async () => {
-    const { engine, waitUntilFinished } = harness();
-    const queued = new NousHermesRateLimitError(
-      [{ id: 'synthetic-learning', version: 2 }],
-      'prompt-digest',
+  it('blocks an unknown queued result before the caller can retry', async () => {
+    const { engine, waitUntilFinished, blockAmbiguous } = harness();
+    waitUntilFinished.mockRejectedValue(new Error('timeout'));
+    await expect(engine.respond(baseInput())).rejects.toThrow(
+      'NOUS_QUEUE_RESULT_AMBIGUOUS',
     );
-    waitUntilFinished.mockRejectedValue(new Error(queued.message));
-    const result = await engine.respond(baseInput());
-    expect(result.diagnostic?.code).toBe('NOUS_HERMES_RATE_LIMITED');
-    expect(result.learningExposed).toEqual([
-      { id: 'synthetic-learning', version: 2 },
-    ]);
-    expect(result.promptVersion).toBe('prompt-digest');
+    expect(blockAmbiguous).toHaveBeenCalledWith('turn-1', 'token-1', true);
   });
 
   it('short-circuits an active handoff before Redis', async () => {
@@ -102,24 +99,13 @@ describe('NousHermesEngine queue routing', () => {
     expect(result.diagnostic?.code).toBe('NOUS_HERMES_HANDOFF_ACTIVE');
   });
 
-  it('maps a terminal typed 429 without exposing provider detail', async () => {
-    const { engine, waitUntilFinished } = harness();
-    waitUntilFinished.mockRejectedValue(new NousHermesRateLimitError());
-
-    const result = await engine.respond(baseInput());
-
-    expect(result.diagnostic?.code).toBe('NOUS_HERMES_RATE_LIMITED');
-    expect(result.replyText).not.toMatch(/Redis|provider|rate limit/i);
-  });
-
-  it('maps the serialized BullMQ 429 failure reason', async () => {
+  it('blocks a serialized failure without another dispatch', async () => {
     const { engine, waitUntilFinished } = harness();
     waitUntilFinished.mockRejectedValue(new Error('Nous Hermes rate limit'));
 
-    const result = await engine.respond(baseInput());
-
-    expect(result.diagnostic?.code).toBe('NOUS_HERMES_RATE_LIMITED');
-    expect(result.replyText).not.toMatch(/Redis|provider|rate limit/i);
+    await expect(engine.respond(baseInput())).rejects.toThrow(
+      'NOUS_QUEUE_RESULT_AMBIGUOUS',
+    );
   });
 
   it('maps queue-add and wait infrastructure failures safely', async () => {
@@ -127,16 +113,26 @@ describe('NousHermesEngine queue routing', () => {
     addFailure.queue.add.mockRejectedValue(
       new Error('Redis password private-detail'),
     );
-    const addResult = await addFailure.engine.respond(baseInput());
-    expect(addResult.diagnostic?.code).toBe('NOUS_HERMES_QUEUE_UNAVAILABLE');
-    expect(addResult.replyText).not.toMatch(/Redis|private-detail/i);
+    await expect(addFailure.engine.respond(baseInput())).rejects.toThrow(
+      'NOUS_QUEUE_ADMISSION_AMBIGUOUS',
+    );
+    expect(addFailure.blockAmbiguous).toHaveBeenCalledWith(
+      'turn-1',
+      'token-1',
+      true,
+    );
 
     const waitFailure = harness();
     waitFailure.waitUntilFinished.mockRejectedValue(
       new Error('Redis connection private-detail'),
     );
-    const waitResult = await waitFailure.engine.respond(baseInput());
-    expect(waitResult.diagnostic?.code).toBe('NOUS_HERMES_QUEUE_UNAVAILABLE');
-    expect(waitResult.replyText).not.toMatch(/Redis|private-detail/i);
+    await expect(waitFailure.engine.respond(baseInput())).rejects.toThrow(
+      'NOUS_QUEUE_RESULT_AMBIGUOUS',
+    );
+    expect(waitFailure.blockAmbiguous).toHaveBeenCalledWith(
+      'turn-1',
+      'token-1',
+      true,
+    );
   });
 });

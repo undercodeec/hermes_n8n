@@ -173,6 +173,7 @@ describe('AutoReplyService', () => {
     conversationMetadata?: Record<string, unknown>;
     learningRows?: Array<Record<string, unknown>>;
     commercialSnapshot?: CommercialSnapshot;
+    inboundTurns?: InboundTurnService;
   };
 
   function setupProcessHarness(options: ProcessHarnessOptions): {
@@ -422,7 +423,7 @@ describe('AutoReplyService', () => {
       guard as unknown as ConversationGuardService,
       { add: jest.fn() } as unknown as Queue,
       deliveries as unknown as AutomatedDeliveryService,
-      undefined,
+      options.inboundTurns,
       undefined,
       undefined,
       undefined,
@@ -446,6 +447,117 @@ describe('AutoReplyService', () => {
       conversationStateUpsert,
     };
   }
+
+  it('passes the normal Nous claim and suppresses an ambiguous fallback with human review', async () => {
+    const turns = {
+      claim: jest.fn().mockResolvedValue({
+        id: 'turn-normal',
+        lastMessageId: 'inbound-recovery',
+        processingToken: 'token-normal',
+        generationReservedAt: null,
+      }),
+      messages: jest
+        .fn()
+        .mockResolvedValue([
+          { id: 'inbound-recovery', type: 'TEXT', content: 'Consulta actual' },
+        ]),
+      complete: jest.fn(),
+      blockAmbiguous: jest.fn().mockResolvedValue(true),
+      markNousReviewed: jest.fn().mockResolvedValue(undefined),
+    };
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'No disponible' },
+      engineId: 'nous_hermes',
+      inboundTurns: turns as unknown as InboundTurnService,
+    });
+    (harness.prisma as unknown as { inboundTurn: unknown }).inboundTurn = {
+      findUnique: jest.fn().mockResolvedValue({
+        id: 'turn-normal',
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        lastMessageId: 'inbound-recovery',
+        generationSourceMessageId: 'inbound-recovery',
+        generationBlockReason: 'NOUS_DISPATCH_AMBIGUOUS',
+        providerDispatchReservedAt: new Date(),
+        status: 'BLOCKED',
+      }),
+    };
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({ response: 'No disponible' }),
+      engine: 'nous_hermes',
+      diagnostic: {
+        category: 'PROVIDER_ERROR',
+        code: 'NOUS_HERMES_TIMEOUT',
+        summary: 'Request timed out',
+        attempts: 1,
+        recovered: false,
+        requiresHumanReview: true,
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+      inboundTurnId: 'turn-normal',
+    });
+    expect(harness.engine.respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        normalNousClaim: {
+          turnId: 'turn-normal',
+          processingToken: 'token-normal',
+        },
+      }),
+    );
+    expect(harness.tasks.requestHermesReview).toHaveBeenCalledTimes(1);
+    expect(harness.handoffs.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        conversationId: 'conversation-1',
+        reason: HandoffReason.INFO_ERROR,
+      }),
+    );
+    expect(harness.deliveries.prepareBatch).not.toHaveBeenCalled();
+    expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('binds a valid normal Nous reply batch to its original processing token', async () => {
+    const turns = {
+      claim: jest.fn().mockResolvedValue({
+        id: 'turn-normal',
+        lastMessageId: 'inbound-recovery',
+        processingToken: 'token-normal',
+        generationReservedAt: null,
+      }),
+      messages: jest
+        .fn()
+        .mockResolvedValue([
+          { id: 'inbound-recovery', type: 'TEXT', content: 'Consulta actual' },
+        ]),
+      complete: jest.fn(),
+    };
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'Respuesta válida.' },
+      engineId: 'nous_hermes',
+      inboundTurns: turns as unknown as InboundTurnService,
+    });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({ response: 'Respuesta válida.' }),
+      engine: 'nous_hermes',
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+      inboundTurnId: 'turn-normal',
+    });
+    expect(harness.deliveries.prepareBatch).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceMessageId: 'inbound-recovery' }),
+      {
+        turnId: 'turn-normal',
+        processingToken: 'token-normal',
+        generationToken: 'token-normal',
+      },
+    );
+  });
 
   it.each([
     [false, false, 0, 0],
@@ -1257,9 +1369,19 @@ describe('AutoReplyService', () => {
             new ConfigService({}),
             new AgentOutputValidator(),
             { read: jest.fn().mockResolvedValue('synthetic-key') },
+            {
+              reserveNousDispatch: jest.fn().mockResolvedValue(true),
+            } as unknown as InboundTurnService,
           );
           harness.engine.respond.mockImplementation(
-            (turn: ConversationTurnInput) => transport.execute(turn),
+            (turn: ConversationTurnInput) =>
+              transport.execute({
+                ...turn,
+                normalNousClaim: {
+                  turnId: 'synthetic-turn',
+                  processingToken: 'synthetic-token',
+                },
+              }),
           );
         }
         try {
@@ -3678,9 +3800,18 @@ describe('AutoReplyService', () => {
       } as unknown as ConfigService,
       new AgentOutputValidator(),
       { read: jest.fn().mockResolvedValue('synthetic-secret') },
+      {
+        reserveNousDispatch: jest.fn().mockResolvedValue(true),
+      } as unknown as InboundTurnService,
     );
     harness.engine.respond.mockImplementation((input) =>
-      transport.execute(input),
+      transport.execute({
+        ...input,
+        normalNousClaim: {
+          turnId: 'synthetic-turn',
+          processingToken: 'synthetic-token',
+        },
+      }),
     );
     try {
       await harness.service.process({

@@ -13,6 +13,9 @@ import { isSingleGenerationCanaryConversation } from './single-generation-canary
 import { activeCanaryRun, CanaryRun } from './canary-run.policy';
 
 export const AMBIGUOUS_GENERATION = 'CANARY_BLOCKED_AMBIGUOUS_GENERATION';
+export const NOUS_DISPATCH_AMBIGUOUS = 'NOUS_DISPATCH_AMBIGUOUS';
+export const NOUS_QUEUE_OUTCOME_UNKNOWN = 'NOUS_QUEUE_OUTCOME_UNKNOWN';
+export const NORMAL_NOUS_GENERATION_ENGINE = 'nous_hermes_normal';
 
 @Injectable()
 export class InboundTurnService {
@@ -146,6 +149,19 @@ export class InboundTurnService {
         ],
       },
       orderBy: { dueAt: 'asc' },
+      take: 100,
+    });
+  }
+
+  async pendingNousReviews(): Promise<InboundTurn[]> {
+    return this.prisma.inboundTurn.findMany({
+      where: {
+        status: InboundTurnStatus.BLOCKED,
+        generationBlockReason: {
+          in: [NOUS_DISPATCH_AMBIGUOUS, NOUS_QUEUE_OUTCOME_UNKNOWN],
+        },
+      },
+      orderBy: { updatedAt: 'asc' },
       take: 100,
     });
   }
@@ -429,7 +445,44 @@ export class InboundTurnService {
     conversationId: string;
     sourceMessageId: string;
     generationToken: string;
+    normal?: boolean;
   }): Promise<boolean> {
+    if (input.normal) {
+      if (
+        isSingleGenerationCanaryConversation(this.config, input.conversationId)
+      )
+        return false;
+      const now = new Date();
+      try {
+        const reserved = await this.prisma.inboundTurn.updateMany({
+          where: {
+            id: input.turnId,
+            conversationId: input.conversationId,
+            lastMessageId: input.sourceMessageId,
+            processingToken: input.generationToken,
+            status: InboundTurnStatus.PROCESSING,
+            generationReservedAt: null,
+            providerDispatchReservedAt: null,
+            generationBlockedAt: null,
+          },
+          data: {
+            generationSourceMessageId: input.sourceMessageId,
+            generationReservedAt: now,
+            generationToken: input.generationToken,
+            generationEngine: NORMAL_NOUS_GENERATION_ENGINE,
+            providerDispatchReservedAt: now,
+          },
+        });
+        return reserved.count === 1;
+      } catch (error) {
+        if (
+          error instanceof Prisma.PrismaClientKnownRequestError &&
+          error.code === 'P2002'
+        )
+          return false;
+        throw error;
+      }
+    }
     const reserved = await this.prisma.inboundTurn.updateMany({
       where: {
         id: input.turnId,
@@ -449,19 +502,29 @@ export class InboundTurnService {
     return reserved.count === 1;
   }
 
-  async blockAmbiguous(turnId: string, token?: string): Promise<boolean> {
+  async blockAmbiguous(
+    turnId: string,
+    token?: string,
+    queueOutcomeUnknown = false,
+  ): Promise<boolean> {
     return this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT id FROM inbound_turns WHERE id = ${turnId} FOR UPDATE`;
       const turn = await tx.inboundTurn.findUnique({ where: { id: turnId } });
       if (
-        !turn?.generationReservedAt ||
+        !turn ||
+        (!turn.generationReservedAt && !queueOutcomeUnknown) ||
+        (queueOutcomeUnknown &&
+          turn.generationReservedAt &&
+          turn.generationEngine !== NORMAL_NOUS_GENERATION_ENGINE) ||
         turn.status === InboundTurnStatus.PROCESSED ||
         turn.status === InboundTurnStatus.BLOCKED ||
         (token && turn.processingToken !== token)
       )
         return false;
       const batch = await tx.automatedDelivery.findFirst({
-        where: { sourceMessageId: turn.generationSourceMessageId! },
+        where: {
+          sourceMessageId: turn.generationSourceMessageId ?? turn.lastMessageId,
+        },
         select: { id: true },
       });
       if (batch) return false;
@@ -476,10 +539,26 @@ export class InboundTurnService {
           processingAt: null,
           processingToken: null,
           generationBlockedAt: new Date(),
-          generationBlockReason: AMBIGUOUS_GENERATION,
+          generationBlockReason:
+            queueOutcomeUnknown && !turn.generationReservedAt
+              ? NOUS_QUEUE_OUTCOME_UNKNOWN
+              : turn.generationEngine === NORMAL_NOUS_GENERATION_ENGINE
+                ? NOUS_DISPATCH_AMBIGUOUS
+                : AMBIGUOUS_GENERATION,
         },
       });
       return blocked.count === 1;
+    });
+  }
+
+  async markNousReviewed(turnId: string, reason: string): Promise<void> {
+    await this.prisma.inboundTurn.updateMany({
+      where: {
+        id: turnId,
+        status: InboundTurnStatus.BLOCKED,
+        generationBlockReason: reason,
+      },
+      data: { generationBlockReason: `${reason}_REVIEWED` },
     });
   }
 
