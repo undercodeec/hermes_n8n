@@ -436,6 +436,10 @@ export class NousHermesTransport {
       if (JSON.stringify([...approvedLearning, item]).length <= learningBudget)
         approvedLearning.push(item);
     }
+    const turnScope = createHash('sha256')
+      .update(JSON.stringify([input.conversationId, input.inboundMessageId]))
+      .digest('hex');
+    const scopeContent = `Ámbito interno y efímero de este turno: ${turnScope}. No lo cites en la respuesta.`;
     const systemContext = [
       'Eres el asesor comercial de Undercodeec. Responde con un único objeto JSON válido en el contenido final de Chat Completions; no uses Markdown ni herramientas.',
       'Contrato JSON: entrega replyText como cadena no vacía o replyParts como lista de 1 a 6 mensajes completos, no vacíos y ordenados. Si incluyes ambos, replyText debe ser exactamente replyParts unidos con un espacio. Las demás claves opcionales son detectedIntent, suggestedTags, commercialProfilePatch, fieldEvidence, proposedNextAction y actionEvidence. Omite claves opcionales sin dato; no uses null ni cadenas vacías.',
@@ -553,6 +557,7 @@ export class NousHermesTransport {
       0,
       maximumContextCharacters -
         systemContext.length -
+        scopeContent.length -
         stateLength -
         customerMessage.length,
     );
@@ -569,6 +574,7 @@ export class NousHermesTransport {
     }
     return [
       { role: 'system', content: systemContext },
+      { role: 'system', content: scopeContent },
       ...history,
       {
         role: 'user',

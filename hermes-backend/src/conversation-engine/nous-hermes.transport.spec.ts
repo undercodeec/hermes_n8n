@@ -214,6 +214,57 @@ describe('NousHermesTransport', () => {
     );
   });
 
+  it('gives identical first messages distinct gateway scope per inbound and stable scope on restart', async () => {
+    post.mockResolvedValue({
+      data: {
+        model: 'hermes-agent',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content: JSON.stringify({ replyText: 'Respuesta.' }) },
+          },
+        ],
+      },
+    });
+    const greeting = 'Hola, quiero información';
+    const first = inputFor('conversation-a', greeting);
+    const otherCustomer = inputFor('conversation-b', greeting);
+    const nextInbound = {
+      ...inputFor('conversation-a', greeting),
+      inboundMessageId: 'inbound-a-2',
+    };
+    const reopened = {
+      ...inputFor('conversation-a', greeting),
+      inboundMessageId: 'inbound-a-reopened',
+    };
+    const transport = configuredTransport();
+    const versions: Array<string | undefined> = [];
+    for (const input of [first, otherCustomer, nextInbound, reopened]) {
+      versions.push((await transport.execute(input)).promptVersion);
+    }
+    versions.push((await configuredTransport().execute(first)).promptVersion);
+
+    const gatewayInputs = post.mock.calls.map((call) => {
+      const { messages } = call[1] as {
+        messages: Array<{ role: string; content: string }>;
+      };
+      const prompt = messages
+        .filter((message) => message.role === 'system')
+        .map((message) => message.content)
+        .join('\n');
+      return `${prompt}\0${messages.find((message) => message.role === 'user')?.content}`;
+    });
+    expect(new Set(gatewayInputs.slice(0, 4)).size).toBe(4);
+    expect(gatewayInputs[4]).toBe(gatewayInputs[0]);
+    expect(new Set(versions).size).toBe(1);
+    for (const call of post.mock.calls) {
+      expect(call[2]?.headers).toEqual({
+        Authorization: 'Bearer file-secret',
+        'Content-Type': 'application/json',
+      });
+    }
+  });
+
   it('returns a reviewable failure instead of truncated Nous text', async () => {
     post.mockResolvedValue({
       data: {
