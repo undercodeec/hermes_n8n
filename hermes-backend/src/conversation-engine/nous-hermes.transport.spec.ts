@@ -9,6 +9,7 @@ import { NousHermesTransport } from './nous-hermes.transport';
 import type { ConversationTurnInput } from './conversation-engine.types';
 import { InboundTurnService } from '../auto-replies/inbound-turn.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { NORMAL_NOUS_GENERATION_ENGINE } from '../auto-replies/inbound-turn.service';
 
 const baseInput = (
   overrides: Partial<ConversationTurnInput> = {},
@@ -52,6 +53,7 @@ describe('NousHermesTransport', () => {
   function configuredTransport(
     values: Record<string, string | number | undefined> = {},
     prisma?: PrismaService,
+    reserveNousDispatch = jest.fn().mockResolvedValue(true),
   ) {
     const config = {
       get: jest.fn((key: string, fallback?: unknown) =>
@@ -63,7 +65,7 @@ describe('NousHermesTransport', () => {
       new AgentOutputValidator(),
       secretReader,
       {
-        reserveNousDispatch: jest.fn().mockResolvedValue(true),
+        reserveNousDispatch,
       } as unknown as InboundTurnService,
       prisma,
     );
@@ -96,6 +98,12 @@ describe('NousHermesTransport', () => {
     );
     expect(post).not.toHaveBeenCalled();
     expect(result.diagnostic?.code).toBe('NOUS_PILOT_DAILY_LIMIT');
+    expect(count).toHaveBeenCalledWith({
+      where: {
+        generationEngine: NORMAL_NOUS_GENERATION_ENGINE,
+        providerDispatchReservedAt: { gte: expect.any(Date) as Date },
+      },
+    });
   });
 
   it('caps daily estimated spend before HTTP', async () => {
@@ -129,6 +137,7 @@ describe('NousHermesTransport', () => {
       },
     });
     const count = jest.fn().mockResolvedValueOnce(0).mockResolvedValueOnce(1);
+    const reserveNousDispatch = jest.fn().mockResolvedValue(true);
     const transport = configuredTransport(
       {
         NOUS_PILOT_COMMERCIAL_ENABLED: 'true',
@@ -136,6 +145,7 @@ describe('NousHermesTransport', () => {
         NOUS_PILOT_DAILY_ESTIMATED_USD_LIMIT: '0.05',
       },
       { inboundTurn: { count } } as unknown as PrismaService,
+      reserveNousDispatch,
     );
     const result = await transport.execute(
       baseInput({ assignedEngine: 'nous_hermes' }),
@@ -143,6 +153,16 @@ describe('NousHermesTransport', () => {
     expect(result.diagnostic).toBeUndefined();
     expect(post).toHaveBeenCalledTimes(1);
     expect(count).toHaveBeenCalledTimes(2);
+    expect(reserveNousDispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        normal: true,
+        pilotBudget: {
+          dailyRequestLimit: 100,
+          dailyEstimatedUsdLimit: 0.05,
+          estimatedUsdPerRequest: 0.02,
+        },
+      }),
+    );
   });
 
   it('uses only the exact alias, stateless messages, and minimal headers', async () => {

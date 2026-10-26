@@ -33,7 +33,11 @@ function webhookWithDoubles(
   advertising = {} as AdvertisingService,
 ) {
   return new WebhookService(
-    { get: jest.fn() } as unknown as ConfigService,
+    {
+      get: jest.fn((key: string) =>
+        key === 'META_PHONE_NUMBER_ID' ? 'allowed' : undefined,
+      ),
+    } as unknown as ConfigService,
     prisma,
     {} as MetaService,
     {} as HermesService,
@@ -67,7 +71,10 @@ describe('WebhookService durable inbox', () => {
             field: 'messages',
             value: {
               messaging_product: 'whatsapp',
-              metadata: { display_phone_number: '', phone_number_id: '' },
+              metadata: {
+                display_phone_number: '',
+                phone_number_id: 'allowed',
+              },
               messages: [message],
               contacts: [contact],
             },
@@ -88,7 +95,7 @@ describe('WebhookService durable inbox', () => {
         {
           eventKey: 'message:wamid.synthetic',
           eventType: 'MESSAGE',
-          payload: { message, contact, phoneNumberId: '' },
+          payload: { message, contact, phoneNumberId: 'allowed' },
         },
       ],
       skipDuplicates: true,
@@ -100,7 +107,7 @@ describe('WebhookService durable inbox', () => {
     const service = new WebhookService(
       {
         get: jest.fn((key: string) =>
-          key === 'META_PHONE_NUMBER_ID' ? 'allowed' : undefined,
+          key === 'META_PHONE_NUMBER_ID' ? 'other' : undefined,
         ),
       } as unknown as ConfigService,
       { metaWebhookInbox: { createMany } } as unknown as PrismaService,
@@ -116,6 +123,17 @@ describe('WebhookService durable inbox', () => {
       {} as AutomatedDeliveryService,
     );
     await service.acceptWebhook(dto);
+    expect(createMany).not.toHaveBeenCalled();
+  });
+
+  it('ignores an inbound event without a phone_number_id', async () => {
+    const createMany = jest.fn();
+    const service = webhookWithDoubles({
+      metaWebhookInbox: { createMany },
+    } as unknown as PrismaService);
+    const missingPhone = structuredClone(dto);
+    missingPhone.entry[0].changes[0].value.metadata.phone_number_id = '';
+    await service.acceptWebhook(missingPhone);
     expect(createMany).not.toHaveBeenCalled();
   });
 
@@ -189,12 +207,34 @@ describe('WebhookService durable inbox', () => {
     expect(createMany).not.toHaveBeenCalled();
   });
 
+  it('fails closed with no configured phone even while commercial Nous is dark', async () => {
+    const createMany = jest.fn();
+    const service = new WebhookService(
+      { get: jest.fn() } as unknown as ConfigService,
+      { metaWebhookInbox: { createMany } } as unknown as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      {} as CampaignsService,
+      {} as AutoReplyService,
+      {} as ConversationGuardService,
+      {} as AdvertisingService,
+      {} as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+    );
+    await expect(service.acceptWebhook(dto)).rejects.toThrow(
+      'META_PHONE_NUMBER_ID is required',
+    );
+    expect(createMany).not.toHaveBeenCalled();
+  });
+
   it('recovers a failed attribution after restart without processing the message twice', async () => {
     const row = {
       id: 'inbox-1',
       eventKey: 'message:wamid.synthetic',
       eventType: 'MESSAGE',
-      payload: { message, contact },
+      payload: { message, contact, phoneNumberId: 'allowed' },
       status: MetaWebhookInboxStatus.PENDING,
       attempts: 0,
       claimToken: null as string | null,
@@ -245,7 +285,7 @@ describe('WebhookService durable inbox', () => {
     const row = {
       id: 'inbox-concurrent',
       eventType: 'MESSAGE',
-      payload: { message, contact },
+      payload: { message, contact, phoneNumberId: 'allowed' },
       status: MetaWebhookInboxStatus.PENDING,
       attempts: 0,
       claimToken: null as string | null,
@@ -280,7 +320,7 @@ describe('WebhookService durable inbox', () => {
     const row = {
       id: 'inbox-abandoned',
       eventType: 'MESSAGE',
-      payload: { message, contact },
+      payload: { message, contact, phoneNumberId: 'allowed' },
       status: MetaWebhookInboxStatus.PROCESSING,
       outcome: null,
       attempts: 1,

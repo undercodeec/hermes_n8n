@@ -446,15 +446,19 @@ export class InboundTurnService {
     sourceMessageId: string;
     generationToken: string;
     normal?: boolean;
+    pilotBudget?: {
+      dailyRequestLimit: number;
+      dailyEstimatedUsdLimit: number;
+      estimatedUsdPerRequest: number;
+    };
   }): Promise<boolean> {
     if (input.normal) {
       if (
         isSingleGenerationCanaryConversation(this.config, input.conversationId)
       )
         return false;
-      const now = new Date();
       try {
-        const reserved = await this.prisma.inboundTurn.updateMany({
+        const reserveArgs = (now: Date): Prisma.InboundTurnUpdateManyArgs => ({
           where: {
             id: input.turnId,
             conversationId: input.conversationId,
@@ -473,6 +477,38 @@ export class InboundTurnService {
             providerDispatchReservedAt: now,
           },
         });
+        const budget = input.pilotBudget;
+        if (budget) {
+          return this.prisma.$transaction(async (tx) => {
+            // Every pilot worker must serialize this count and reservation.
+            await tx.$executeRaw`SELECT pg_advisory_xact_lock(710, 10)`;
+            const now = new Date();
+            const dayStart = new Date(
+              Date.UTC(
+                now.getUTCFullYear(),
+                now.getUTCMonth(),
+                now.getUTCDate(),
+              ),
+            );
+            const count = await tx.inboundTurn.count({
+              where: {
+                generationEngine: NORMAL_NOUS_GENERATION_ENGINE,
+                providerDispatchReservedAt: { gte: dayStart },
+              },
+            });
+            if (
+              count >= budget.dailyRequestLimit ||
+              (count + 1) * budget.estimatedUsdPerRequest >
+                budget.dailyEstimatedUsdLimit
+            )
+              return false;
+            const reserved = await tx.inboundTurn.updateMany(reserveArgs(now));
+            return reserved.count === 1;
+          });
+        }
+        const reserved = await this.prisma.inboundTurn.updateMany(
+          reserveArgs(new Date()),
+        );
         return reserved.count === 1;
       } catch (error) {
         if (

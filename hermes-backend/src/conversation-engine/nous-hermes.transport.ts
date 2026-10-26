@@ -23,7 +23,10 @@ import {
 } from './nous-hermes.constants';
 import { learningContentBudget } from '../learning/learning-retrieval.service';
 import type { ApprovedLearning } from '../learning/learning-retrieval.service';
-import { InboundTurnService } from '../auto-replies/inbound-turn.service';
+import {
+  InboundTurnService,
+  NORMAL_NOUS_GENERATION_ENGINE,
+} from '../auto-replies/inbound-turn.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
 
@@ -139,6 +142,28 @@ export class NousHermesTransport {
             sourceMessageId: input.inboundMessageId,
             generationToken: input.normalNousClaim.processingToken,
             normal: true,
+            ...(input.assignedEngine === 'nous_hermes'
+              ? {
+                  pilotBudget: {
+                    dailyRequestLimit: this.positiveInteger(
+                      'NOUS_PILOT_DAILY_REQUEST_LIMIT',
+                      100,
+                    ),
+                    dailyEstimatedUsdLimit: Number(
+                      this.config.get<string>(
+                        'NOUS_PILOT_DAILY_ESTIMATED_USD_LIMIT',
+                        '5',
+                      ),
+                    ),
+                    estimatedUsdPerRequest: Number(
+                      this.config.get<string>(
+                        'NOUS_PILOT_ESTIMATED_USD_PER_REQUEST',
+                        '',
+                      ),
+                    ),
+                  },
+                }
+              : {}),
           }))
         )
           throw new Error('NOUS_DISPATCH_DENIED');
@@ -274,7 +299,7 @@ export class NousHermesTransport {
   private async pilotDispatchCount(): Promise<number> {
     return this.prisma!.inboundTurn.count({
       where: {
-        generationEngine: 'nous_hermes',
+        generationEngine: NORMAL_NOUS_GENERATION_ENGINE,
         providerDispatchReservedAt: { gte: this.pilotDayStart() },
       },
     });

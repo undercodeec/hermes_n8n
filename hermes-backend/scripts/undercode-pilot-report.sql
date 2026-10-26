@@ -9,17 +9,19 @@ WITH pilot_conversations AS (
 ), dispatches AS (
   SELECT "conversationId", COUNT(*) AS requests
   FROM inbound_turns
-  WHERE "generationEngine" = 'nous_hermes'
+  WHERE "generationEngine" = 'nous_hermes_normal'
     AND "providerDispatchReservedAt" IS NOT NULL
   GROUP BY "conversationId"
 ), response_usage AS (
-  SELECT "conversationId", "inboundTurnId",
-         MAX("tokensUsed") AS tokens,
-         MAX("costEstimate") AS provider_cost_estimate
+  SELECT "conversationId", metadata->>'conversationTurnId' AS turn_id,
+         MAX(CASE WHEN jsonb_typeof(metadata->'tokensUsed') = 'number'
+                  THEN (metadata->>'tokensUsed')::numeric END) AS tokens,
+         MAX(CASE WHEN jsonb_typeof(metadata->'costEstimate') = 'number'
+                  THEN (metadata->>'costEstimate')::numeric END) AS provider_cost_estimate
   FROM messages
   WHERE metadata->>'conversationEngine' = 'nous_hermes'
-    AND "inboundTurnId" IS NOT NULL
-  GROUP BY "conversationId", "inboundTurnId"
+    AND metadata->>'conversationTurnId' IS NOT NULL
+  GROUP BY "conversationId", metadata->>'conversationTurnId'
 ), usage_by_conversation AS (
   SELECT "conversationId", COUNT(*) AS response_turns,
          COUNT(tokens) AS token_known_turns,

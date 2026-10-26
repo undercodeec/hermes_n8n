@@ -774,17 +774,9 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
       .get<string>('META_PHONE_NUMBER_ID', '')
       ?.trim();
     if (!configured) {
-      if (
-        this.configService.get<string>(
-          'NOUS_PILOT_COMMERCIAL_ENABLED',
-          'false',
-        ) === 'true'
-      ) {
-        throw new Error(
-          'META_PHONE_NUMBER_ID is required for Nous commercial pilot',
-        );
-      }
-      return true;
+      throw new Error(
+        'META_PHONE_NUMBER_ID is required for the WhatsApp pilot',
+      );
     }
     if (inboundId === configured) return true;
     this.logger.warn('Webhook ignored for a different phone_number_id');
