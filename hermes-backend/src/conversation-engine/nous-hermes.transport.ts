@@ -78,6 +78,17 @@ export class NousHermesTransport {
         requiresHumanReview: false,
       });
     }
+    const pilotBlock = await this.pilotBlockCode(input);
+    if (pilotBlock) {
+      return this.failureResult(input, {
+        category: 'OUTPUT_BLOCKED',
+        code: pilotBlock,
+        summary: 'Nous pilot dispatch stopped before HTTP',
+        attempts: 0,
+        recovered: false,
+        requiresHumanReview: true,
+      });
+    }
 
     let submittedLearning: Array<{ id: string; version: number }> | undefined;
     let submittedPromptVersion: string | undefined;
@@ -136,6 +147,8 @@ export class NousHermesTransport {
       } else {
         throw new Error('NOUS_DISPATCH_CLAIM_REQUIRED');
       }
+      if (input.assignedEngine === 'nous_hermes')
+        await this.logPilotDispatch(input);
       const response = await axios.post(
         NOUS_HERMES_ENDPOINT,
         {
@@ -214,6 +227,90 @@ export class NousHermesTransport {
           ? submittedLearning
           : undefined,
         submittedPromptVersion,
+      );
+    }
+  }
+
+  private async pilotBlockCode(
+    input: ConversationTurnInput,
+  ): Promise<string | null> {
+    if (
+      this.config.get<string>('NOUS_PILOT_OPERATIONS_ENABLED', 'true') !==
+      'true'
+    )
+      return 'NOUS_PILOT_STOPPED';
+    if (input.assignedEngine !== 'nous_hermes') return null;
+    if (
+      this.config.get<string>('NOUS_PILOT_COMMERCIAL_ENABLED', 'false') !==
+      'true'
+    )
+      return 'NOUS_PILOT_STOPPED';
+    if (!this.prisma) return 'NOUS_PILOT_METER_UNAVAILABLE';
+    const perRequest = Number(
+      this.config.get<string>('NOUS_PILOT_ESTIMATED_USD_PER_REQUEST', ''),
+    );
+    if (!Number.isFinite(perRequest) || perRequest <= 0)
+      return 'NOUS_PILOT_COST_UNCONFIGURED';
+    const count = await this.pilotDispatchCount();
+    const limit = this.positiveInteger('NOUS_PILOT_DAILY_REQUEST_LIMIT', 100);
+    if (count >= limit) return 'NOUS_PILOT_DAILY_LIMIT';
+    const spendLimit = Number(
+      this.config.get<string>('NOUS_PILOT_DAILY_ESTIMATED_USD_LIMIT', '5'),
+    );
+    if (!Number.isFinite(spendLimit) || spendLimit <= 0)
+      return 'NOUS_PILOT_COST_UNCONFIGURED';
+    if ((count + 1) * perRequest > spendLimit)
+      return 'NOUS_PILOT_DAILY_SPEND_LIMIT';
+    return null;
+  }
+
+  private pilotDayStart(): Date {
+    const now = new Date();
+    return new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
+    );
+  }
+
+  private async pilotDispatchCount(): Promise<number> {
+    return this.prisma!.inboundTurn.count({
+      where: {
+        generationEngine: 'nous_hermes',
+        providerDispatchReservedAt: { gte: this.pilotDayStart() },
+      },
+    });
+  }
+
+  private async logPilotDispatch(input: ConversationTurnInput): Promise<void> {
+    if (!this.prisma) return;
+    const count = await this.pilotDispatchCount();
+    const perRequest = Number(
+      this.config.get<string>('NOUS_PILOT_ESTIMATED_USD_PER_REQUEST', ''),
+    );
+    const estimatedUsd = Number((count * perRequest).toFixed(6));
+    const alertAt = Number(
+      this.config.get<string>('NOUS_PILOT_SPEND_ALERT_USD', '1'),
+    );
+    this.logger.log(
+      JSON.stringify({
+        event: 'nous_pilot_dispatch',
+        traceId: input.inboundMessageId,
+        dayUtc: this.pilotDayStart().toISOString().slice(0, 10),
+        dailyRequests: count,
+        estimatedUsd,
+        billedUsd: null,
+      }),
+    );
+    if (
+      count >= this.positiveInteger('NOUS_PILOT_DAILY_REQUEST_ALERT', 80) ||
+      (Number.isFinite(alertAt) && alertAt > 0 && estimatedUsd >= alertAt)
+    ) {
+      this.logger.warn(
+        JSON.stringify({
+          event: 'nous_pilot_threshold',
+          dailyRequests: count,
+          estimatedUsd,
+          billedUsd: null,
+        }),
       );
     }
   }

@@ -6,6 +6,7 @@ import { Queue } from 'bullmq';
 import { DirectGeminiEngine } from '../conversation-engine/direct-gemini.engine';
 import { AgentOutputValidator } from '../conversation-engine/agent-output.validator';
 import { NousHermesTransport } from '../conversation-engine/nous-hermes.transport';
+import { InboundTurnService } from '../auto-replies/inbound-turn.service';
 import type { ConversationTurnInput } from '../conversation-engine/conversation-engine.types';
 import { HermesService } from '../hermes/hermes.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -22,6 +23,10 @@ function inputFor(customerMessage: string): ConversationTurnInput {
   return {
     conversationId: 'conversation-synthetic',
     inboundMessageId: 'inbound-synthetic',
+    normalNousClaim: {
+      turnId: 'turn-synthetic',
+      processingToken: 'token-synthetic',
+    },
     customerMessage,
     approvedContext: {
       recentMessages: [{ role: 'assistant', text: 'Contexto previo' }],
@@ -207,6 +212,9 @@ describe('F3 shadow engine request oracle (offline)', () => {
       {
         read: jest.fn().mockResolvedValue('synthetic-key'),
       },
+      {
+        reserveNousDispatch: jest.fn().mockResolvedValue(true),
+      } as unknown as InboundTurnService,
     );
     const turn = inputFor(message);
     const control = await transport.execute(turn);

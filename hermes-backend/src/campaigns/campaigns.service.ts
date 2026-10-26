@@ -789,13 +789,19 @@ export class CampaignsService {
       select: { campaignId: true },
     });
   }
-  async optOut(contactId: string) {
-    await this.prisma.contact.update({
-      where: { id: contactId },
+  async optOut(
+    contactId: string,
+    source: 'whatsapp_quick_reply' | 'whatsapp_text' = 'whatsapp_quick_reply',
+  ) {
+    await this.prisma.contact.updateMany({
+      where: {
+        id: contactId,
+        marketingConsentStatus: { not: MarketingConsentStatus.OPTED_OUT },
+      },
       data: {
         marketingConsentStatus: MarketingConsentStatus.OPTED_OUT,
         marketingOptOutAt: new Date(),
-        marketingConsentSource: 'whatsapp_quick_reply',
+        marketingConsentSource: source,
       },
     });
   }

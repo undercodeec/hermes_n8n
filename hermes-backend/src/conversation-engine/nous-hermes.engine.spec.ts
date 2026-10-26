@@ -25,7 +25,7 @@ const baseInput = (
 });
 
 describe('NousHermesEngine queue routing', () => {
-  function harness() {
+  function harness(values: Record<string, string> = {}) {
     const waitUntilFinished = jest.fn().mockResolvedValue({
       replyText: 'Respuesta.',
       proposedActions: [{ type: 'none' }],
@@ -35,11 +35,14 @@ describe('NousHermesEngine queue routing', () => {
     });
     const queue = {
       add: jest.fn().mockResolvedValue({ waitUntilFinished }),
+      getWaitingCount: jest.fn().mockResolvedValue(0),
     };
     const queueEvents = { queueEvents: { id: 'events' } };
     const blockAmbiguous = jest.fn().mockResolvedValue(true);
     const config = {
-      get: jest.fn((_key: string, fallback?: unknown) => fallback),
+      get: jest.fn(
+        (key: string, fallback?: unknown) => values[key] ?? fallback,
+      ),
     };
     const engine = new NousHermesEngine(
       config as unknown as ConfigService,
@@ -73,6 +76,29 @@ describe('NousHermesEngine queue routing', () => {
       queueEvents.queueEvents,
       120000,
     );
+  });
+
+  it('stops a pinned commercial Nous turn before queueing when disabled', async () => {
+    const { engine, queue } = harness({
+      NOUS_PILOT_COMMERCIAL_ENABLED: 'false',
+    });
+    const result = await engine.respond(
+      baseInput({ assignedEngine: 'nous_hermes' }),
+    );
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(result.diagnostic?.code).toBe('NOUS_PILOT_STOPPED');
+  });
+
+  it('signals saturation before adding another commercial request', async () => {
+    const { engine, queue } = harness({
+      NOUS_PILOT_COMMERCIAL_ENABLED: 'true',
+    });
+    queue.getWaitingCount.mockResolvedValue(5);
+    const result = await engine.respond(
+      baseInput({ assignedEngine: 'nous_hermes' }),
+    );
+    expect(queue.add).not.toHaveBeenCalled();
+    expect(result.diagnostic?.code).toBe('NOUS_PILOT_SATURATED');
   });
 
   it('blocks an unknown queued result before the caller can retry', async () => {

@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Optional } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Job, Queue } from 'bullmq';
 import type {
@@ -15,6 +15,7 @@ import { isSingleGenerationCanaryConversation } from '../auto-replies/single-gen
 @Injectable()
 export class NousHermesEngine implements ConversationEngine {
   readonly id = 'nous_hermes' as const;
+  private readonly logger = new Logger(NousHermesEngine.name);
 
   constructor(
     private readonly config: ConfigService,
@@ -37,6 +38,22 @@ export class NousHermesEngine implements ConversationEngine {
       throw new Error('CANARY_NOUS_SCOPE_OR_CLAIM_MISMATCH');
     if (!guarded && !input.normalNousClaim)
       throw new Error('NOUS_DISPATCH_CLAIM_REQUIRED');
+    if (
+      this.config.get<string>('NOUS_PILOT_OPERATIONS_ENABLED', 'true') !==
+        'true' ||
+      (input.assignedEngine === 'nous_hermes' &&
+        this.config.get<string>('NOUS_PILOT_COMMERCIAL_ENABLED', 'false') !==
+          'true')
+    ) {
+      return this.failureResult(
+        input,
+        'NOUS_PILOT_STOPPED',
+        'Nous operations are stopped by configuration',
+        'OUTPUT_BLOCKED',
+        0,
+        true,
+      );
+    }
     if (input.approvedContext.handoffActive) {
       return this.failureResult(
         input,
@@ -46,6 +63,30 @@ export class NousHermesEngine implements ConversationEngine {
         0,
         false,
       );
+    }
+    if (input.assignedEngine === 'nous_hermes') {
+      const waiting = await this.queue.getWaitingCount();
+      const threshold = this.positiveInteger(
+        'NOUS_PILOT_QUEUE_ALERT_WAITING',
+        5,
+      );
+      if (waiting >= threshold) {
+        this.logger.warn(
+          JSON.stringify({
+            event: 'nous_pilot_saturation',
+            waiting,
+            threshold,
+          }),
+        );
+        return this.failureResult(
+          input,
+          'NOUS_PILOT_SATURATED',
+          'Nous pilot queue is saturated',
+          'OUTPUT_BLOCKED',
+          0,
+          true,
+        );
+      }
     }
 
     const attempts = input.singleGenerationCanary

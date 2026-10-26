@@ -111,4 +111,15 @@ describe('ConversationEngineService', () => {
     expect(nousRespond).toHaveBeenCalledTimes(2);
     expect(directRespond).toHaveBeenCalledTimes(1);
   });
+
+  it('does not move an existing unassigned conversation to Nous when pilot routing is armed', async () => {
+    const { service, directRespond, nousRespond } = setup({
+      HERMES_PILOT_NEW_CONVERSATION_ENGINE: 'nous_hermes',
+      HERMES_CONVERSATION_ENGINE: 'nous_hermes',
+      NOUS_HERMES_OPEN_INBOUND_TEST: 'true',
+    });
+    await service.respond(input('existing'));
+    expect(directRespond).toHaveBeenCalledTimes(1);
+    expect(nousRespond).not.toHaveBeenCalled();
+  });
 });

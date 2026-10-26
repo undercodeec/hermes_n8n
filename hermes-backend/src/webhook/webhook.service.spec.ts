@@ -88,11 +88,105 @@ describe('WebhookService durable inbox', () => {
         {
           eventKey: 'message:wamid.synthetic',
           eventType: 'MESSAGE',
-          payload: { message, contact },
+          payload: { message, contact, phoneNumberId: '' },
         },
       ],
       skipDuplicates: true,
     });
+  });
+
+  it('ignores an inbound event for another configured phone number', async () => {
+    const createMany = jest.fn();
+    const service = new WebhookService(
+      {
+        get: jest.fn((key: string) =>
+          key === 'META_PHONE_NUMBER_ID' ? 'allowed' : undefined,
+        ),
+      } as unknown as ConfigService,
+      { metaWebhookInbox: { createMany } } as unknown as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      {} as CampaignsService,
+      {} as AutoReplyService,
+      {} as ConversationGuardService,
+      {} as AdvertisingService,
+      {} as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+    );
+    await service.acceptWebhook(dto);
+    expect(createMany).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the phone number when recovering a durable inbox event', async () => {
+    const row = {
+      id: 'inbox-other-phone',
+      eventType: 'MESSAGE',
+      status: MetaWebhookInboxStatus.PENDING,
+      attempts: 0,
+      payload: { message, contact, phoneNumberId: 'other' },
+    };
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const service = new WebhookService(
+      {
+        get: jest.fn((key: string) =>
+          key === 'META_PHONE_NUMBER_ID' ? 'allowed' : undefined,
+        ),
+      } as unknown as ConfigService,
+      {
+        metaWebhookInbox: {
+          findMany: jest.fn().mockResolvedValue([row]),
+          updateMany,
+        },
+      } as unknown as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      {} as CampaignsService,
+      {} as AutoReplyService,
+      {} as ConversationGuardService,
+      {} as AdvertisingService,
+      {} as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+    );
+    const process = jest
+      .spyOn(service as any, 'processIncomingMessage')
+      .mockResolvedValue('processed');
+    await service.scan();
+    expect(process).not.toHaveBeenCalled();
+    expect(updateMany).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ outcome: 'unauthorized_phone' }),
+      }),
+    );
+  });
+
+  it('fails closed if commercial Nous is armed without a configured phone number', async () => {
+    const createMany = jest.fn();
+    const service = new WebhookService(
+      {
+        get: jest.fn((key: string) =>
+          key === 'NOUS_PILOT_COMMERCIAL_ENABLED' ? 'true' : undefined,
+        ),
+      } as unknown as ConfigService,
+      { metaWebhookInbox: { createMany } } as unknown as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      {} as CampaignsService,
+      {} as AutoReplyService,
+      {} as ConversationGuardService,
+      {} as AdvertisingService,
+      {} as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+    );
+    await expect(service.acceptWebhook(dto)).rejects.toThrow(
+      'META_PHONE_NUMBER_ID is required',
+    );
+    expect(createMany).not.toHaveBeenCalled();
   });
 
   it('recovers a failed attribution after restart without processing the message twice', async () => {
@@ -296,6 +390,76 @@ describe('WebhookService durable inbox', () => {
       },
       4,
     );
+  });
+});
+
+describe('WebhookService textual commercial opt-out', () => {
+  it('records marketing opt-out and still routes a service request', async () => {
+    const optOut = jest.fn().mockResolvedValue(undefined);
+    const enqueue = jest.fn().mockResolvedValue(undefined);
+    const inspect = jest.fn().mockResolvedValue({ action: 'ALLOW' });
+    const service = new WebhookService(
+      { get: jest.fn() } as unknown as ConfigService,
+      {
+        message: { findMany: jest.fn().mockResolvedValue([]) },
+      } as unknown as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      { optOut } as unknown as CampaignsService,
+      { enqueue } as unknown as AutoReplyService,
+      { inspect } as unknown as ConversationGuardService,
+      {} as AdvertisingService,
+      {} as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+    );
+    const content = 'No me envíen promociones; necesito soporte para mi web';
+    await (service as any).routeInbound(
+      { type: 'text', text: { body: content } },
+      { id: 'contact-1', waId: '593991234567' },
+      { id: 'conversation-1', status: ConversationStatus.ACTIVE },
+      null,
+      { id: 'inbound-1' },
+      content,
+      'missing',
+    );
+    expect(optOut).toHaveBeenCalledWith('contact-1', 'whatsapp_text');
+    expect(inspect).toHaveBeenCalled();
+    expect(enqueue).toHaveBeenCalled();
+  });
+
+  it('does not opt a customer out when they cancel a service', async () => {
+    const optOut = jest.fn();
+    const service = new WebhookService(
+      { get: jest.fn() } as unknown as ConfigService,
+      {
+        message: { findMany: jest.fn().mockResolvedValue([]) },
+      } as unknown as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      { optOut } as unknown as CampaignsService,
+      { enqueue: jest.fn() } as unknown as AutoReplyService,
+      {
+        inspect: jest.fn().mockResolvedValue({ action: 'ALLOW' }),
+      } as unknown as ConversationGuardService,
+      {} as AdvertisingService,
+      {} as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+    );
+    const content = 'Quiero dar de baja mi servicio contratado';
+    await (service as any).routeInbound(
+      { type: 'text', text: { body: content } },
+      { id: 'contact-1', waId: '593991234567' },
+      { id: 'conversation-1', status: ConversationStatus.ACTIVE },
+      null,
+      { id: 'inbound-1' },
+      content,
+      'missing',
+    );
+    expect(optOut).not.toHaveBeenCalled();
   });
 });
 
@@ -734,6 +898,7 @@ describe('WebhookService campaign replies', () => {
         from: '593991234567',
         type: 'text',
         text: { body: 'Necesito información' },
+        referral: { source_type: 'ad', source_id: 'meta-ad-123' },
       },
       { wa_id: '593991234567', profile: { name: 'Contacto de prueba' } },
     );
@@ -743,6 +908,14 @@ describe('WebhookService campaign replies', () => {
       reason: HandoffReason.CUSTOM,
       reasonDetail:
         'Respuesta a campaña campaign-1; requiere atención humana desde CRM.',
+    });
+    expect(prismaMock.message.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        metadata: {
+          pilotOrigin: 'meta_ad',
+          pilotAd: { sourceId: 'meta-ad-123' },
+        },
+      }),
     });
     expect(publishCustomerMessage).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -879,9 +1052,11 @@ describe('WebhookService campaign replies', () => {
       );
       const service = new WebhookService(
         {
-          get: jest.fn((key: string) =>
-            key === 'HERMES_PILOT_NEW_CONVERSATION_ENGINE' ? engine : undefined,
-          ),
+          get: jest.fn((key: string) => {
+            if (key === 'HERMES_PILOT_NEW_CONVERSATION_ENGINE') return engine;
+            if (key === 'NOUS_PILOT_COMMERCIAL_ENABLED') return 'true';
+            return undefined;
+          }),
         } as unknown as ConfigService,
         prismaMock as unknown as PrismaService,
         {} as MetaService,
@@ -894,17 +1069,65 @@ describe('WebhookService campaign replies', () => {
         {} as AdvertisingService,
         {} as ConversationEventsService,
       );
-      await (service as any).getOrCreateConversation('contact-new');
+      await (service as any).getOrCreateConversation('contact-new', {
+        source_type: 'ad',
+        source_id: '123',
+      });
       expect(prismaMock.conversation.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           metadata: expect.objectContaining({
             pilotEngine: engine,
             pilotRoutingVersion: 1,
+            pilotOrigin: 'meta_ad',
+            pilotAd: { sourceId: '123' },
           }),
         }),
       });
     },
   );
+
+  it('keeps new commercial conversations on Gemini while Nous is disabled', async () => {
+    const prismaMock = {
+      $executeRaw: jest.fn(),
+      $transaction: jest.fn(),
+      conversation: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({ id: 'new-conversation' }),
+      },
+    };
+    prismaMock.$transaction.mockImplementation((callback: any) =>
+      callback(prismaMock),
+    );
+    const service = new WebhookService(
+      {
+        get: jest.fn((key: string) =>
+          key === 'HERMES_PILOT_NEW_CONVERSATION_ENGINE'
+            ? 'nous_hermes'
+            : undefined,
+        ),
+      } as unknown as ConfigService,
+      prismaMock as unknown as PrismaService,
+      {} as MetaService,
+      {} as HermesService,
+      {} as HandoffService,
+      {} as LeadsService,
+      {} as CampaignsService,
+      {} as AutoReplyService,
+      {} as ConversationGuardService,
+      {} as AdvertisingService,
+      {} as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+    );
+    await (service as any).getOrCreateConversation('contact-new');
+    expect(prismaMock.conversation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        metadata: expect.objectContaining({
+          pilotEngine: 'gemini_direct',
+          pilotOrigin: 'organic',
+        }),
+      }),
+    });
+  });
 
   it('preserves an open handoff when an inbound message resumes a closed conversation', async () => {
     const closedConversation = {

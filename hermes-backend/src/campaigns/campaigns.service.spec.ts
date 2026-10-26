@@ -65,6 +65,29 @@ describe('CampaignsService send idempotency', () => {
     };
   };
 
+  it('records textual opt-out once without refreshing an earlier opt-out timestamp', async () => {
+    const updateMany = jest.fn().mockResolvedValue({ count: 1 });
+    const { service } = makeService({ contact: { updateMany } });
+    await service.optOut('contact-1', 'whatsapp_text');
+    const calls = updateMany.mock.calls as unknown as Array<
+      [
+        {
+          where: Record<string, unknown>;
+          data: Record<string, unknown>;
+        },
+      ]
+    >;
+    const update = calls[0][0];
+    expect(update.where).toEqual({
+      id: 'contact-1',
+      marketingConsentStatus: { not: MarketingConsentStatus.OPTED_OUT },
+    });
+    expect(update.data).toMatchObject({
+      marketingConsentStatus: MarketingConsentStatus.OPTED_OUT,
+      marketingConsentSource: 'whatsapp_text',
+    });
+  });
+
   it('blocks start before any persistence or Meta work when campaigns are disabled', async () => {
     const { service, prisma } = makeService();
     await expect(

@@ -68,6 +68,11 @@ export class MetaWebhookMessage {
   reaction?: { message_id: string; emoji: string };
   sticker?: { id: string; mime_type: string };
   context?: { from: string; id: string };
+  referral?: {
+    source_type?: string;
+    source_id?: string;
+    ctwa_clid?: string;
+  };
 }
 
 export class MetaWebhookStatus {

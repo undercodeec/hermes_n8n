@@ -22,6 +22,11 @@ import { ConversationEventsService } from '../conversations/conversation-events.
 import { AutomatedDeliveryService } from '../automated-deliveries/automated-delivery.service';
 import { PaymentsService } from '../payments/payments.service';
 import { redactPaymentMessageForAi } from '../payments/payment-message-redaction';
+import {
+  classifyPilotOrigin,
+  isTextualCommercialOptOut,
+  type MetaReferral,
+} from './undercode-pilot';
 import { requestsCommercialContact } from '../hermes/commercial-policy.service';
 import {
   MetaWebhookDto,
@@ -79,6 +84,8 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     for (const entry of dto.entry || []) {
       for (const change of entry.changes || []) {
         if (change.field !== 'messages') continue;
+        if (!this.isAuthorizedPhone(change.value.metadata?.phone_number_id))
+          continue;
         const { messages, contacts, statuses } = change.value;
         for (const message of messages || []) {
           const contact = contacts?.find(
@@ -90,6 +97,7 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
             payload: {
               message,
               contact,
+              phoneNumberId: change.value.metadata?.phone_number_id,
             } as unknown as Prisma.InputJsonValue,
           });
         }
@@ -101,7 +109,10 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
           events.push({
             eventKey: `status:${hash}`,
             eventType: 'STATUS',
-            payload: { status } as unknown as Prisma.InputJsonValue,
+            payload: {
+              status,
+              phoneNumberId: change.value.metadata?.phone_number_id,
+            } as unknown as Prisma.InputJsonValue,
           });
         }
       }
@@ -157,9 +168,12 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
             message?: MetaWebhookMessage;
             contact?: MetaWebhookContact | null;
             status?: MetaWebhookStatus;
+            phoneNumberId?: string;
           };
           let outcome = 'processed';
-          if (event.eventType === 'MESSAGE') {
+          if (!this.isAuthorizedPhone(payload.phoneNumberId)) {
+            outcome = 'unauthorized_phone';
+          } else if (event.eventType === 'MESSAGE') {
             outcome =
               payload.message && payload.contact
                 ? await this.processIncomingMessage(
@@ -289,6 +303,8 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     for (const entry of dto.entry) {
       for (const change of entry.changes) {
         if (change.field !== 'messages') continue;
+        if (!this.isAuthorizedPhone(change.value.metadata?.phone_number_id))
+          continue;
 
         const { messages, contacts, statuses } = change.value;
 
@@ -378,7 +394,10 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
         await this.campaignsService.findHumanManagedRecipient(contact.id);
 
       // Paso 5: Obtener o crear conversación activa
-      const conversation = await this.getOrCreateConversation(contact.id);
+      const conversation = await this.getOrCreateConversation(
+        contact.id,
+        message.referral,
+      );
 
       await this.leadsService.findOrCreateForConversation({
         contactId: contact.id,
@@ -388,6 +407,24 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
       // Paso 3: Guardar mensaje crudo con metadata
       const messageType = this.mapMessageType(message.type);
       const messageContent = this.extractMessageContent(message);
+      const adReferral = classifyPilotOrigin(message.referral);
+      const messageMetadata = {
+        ...(messageType === MessageType.AUDIO
+          ? {
+              sourceType: 'AUDIO',
+              mediaId: message.audio?.id,
+              mimeType: message.audio?.mime_type,
+            }
+          : {}),
+        ...(adReferral.origin === 'meta_ad'
+          ? {
+              pilotOrigin: 'meta_ad',
+              pilotAd: adReferral.adSourceId
+                ? { sourceId: adReferral.adSourceId }
+                : {},
+            }
+          : {}),
+      };
 
       const inboundMessage = await this.prisma.message.create({
         data: {
@@ -398,14 +435,8 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
           type: messageType,
           content: messageContent,
           rawPayload: message as unknown as Prisma.InputJsonValue,
-          ...(messageType === MessageType.AUDIO
-            ? {
-                metadata: {
-                  sourceType: 'AUDIO',
-                  mediaId: message.audio?.id,
-                  mimeType: message.audio?.mime_type,
-                },
-              }
+          ...(Object.keys(messageMetadata).length
+            ? { metadata: messageMetadata }
             : {}),
           wamid: message.id,
         },
@@ -486,6 +517,13 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
       await this.campaignsService.optOut(contact.id);
       this.logger.log(`Contacto marcó baja de campañas`);
       return attributionStatus;
+    }
+    if (
+      message.type === 'text' &&
+      isTextualCommercialOptOut(messageContent || '')
+    ) {
+      await this.campaignsService.optOut(contact.id, 'whatsapp_text');
+      this.logger.log('Contacto solicitó baja comercial por texto');
     }
 
     // Campaign replies are never handled by Hermes. They remain visible in
@@ -623,7 +661,10 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
   /**
    * Obtiene la conversación activa del contacto o crea una nueva
    */
-  private async getOrCreateConversation(contactId: string) {
+  private async getOrCreateConversation(
+    contactId: string,
+    referral?: MetaReferral,
+  ) {
     return this.prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${contactId}))`;
 
@@ -682,22 +723,31 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
         return resumed;
       }
 
+      const origin = classifyPilotOrigin(referral);
       return tx.conversation.create({
         data: {
           contactId,
           status: ConversationStatus.ACTIVE,
           channel: 'whatsapp',
-          ...(this.configService.get<string>(
-            'HERMES_PILOT_NEW_CONVERSATION_ENGINE',
-            '',
-          )
-            ? {
-                metadata: {
+          metadata: {
+            pilotOrigin: origin.origin,
+            ...(origin.adSourceId
+              ? {
+                  pilotAd: {
+                    sourceId: origin.adSourceId,
+                  },
+                }
+              : {}),
+            ...(this.configService.get<string>(
+              'HERMES_PILOT_NEW_CONVERSATION_ENGINE',
+              '',
+            )
+              ? {
                   pilotEngine: this.pilotNewConversationEngine(),
                   pilotRoutingVersion: 1,
-                },
-              }
-            : {}),
+                }
+              : {}),
+          },
         },
       });
     });
@@ -708,8 +758,37 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
       'HERMES_PILOT_NEW_CONVERSATION_ENGINE',
       '',
     );
-    if (engine === 'nous_hermes' || engine === 'gemini_direct') return engine;
+    if (engine === 'gemini_direct') return engine;
+    if (engine === 'nous_hermes')
+      return this.configService.get<string>(
+        'NOUS_PILOT_COMMERCIAL_ENABLED',
+        'false',
+      ) === 'true'
+        ? 'nous_hermes'
+        : 'gemini_direct';
     throw new Error('Invalid HERMES_PILOT_NEW_CONVERSATION_ENGINE');
+  }
+
+  private isAuthorizedPhone(inboundId?: string): boolean {
+    const configured = this.configService
+      .get<string>('META_PHONE_NUMBER_ID', '')
+      ?.trim();
+    if (!configured) {
+      if (
+        this.configService.get<string>(
+          'NOUS_PILOT_COMMERCIAL_ENABLED',
+          'false',
+        ) === 'true'
+      ) {
+        throw new Error(
+          'META_PHONE_NUMBER_ID is required for Nous commercial pilot',
+        );
+      }
+      return true;
+    }
+    if (inboundId === configured) return true;
+    this.logger.warn('Webhook ignored for a different phone_number_id');
+    return false;
   }
 
   /**

@@ -8,6 +8,7 @@ import { AgentOutputValidator } from '../conversation-engine/agent-output.valida
 import type { ConversationTurnInput } from '../conversation-engine/conversation-engine.types';
 import { DirectGeminiEngine } from '../conversation-engine/direct-gemini.engine';
 import { NousHermesTransport } from '../conversation-engine/nous-hermes.transport';
+import { InboundTurnService } from '../auto-replies/inbound-turn.service';
 
 const hash = (value: unknown) =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -23,6 +24,10 @@ const learning = [
 const input = (enabled: boolean): ConversationTurnInput => ({
   conversationId: 'synthetic-conversation',
   inboundMessageId: 'synthetic-inbound',
+  normalNousClaim: {
+    turnId: 'synthetic-turn',
+    processingToken: 'synthetic-token',
+  },
   customerMessage: 'consulta punto',
   approvedContext: {
     contactName: 'Cliente',
@@ -133,6 +138,9 @@ describe('F3 rollback through the actual engine adapters with local fakes', () =
         new ConfigService({}),
         new AgentOutputValidator(),
         { read: () => Promise.resolve('synthetic-secret') },
+        {
+          reserveNousDispatch: jest.fn().mockResolvedValue(true),
+        } as unknown as InboundTurnService,
       );
       const states: Array<Record<string, unknown>> = [];
       const durations: number[] = [];

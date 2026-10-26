@@ -39,6 +39,10 @@ export class ConversationEngineService {
     if (assignedEngine === 'nous_hermes') return this.nousHermes;
     if (assignedEngine)
       throw new ConversationEngineConfigurationError('Invalid assigned engine');
+    if (
+      this.config.get<string>('HERMES_PILOT_NEW_CONVERSATION_ENGINE', '').trim()
+    )
+      return this.directGemini;
     const configured = this.config
       .get<string>('HERMES_CONVERSATION_ENGINE', 'gemini_direct')
       .trim();

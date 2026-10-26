@@ -8,6 +8,7 @@ import { NousHermesTransport } from '../conversation-engine/nous-hermes.transpor
 import type { ConversationTurnInput } from '../conversation-engine/conversation-engine.types';
 import { HermesService } from '../hermes/hermes.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { InboundTurnService } from '../auto-replies/inbound-turn.service';
 import {
   LearningRetrievalService,
   selectApprovedLearning,
@@ -121,6 +122,7 @@ function turnFor(
   return {
     conversationId: 'conversation-b',
     inboundMessageId: 'message-b',
+    normalNousClaim: { turnId: 'turn-b', processingToken: 'token-b' },
     customerMessage: 'Quiero confirmar el siguiente paso para mi sitio web',
     approvedContext: {
       contactName: 'Beatriz',
@@ -306,6 +308,9 @@ describe('F3 privacy isolation from learning retrieval', () => {
           new ConfigService({}),
           new AgentOutputValidator(),
           { read: jest.fn().mockResolvedValue('synthetic-key') },
+          {
+            reserveNousDispatch: jest.fn().mockResolvedValue(true),
+          } as unknown as InboundTurnService,
         );
         const result = await transport.execute(turn);
         request = (post.mock.calls as Array<[string, unknown]>)[0][1];
