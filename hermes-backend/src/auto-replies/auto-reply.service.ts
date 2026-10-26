@@ -418,6 +418,13 @@ export class AutoReplyService {
       await this.reconcileDeliveryProfile(data, inbound.id, inbound);
     }
     if (recovered?.handled) {
+      if (recovered.reasonCode === 'NOUS_PILOT_STOPPED') {
+        await this.requestStoppedNousReview(
+          data,
+          inbound.id,
+          recovered.confirmed,
+        );
+      }
       await this.payments?.reconcileInstruction(inbound.id);
       this.logSkip(data, 'EXISTING_DELIVERY_BATCH', {
         confirmed: recovered.confirmed,
@@ -870,7 +877,17 @@ export class AutoReplyService {
         persisted?.providerDispatchReservedAt ||
         persisted?.status === 'BLOCKED'
       ) {
-        if ((await this.deliveries.recoverBatch(inbound.id))?.handled) return;
+        const recovered = await this.deliveries.recoverBatch(inbound.id);
+        if (recovered?.handled) {
+          if (recovered.reasonCode === 'NOUS_PILOT_STOPPED') {
+            await this.requestStoppedNousReview(
+              data,
+              inbound.id,
+              recovered.confirmed,
+            );
+          }
+          return;
+        }
         await this.requestBlockedNousReview(normalNousClaim.turnId);
         this.logSkip(data, 'NOUS_DISPATCH_AMBIGUOUS');
         return;
@@ -1683,6 +1700,11 @@ export class AutoReplyService {
       );
     }
     const sentParts = delivery.confirmed;
+    if (delivery.reasonCode === 'NOUS_PILOT_STOPPED') {
+      await this.requestStoppedNousReview(data, inbound.id, sentParts);
+      this.logSkip(data, 'NOUS_PILOT_STOPPED');
+      return;
+    }
     if (engineResult.f3CallTrace) {
       this.logger.log(
         JSON.stringify({
@@ -2061,6 +2083,52 @@ export class AutoReplyService {
       profile.timeline ||
       profile.location,
     );
+  }
+
+  private async requestStoppedNousReview(
+    data: AutoReplyJobData,
+    sourceMessageId: string,
+    confirmedParts: number,
+  ): Promise<void> {
+    const summary =
+      confirmedParts > 0
+        ? 'La respuesta de Nous quedó incompleta al detener el piloto; revisar y continuar manualmente.'
+        : 'La respuesta de Nous se detuvo antes del envío; revisar y continuar manualmente.';
+    const task = await this.tasks.requestHermesReview({
+      conversationId: data.conversationId,
+      contactId: data.contactId,
+      sourceMessageId,
+      category: 'CONTEXT_ERROR',
+      code: 'NOUS_PILOT_STOPPED',
+      summary,
+    });
+    await this.persistHermesIncident(
+      data.conversationId,
+      toIncidentMetadata(
+        {
+          category: 'CONTEXT_ERROR',
+          code: 'NOUS_PILOT_STOPPED',
+          summary,
+          attempts: 0,
+          recovered: false,
+          requiresHumanReview: true,
+        },
+        sourceMessageId,
+        task.id,
+      ),
+    );
+    const conversation = await this.prisma.conversation.findUnique({
+      where: { id: data.conversationId },
+      select: { status: true },
+    });
+    if (conversation && conversation.status !== ConversationStatus.CLOSED) {
+      await this.handoffs.create({
+        conversationId: data.conversationId,
+        reason: HandoffReason.INFO_ERROR,
+        reasonDetail:
+          'La respuesta de Nous se detuvo; requiere atención humana.',
+      });
+    }
   }
 
   private async persistHermesIncident(

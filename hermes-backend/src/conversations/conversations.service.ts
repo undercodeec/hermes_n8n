@@ -15,9 +15,7 @@ import {
   TaskStatus,
   TaskType,
 } from '@prisma/client';
-import {
-  safeStoredIncident,
-} from '../hermes/hermes-diagnostics';
+import { safeStoredIncident } from '../hermes/hermes-diagnostics';
 import { MetaService } from '../meta/meta.service';
 import { whatsappReplyWindow } from '../meta/whatsapp-service-window';
 import { PrismaService } from '../prisma/prisma.service';
@@ -62,23 +60,38 @@ export class ConversationsService {
     return safeStoredIncident(this.objectValue(metadata)?.lastHermesIncident);
   }
 
-  private safeMessage<T extends { metadata?: unknown }>(message: T): T {
+  private safeMessage<T extends { metadata?: unknown; rawPayload?: unknown }>(
+    message: T,
+  ): T {
     const metadata = this.objectValue(message.metadata);
-    if (
-      !metadata ||
-      !Object.prototype.hasOwnProperty.call(metadata, 'hermesIncident')
-    ) {
-      return message;
-    }
+    const rawPayload = this.objectValue(message.rawPayload);
+    const referral = this.objectValue(rawPayload?.referral);
+    const hasClickId = Boolean(
+      referral && Object.prototype.hasOwnProperty.call(referral, 'ctwa_clid'),
+    );
+    const hasIncident = Boolean(
+      metadata &&
+      Object.prototype.hasOwnProperty.call(metadata, 'hermesIncident'),
+    );
+    if (!hasClickId && !hasIncident) return message;
+    const safeReferral = referral ? { ...referral } : null;
+    if (safeReferral) delete safeReferral.ctwa_clid;
     return {
       ...message,
-      metadata: {
-        ...metadata,
-        hermesIncident: this.hermesIncident({
-          lastHermesIncident: metadata.hermesIncident,
-        }),
-      },
-    } as T;
+      ...(hasClickId
+        ? { rawPayload: { ...rawPayload, referral: safeReferral } }
+        : {}),
+      ...(hasIncident
+        ? {
+            metadata: {
+              ...metadata,
+              hermesIncident: this.hermesIncident({
+                lastHermesIncident: metadata?.hermesIncident,
+              }),
+            },
+          }
+        : {}),
+    };
   }
 
   private hermesReviewTask(task: unknown) {
@@ -305,9 +318,9 @@ export class ConversationsService {
     const { metadata, tasks, ...safeConversation } = conversation;
     return {
       ...safeConversation,
-      messages: conversation.messages.reverse().map((message) =>
-        this.safeMessage(message),
-      ),
+      messages: conversation.messages
+        .reverse()
+        .map((message) => this.safeMessage(message)),
       hermesIncident: this.hermesIncident(metadata),
       hermesReviewTask: this.hermesReviewTask(
         tasks.find((task) => task.type === TaskType.GENERAL),

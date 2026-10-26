@@ -9,9 +9,13 @@ describe('UnderCodeEC pilot inbound policy', () => {
       classifyPilotOrigin({ source_type: 'ad', source_id: '123' }),
     ).toEqual({
       origin: 'meta_ad',
+      evidence: 'meta_referral_ad',
       adSourceId: '123',
     });
-    expect(classifyPilotOrigin()).toEqual({ origin: 'organic' });
+    expect(classifyPilotOrigin()).toEqual({
+      origin: 'unknown',
+      evidence: 'insufficient',
+    });
   });
 
   it('does not classify an organic page post as a paid ad', () => {
@@ -19,6 +23,25 @@ describe('UnderCodeEC pilot inbound policy', () => {
       classifyPilotOrigin({ source_type: 'post', source_id: '456' }),
     ).toEqual({
       origin: 'organic',
+      evidence: 'meta_referral_post',
+    });
+  });
+
+  it('requires explicit evidence for organic or paid origin', () => {
+    expect(classifyPilotOrigin({ source_id: '456' })).toEqual({
+      origin: 'unknown',
+      evidence: 'insufficient',
+    });
+    expect(classifyPilotOrigin({ source_type: 'unrecognized' })).toEqual({
+      origin: 'unknown',
+      evidence: 'insufficient',
+    });
+    expect(
+      classifyPilotOrigin({ source_type: 'post', ctwa_clid: 'click-1' }),
+    ).toEqual({
+      origin: 'meta_ad',
+      evidence: 'meta_ctwa_clid',
+      ctwaClidPresent: true,
     });
   });
 

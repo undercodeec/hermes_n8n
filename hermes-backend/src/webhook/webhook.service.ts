@@ -419,9 +419,15 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
         ...(adReferral.origin === 'meta_ad'
           ? {
               pilotOrigin: 'meta_ad',
-              pilotAd: adReferral.adSourceId
-                ? { sourceId: adReferral.adSourceId }
-                : {},
+              pilotOriginEvidence: adReferral.evidence,
+              pilotAd: {
+                ...(adReferral.adSourceId
+                  ? { sourceId: adReferral.adSourceId }
+                  : {}),
+                ...(adReferral.ctwaClidPresent
+                  ? { ctwaClidPresent: true }
+                  : {}),
+              },
             }
           : {}),
       };
@@ -731,10 +737,16 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
           channel: 'whatsapp',
           metadata: {
             pilotOrigin: origin.origin,
-            ...(origin.adSourceId
+            pilotOriginEvidence: origin.evidence,
+            ...(origin.adSourceId || origin.ctwaClidPresent
               ? {
                   pilotAd: {
-                    sourceId: origin.adSourceId,
+                    ...(origin.adSourceId
+                      ? { sourceId: origin.adSourceId }
+                      : {}),
+                    ...(origin.ctwaClidPresent
+                      ? { ctwaClidPresent: true }
+                      : {}),
                   },
                 }
               : {}),

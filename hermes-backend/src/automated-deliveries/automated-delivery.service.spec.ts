@@ -7,6 +7,7 @@
   @typescript-eslint/require-await
   -- This test uses a deliberately dynamic in-memory Prisma transaction double. */
 import { MetaSendError, MetaService } from '../meta/meta.service';
+import { ConfigService } from '@nestjs/config';
 import { AutomatedDeliveryService } from './automated-delivery.service';
 import { PrepareAutomatedDeliveryBatch } from './automated-delivery.types';
 
@@ -333,6 +334,73 @@ describe('AutomatedDeliveryService', () => {
     expect(result.reasonCode).toBe('HANDOFF_ACTIVE');
     expect(store.rows[0].status).toBe('SUPPRESSED');
     expect(meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('stops a persisted Nous batch at the final Meta claim without resending confirmed parts', async () => {
+    const input = batch('parte confirmada', 'parte pendiente');
+    input.parts[0].metadata = { conversationEngine: 'nous_hermes' };
+    await service.prepareBatch(input);
+    store.rows[0].status = 'CONFIRMED';
+    store.rows[0].wamid = 'wamid.confirmed';
+    service = new AutomatedDeliveryService(
+      store.prisma,
+      meta as unknown as MetaService,
+      {
+        get: jest.fn((key: string, fallback: unknown) =>
+          key === 'NOUS_PILOT_OPERATIONS_ENABLED' ? 'false' : fallback,
+        ),
+      } as unknown as ConfigService,
+    );
+
+    const result = await service.deliverPreparedBatch('inbound-1');
+    expect(result.reasonCode).toBe('NOUS_PILOT_STOPPED');
+    expect(store.rows[0].status).toBe('CONFIRMED');
+    expect(store.rows[1].status).toBe('SUPPRESSED');
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    await service.recoverBatch('inbound-1');
+    expect(meta.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it.each(['0', 'FALSE', ''])(
+    'fails closed for a prepared Nous batch when the stop value is %j',
+    async (flag) => {
+      const input = batch('respuesta pendiente');
+      input.parts[0].metadata = { conversationEngine: 'nous_hermes' };
+      await service.prepareBatch(input);
+      service = new AutomatedDeliveryService(
+        store.prisma,
+        meta as unknown as MetaService,
+        {
+          get: jest.fn((key: string, fallback: unknown) =>
+            key === 'NOUS_PILOT_OPERATIONS_ENABLED' ? flag : fallback,
+          ),
+        } as unknown as ConfigService,
+      );
+
+      const result = await service.deliverPreparedBatch('inbound-1');
+      expect(result.reasonCode).toBe('NOUS_PILOT_STOPPED');
+      expect(store.rows[0].status).toBe('SUPPRESSED');
+      expect(meta.sendTextMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it('keeps a prepared Gemini reply deliverable while Nous operations are stopped', async () => {
+    const input = batch('respuesta Gemini');
+    input.parts[0].metadata = { conversationEngine: 'gemini_direct' };
+    await service.prepareBatch(input);
+    service = new AutomatedDeliveryService(
+      store.prisma,
+      meta as unknown as MetaService,
+      {
+        get: jest.fn((key: string, fallback: unknown) =>
+          key === 'NOUS_PILOT_OPERATIONS_ENABLED' ? 'false' : fallback,
+        ),
+      } as unknown as ConfigService,
+    );
+
+    await service.deliverPreparedBatch('inbound-1');
+    expect(store.rows[0].status).toBe('CONFIRMED');
+    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
   });
 
   it.each([

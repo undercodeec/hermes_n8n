@@ -3541,6 +3541,78 @@ describe('AutoReplyService', () => {
     ).not.toHaveBeenCalled();
   });
 
+  it.each([0, 1])(
+    'routes a stopped Nous delivery to human review with %i confirmed parts',
+    async (confirmed) => {
+      const harness = setupProcessHarness({
+        hermesResponse: { response: 'Respuesta pendiente.' },
+        engineId: 'nous_hermes',
+      });
+      harness.engine.respond.mockResolvedValue({
+        ...toEngineResult({ response: 'Respuesta pendiente.' }),
+        engine: 'nous_hermes',
+        providerModel: 'hermes-agent',
+      });
+      harness.deliveries.deliverPreparedBatch.mockResolvedValue({
+        handled: true,
+        confirmed,
+        terminal: true,
+        reasonCode: 'NOUS_PILOT_STOPPED',
+      });
+
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+
+      expect(harness.tasks.requestHermesReview).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: 'conversation-1',
+          contactId: 'contact-1',
+          sourceMessageId: 'inbound-recovery',
+          code: 'NOUS_PILOT_STOPPED',
+        }),
+      );
+      expect(harness.handoffs.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          conversationId: 'conversation-1',
+          reason: HandoffReason.INFO_ERROR,
+        }),
+      );
+      expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
+    },
+  );
+
+  it('routes a recovered stopped Nous batch to the same human review', async () => {
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'Respuesta pendiente.' },
+    });
+    harness.deliveries.recoverBatch.mockResolvedValue({
+      handled: true,
+      confirmed: 1,
+      terminal: true,
+      reasonCode: 'NOUS_PILOT_STOPPED',
+    });
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+
+    expect(harness.engine.respond).not.toHaveBeenCalled();
+    expect(harness.tasks.requestHermesReview).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceMessageId: 'inbound-recovery',
+        code: 'NOUS_PILOT_STOPPED',
+      }),
+    );
+    expect(harness.handoffs.create).toHaveBeenCalledWith(
+      expect.objectContaining({ reason: HandoffReason.INFO_ERROR }),
+    );
+  });
+
   it('keeps the internal Hermes incident visible to CRM and absent from customer copy', async () => {
     const poisonedProviderSummary = 'FAKE_UNEXPECTED_PROVIDER_TEXT_DO_NOT_USE';
     const harness = setupProcessHarness({

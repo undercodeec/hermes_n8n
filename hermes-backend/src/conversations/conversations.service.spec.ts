@@ -387,4 +387,39 @@ describe('ConversationsService', () => {
       }),
     );
   });
+
+  it('keeps a Meta click ID in storage but omits it from the CRM message response', async () => {
+    (prisma.conversation.findUnique as unknown as jest.Mock).mockResolvedValue({
+      id: 'conversation-1',
+    });
+    (prisma.message.findMany as unknown as jest.Mock).mockResolvedValue([
+      {
+        id: 'inbound-ad',
+        metadata: { pilotAd: { ctwaClidPresent: true } },
+        rawPayload: {
+          referral: {
+            source_type: 'ad',
+            source_id: 'ad-1',
+            ctwa_clid: 'private-click-id',
+          },
+        },
+      },
+    ]);
+    (prisma.message.count as unknown as jest.Mock).mockResolvedValue(1);
+
+    const result = await service.findMessages('conversation-1', {
+      page: 1,
+      limit: 20,
+    });
+
+    expect(JSON.stringify(result.data)).not.toContain('private-click-id');
+    expect(result.data[0]).toEqual(
+      expect.objectContaining({
+        metadata: { pilotAd: { ctwaClidPresent: true } },
+        rawPayload: {
+          referral: { source_type: 'ad', source_id: 'ad-1' },
+        },
+      }),
+    );
+  });
 });

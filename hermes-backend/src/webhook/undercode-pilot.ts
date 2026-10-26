@@ -1,4 +1,9 @@
-export type PilotOrigin = 'meta_ad' | 'organic';
+export type PilotOrigin = 'meta_ad' | 'organic' | 'unknown';
+export type PilotOriginEvidence =
+  | 'meta_referral_ad'
+  | 'meta_ctwa_clid'
+  | 'meta_referral_post'
+  | 'insufficient';
 
 export interface MetaReferral {
   source_type?: string;
@@ -8,19 +13,30 @@ export interface MetaReferral {
 
 export function classifyPilotOrigin(referral?: MetaReferral): {
   origin: PilotOrigin;
+  evidence: PilotOriginEvidence;
   adSourceId?: string;
+  ctwaClidPresent?: true;
 } {
-  if (
-    referral?.source_type?.toLowerCase() !== 'ad' &&
-    !referral?.ctwa_clid?.trim()
-  ) {
-    return { origin: 'organic' };
+  const sourceType =
+    typeof referral?.source_type === 'string'
+      ? referral.source_type.trim().toLowerCase()
+      : '';
+  const clickId =
+    typeof referral?.ctwa_clid === 'string' ? referral.ctwa_clid.trim() : '';
+  const ctwaClidPresent = clickId.length > 0;
+  if (sourceType === 'ad' || ctwaClidPresent) {
+    const adSourceId =
+      typeof referral?.source_id === 'string' ? referral.source_id.trim() : '';
+    return {
+      origin: 'meta_ad',
+      evidence: sourceType === 'ad' ? 'meta_referral_ad' : 'meta_ctwa_clid',
+      ...(adSourceId && adSourceId.length <= 128 ? { adSourceId } : {}),
+      ...(ctwaClidPresent ? { ctwaClidPresent: true } : {}),
+    };
   }
-  const adSourceId = referral?.source_id?.trim();
-  return {
-    origin: 'meta_ad',
-    ...(adSourceId && adSourceId.length <= 128 ? { adSourceId } : {}),
-  };
+  if (sourceType === 'post')
+    return { origin: 'organic', evidence: 'meta_referral_post' };
+  return { origin: 'unknown', evidence: 'insufficient' };
 }
 
 export function isTextualCommercialOptOut(message: string): boolean {

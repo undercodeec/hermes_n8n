@@ -417,6 +417,51 @@ export class AutomatedDeliveryService
         };
       }
 
+      if (
+        current.deliveryKind === 'HERMES_REPLY' &&
+        this.config?.get<string>('NOUS_PILOT_OPERATIONS_ENABLED', 'false') !==
+          'true'
+      ) {
+        const first =
+          current.partIndex === 0
+            ? current
+            : (
+                await tx.automatedDelivery.findMany({
+                  where: {
+                    sourceMessageId: current.sourceMessageId,
+                    deliveryKind: 'HERMES_REPLY',
+                    partIndex: 0,
+                  },
+                  take: 1,
+                })
+              )[0];
+        const metadata = first?.metadata;
+        if (
+          metadata &&
+          typeof metadata === 'object' &&
+          !Array.isArray(metadata) &&
+          metadata.conversationEngine === 'nous_hermes'
+        ) {
+          await tx.automatedDelivery.updateMany({
+            where: {
+              sourceMessageId: current.sourceMessageId,
+              deliveryKind: 'HERMES_REPLY',
+              status: AutomatedDeliveryStatus.PREPARED,
+            },
+            data: {
+              status: AutomatedDeliveryStatus.SUPPRESSED,
+              suppressedAt: now,
+              reasonCode: 'NOUS_PILOT_STOPPED',
+            },
+          });
+          return {
+            claimed: false,
+            terminal: true,
+            reasonCode: 'NOUS_PILOT_STOPPED',
+          };
+        }
+      }
+
       const [conversation, contact, handoff, sourceMessage, latestInbound] =
         await Promise.all([
           tx.conversation.findUnique({ where: { id: current.conversationId } }),

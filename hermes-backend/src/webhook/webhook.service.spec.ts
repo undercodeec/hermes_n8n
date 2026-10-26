@@ -938,7 +938,11 @@ describe('WebhookService campaign replies', () => {
         from: '593991234567',
         type: 'text',
         text: { body: 'Necesito información' },
-        referral: { source_type: 'ad', source_id: 'meta-ad-123' },
+        referral: {
+          source_type: 'ad',
+          source_id: 'meta-ad-123',
+          ctwa_clid: 'private-click-id',
+        },
       },
       { wa_id: '593991234567', profile: { name: 'Contacto de prueba' } },
     );
@@ -951,12 +955,21 @@ describe('WebhookService campaign replies', () => {
     });
     expect(prismaMock.message.create).toHaveBeenCalledWith({
       data: expect.objectContaining({
+        rawPayload: expect.objectContaining({
+          referral: expect.objectContaining({
+            ctwa_clid: 'private-click-id',
+          }),
+        }),
         metadata: {
           pilotOrigin: 'meta_ad',
-          pilotAd: { sourceId: 'meta-ad-123' },
+          pilotOriginEvidence: 'meta_referral_ad',
+          pilotAd: { sourceId: 'meta-ad-123', ctwaClidPresent: true },
         },
       }),
     });
+    expect(
+      JSON.stringify(prismaMock.message.create.mock.calls[0][0].data.metadata),
+    ).not.toContain('private-click-id');
     expect(publishCustomerMessage).toHaveBeenCalledWith(
       expect.objectContaining({
         messageId: 'inbound-1',
@@ -1119,12 +1132,43 @@ describe('WebhookService campaign replies', () => {
             pilotEngine: engine,
             pilotRoutingVersion: 1,
             pilotOrigin: 'meta_ad',
+            pilotOriginEvidence: 'meta_referral_ad',
             pilotAd: { sourceId: '123' },
           }),
         }),
       });
     },
   );
+
+  it('keeps the initial unknown origin when a later Meta ad referral arrives', async () => {
+    const existing = {
+      id: 'conversation-existing',
+      status: ConversationStatus.ACTIVE,
+      metadata: { pilotOrigin: 'unknown', pilotOriginEvidence: 'insufficient' },
+    };
+    const prismaMock = {
+      $executeRaw: jest.fn(),
+      $transaction: jest.fn(),
+      conversation: {
+        findFirst: jest.fn().mockResolvedValue(existing),
+        create: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+    prismaMock.$transaction.mockImplementation((callback: any) =>
+      callback(prismaMock),
+    );
+    const service = webhookWithDoubles(prismaMock as unknown as PrismaService);
+
+    const conversation = await (service as any).getOrCreateConversation(
+      'contact-1',
+      { source_type: 'ad', source_id: 'later-ad' },
+    );
+
+    expect(conversation).toBe(existing);
+    expect(prismaMock.conversation.create).not.toHaveBeenCalled();
+    expect(prismaMock.conversation.update).not.toHaveBeenCalled();
+  });
 
   it('keeps new commercial conversations on Gemini while Nous is disabled', async () => {
     const prismaMock = {
@@ -1163,7 +1207,8 @@ describe('WebhookService campaign replies', () => {
       data: expect.objectContaining({
         metadata: expect.objectContaining({
           pilotEngine: 'gemini_direct',
-          pilotOrigin: 'organic',
+          pilotOrigin: 'unknown',
+          pilotOriginEvidence: 'insufficient',
         }),
       }),
     });
