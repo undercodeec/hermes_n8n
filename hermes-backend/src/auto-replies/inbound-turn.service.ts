@@ -17,6 +17,8 @@ export const AMBIGUOUS_GENERATION = 'CANARY_BLOCKED_AMBIGUOUS_GENERATION';
 export const NOUS_DISPATCH_AMBIGUOUS = 'NOUS_DISPATCH_AMBIGUOUS';
 export const NOUS_QUEUE_OUTCOME_UNKNOWN = 'NOUS_QUEUE_OUTCOME_UNKNOWN';
 export const NORMAL_NOUS_GENERATION_ENGINE = 'nous_hermes_normal';
+export const PENDING_NOUS_RECOVERY_PAGE_SIZE = 100;
+export type PendingNousRecoveryCursor = { processingAt: Date; id: string };
 
 @Injectable()
 export class InboundTurnService {
@@ -375,7 +377,10 @@ export class InboundTurnService {
     return released.count === 1;
   }
 
-  async stalePendingNous(now = new Date()): Promise<InboundTurn[]> {
+  async stalePendingNous(
+    now = new Date(),
+    cursor?: PendingNousRecoveryCursor,
+  ): Promise<InboundTurn[]> {
     const staleBefore = new Date(
       now.getTime() - InboundTurnService.PROCESSING_LEASE_MS,
     );
@@ -385,9 +390,17 @@ export class InboundTurnService {
         processingAt: { lt: staleBefore },
         nousQueuedAt: { not: null },
         nousResultAt: null,
+        ...(cursor
+          ? {
+              OR: [
+                { processingAt: { gt: cursor.processingAt } },
+                { processingAt: cursor.processingAt, id: { gt: cursor.id } },
+              ],
+            }
+          : {}),
       },
-      orderBy: { processingAt: 'asc' },
-      take: 100,
+      orderBy: [{ processingAt: 'asc' }, { id: 'asc' }],
+      take: PENDING_NOUS_RECOVERY_PAGE_SIZE,
     });
   }
 

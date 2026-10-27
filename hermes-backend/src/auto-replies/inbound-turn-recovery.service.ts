@@ -9,10 +9,13 @@ import {
 } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import { AUTO_REPLY_QUEUE, AutoReplyJobData } from './auto-reply.constants';
-import { InboundTurnService } from './inbound-turn.service';
 import {
+  InboundTurnService,
   NOUS_DISPATCH_AMBIGUOUS,
+  NOUS_QUEUE_OUTCOME_UNKNOWN,
   NORMAL_NOUS_GENERATION_ENGINE,
+  PENDING_NOUS_RECOVERY_PAGE_SIZE,
+  PendingNousRecoveryCursor,
 } from './inbound-turn.service';
 import { TasksService } from '../tasks/tasks.service';
 import { HandoffReason } from '@prisma/client';
@@ -20,7 +23,6 @@ import { HandoffService } from '../handoff/handoff.service';
 import { NOUS_HERMES_INFERENCE_QUEUE } from '../conversation-engine/nous-hermes.constants';
 import type { ConversationTurnInput } from '../conversation-engine/conversation-engine.types';
 import { InboundTurnStatus } from '@prisma/client';
-import { NOUS_QUEUE_OUTCOME_UNKNOWN } from './inbound-turn.service';
 
 @Injectable()
 export class InboundTurnRecoveryService
@@ -29,6 +31,7 @@ export class InboundTurnRecoveryService
   private readonly logger = new Logger(InboundTurnRecoveryService.name);
   private timer?: NodeJS.Timeout;
   private scanning = false;
+  private pendingNousCursor?: PendingNousRecoveryCursor;
   private readonly pendingLoggedAt = new Map<string, number>();
 
   constructor(
@@ -99,7 +102,11 @@ export class InboundTurnRecoveryService
           },
         );
       }
-      for (const turn of await this.turns.stalePendingNous()) {
+      const pendingNous = await this.turns.stalePendingNous(
+        new Date(),
+        this.pendingNousCursor,
+      );
+      for (const turn of pendingNous) {
         if (!this.nousQueue) throw new Error('NOUS_QUEUE_RECOVERY_UNAVAILABLE');
         const job = await this.nousQueue.getJob(`nous-${turn.lastMessageId}`);
         const state = job ? await job.getState() : 'missing';
@@ -116,9 +123,7 @@ export class InboundTurnRecoveryService
               }),
             );
           }
-          continue;
-        }
-        if (
+        } else if (
           await this.turns.blockAmbiguous(
             turn.id,
             turn.processingToken ?? undefined,
@@ -133,7 +138,13 @@ export class InboundTurnRecoveryService
             generationBlockReason: reason,
           });
         }
+        this.pendingNousCursor = {
+          processingAt: turn.processingAt!,
+          id: turn.id,
+        };
       }
+      if (pendingNous.length < PENDING_NOUS_RECOVERY_PAGE_SIZE)
+        this.pendingNousCursor = undefined;
       for (const turn of await this.turns.pendingNousReviews())
         await this.requestNousReview(turn);
     } catch (error) {
