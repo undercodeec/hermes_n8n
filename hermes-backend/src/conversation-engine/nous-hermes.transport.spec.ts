@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
 import axios from 'axios';
 import { AgentOutputValidator } from './agent-output.validator';
 import {
@@ -124,6 +125,158 @@ describe('NousHermesTransport', () => {
     expect(result.diagnostic?.code).toBe('NOUS_PILOT_DAILY_SPEND_LIMIT');
   });
 
+  it.each([44, 100, 101])(
+    'allows monitored commercial request %i and records its estimate',
+    async (dailyRequests) => {
+      post.mockResolvedValue({
+        data: {
+          model: 'hermes-agent',
+          choices: [
+            {
+              finish_reason: 'stop',
+              message: { content: JSON.stringify({ replyText: 'Respuesta.' }) },
+            },
+          ],
+        },
+      });
+      const reserveNousDispatch = jest.fn().mockResolvedValue(true);
+      const count = jest.fn().mockResolvedValue(dailyRequests);
+      const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+      const transport = configuredTransport(
+        {
+          NOUS_PILOT_BUDGET_MODE: 'MONITOR_ONLY',
+          NOUS_PILOT_COMMERCIAL_ENABLED: 'true',
+          NOUS_PILOT_ESTIMATED_USD_PER_REQUEST: '0.116122',
+          NOUS_PILOT_DAILY_REQUEST_LIMIT: '100',
+          NOUS_PILOT_DAILY_ESTIMATED_USD_LIMIT: '5',
+        },
+        { inboundTurn: { count } } as unknown as PrismaService,
+        reserveNousDispatch,
+      );
+      const result = await transport.execute(
+        baseInput({ assignedEngine: 'nous_hermes' }),
+      );
+      expect(result.diagnostic).toBeUndefined();
+      expect(post).toHaveBeenCalledTimes(1);
+      expect(reserveNousDispatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          normal: true,
+          pilotBudget: { mode: 'MONITOR_ONLY' },
+        }),
+      );
+      expect(log).toHaveBeenCalledWith(
+        expect.stringContaining(`"dailyRequests":${dailyRequests}`),
+      );
+    },
+  );
+
+  it('keeps the legacy quota when the budget mode is invalid', async () => {
+    const transport = configuredTransport(
+      {
+        NOUS_PILOT_BUDGET_MODE: 'unlimited',
+        NOUS_PILOT_COMMERCIAL_ENABLED: 'true',
+        NOUS_PILOT_ESTIMATED_USD_PER_REQUEST: '0.116122',
+      },
+      {
+        inboundTurn: { count: jest.fn().mockResolvedValue(100) },
+      } as unknown as PrismaService,
+    );
+    const result = await transport.execute(
+      baseInput({ assignedEngine: 'nous_hermes' }),
+    );
+    expect(result.diagnostic?.code).toBe('NOUS_PILOT_DAILY_LIMIT');
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('continues a durable monitored dispatch when noncritical metering fails', async () => {
+    post.mockResolvedValue({
+      data: {
+        model: 'hermes-agent',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content: JSON.stringify({ replyText: 'Respuesta.' }) },
+          },
+        ],
+      },
+    });
+    const transport = configuredTransport(
+      {
+        NOUS_PILOT_BUDGET_MODE: 'MONITOR_ONLY',
+        NOUS_PILOT_COMMERCIAL_ENABLED: 'true',
+      },
+      {
+        inboundTurn: {
+          count: jest.fn().mockRejectedValue(new Error('meter down')),
+        },
+      } as unknown as PrismaService,
+    );
+    const result = await transport.execute(
+      baseInput({ assignedEngine: 'nous_hermes' }),
+    );
+    expect(result.diagnostic).toBeUndefined();
+    expect(post).toHaveBeenCalledTimes(1);
+  });
+
+  it('preserves the enforced mode response to metering failure after reservation', async () => {
+    const count = jest
+      .fn()
+      .mockResolvedValueOnce(0)
+      .mockRejectedValueOnce(new Error('meter down'));
+    const transport = configuredTransport(
+      {
+        NOUS_PILOT_COMMERCIAL_ENABLED: 'true',
+        NOUS_PILOT_ESTIMATED_USD_PER_REQUEST: '0.02',
+      },
+      { inboundTurn: { count } } as unknown as PrismaService,
+    );
+    const result = await transport.execute(
+      baseInput({ assignedEngine: 'nous_hermes' }),
+    );
+    expect(result.diagnostic).toBeDefined();
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it('emits the USD 4 and request 80 threshold events without a hard cap', async () => {
+    post.mockResolvedValue({
+      data: {
+        model: 'hermes-agent',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content: JSON.stringify({ replyText: 'Respuesta.' }) },
+          },
+        ],
+      },
+    });
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    const count = jest.fn().mockResolvedValueOnce(35).mockResolvedValueOnce(80);
+    const transport = configuredTransport(
+      {
+        NOUS_PILOT_BUDGET_MODE: 'MONITOR_ONLY',
+        NOUS_PILOT_COMMERCIAL_ENABLED: 'true',
+        NOUS_PILOT_ESTIMATED_USD_PER_REQUEST: '0.116122',
+        NOUS_PILOT_SPEND_ALERT_USD: '4',
+        NOUS_PILOT_DAILY_REQUEST_ALERT: '80',
+      },
+      { inboundTurn: { count } } as unknown as PrismaService,
+    );
+    await transport.execute(baseInput({ assignedEngine: 'nous_hermes' }));
+    await transport.execute(
+      baseInput({
+        assignedEngine: 'nous_hermes',
+        inboundMessageId: 'inbound-2',
+      }),
+    );
+    expect(post).toHaveBeenCalledTimes(2);
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('"dailyRequests":35'),
+    );
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining('"dailyRequests":80'),
+    );
+  });
+
   it('permits a metered commercial dispatch below both limits', async () => {
     post.mockResolvedValue({
       data: {
@@ -157,6 +310,7 @@ describe('NousHermesTransport', () => {
       expect.objectContaining({
         normal: true,
         pilotBudget: {
+          mode: 'ENFORCE',
           dailyRequestLimit: 100,
           dailyEstimatedUsdLimit: 0.05,
           estimatedUsdPerRequest: 0.02,

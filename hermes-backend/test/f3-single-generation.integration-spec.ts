@@ -248,6 +248,295 @@ describe('F3 single-generation canary with PostgreSQL', () => {
     ).toBe(true);
   });
 
+  it('keeps the monitor-only dispatch claim unique in PostgreSQL', async () => {
+    const f = await fixture();
+    const normal = new InboundTurnService(
+      prisma,
+      configFor(f.conversation.id, false),
+    );
+    const claim = await normal.claim(f.turn.id);
+    const dispatch = {
+      turnId: f.turn.id,
+      conversationId: f.conversation.id,
+      sourceMessageId: f.source.id,
+      generationToken: claim!.processingToken!,
+      normal: true,
+      pilotBudget: { mode: 'MONITOR_ONLY' as const },
+    };
+    expect(
+      (
+        await Promise.all([
+          normal.reserveNousDispatch(dispatch),
+          normal.reserveNousDispatch(dispatch),
+        ])
+      ).sort(),
+    ).toEqual([false, true]);
+    expect(
+      (await prisma.inboundTurn.findUniqueOrThrow({ where: { id: f.turn.id } }))
+        .providerDispatchReservedAt,
+    ).not.toBeNull();
+  });
+
+  it('recovers one original Nous result after a detached wait and a stale lease', async () => {
+    const f = await fixture();
+    const turns = new InboundTurnService(
+      prisma,
+      configFor(f.conversation.id, false),
+    );
+    const claim = await turns.claim(f.turn.id);
+    const token = claim!.processingToken!;
+    expect(
+      await turns.markNousQueued({
+        turnId: f.turn.id,
+        sourceMessageId: f.source.id,
+        processingToken: token,
+      }),
+    ).toBe(true);
+    await prisma.inboundTurn.update({
+      where: { id: f.turn.id },
+      data: { processingAt: new Date(Date.now() - 16 * 60_000) },
+    });
+    expect(await turns.claim(f.turn.id)).toBeNull();
+    expect(
+      (await turns.recoverable()).some((turn) => turn.id === f.turn.id),
+    ).toBe(false);
+    expect(
+      (await turns.stalePendingNous()).some((turn) => turn.id === f.turn.id),
+    ).toBe(true);
+    expect(
+      await turns.reserveNousDispatch({
+        turnId: f.turn.id,
+        conversationId: f.conversation.id,
+        sourceMessageId: f.source.id,
+        generationToken: token,
+        normal: true,
+        pilotBudget: { mode: 'MONITOR_ONLY' },
+      }),
+    ).toBe(true);
+    const result: ConversationTurnResult = {
+      replyText: 'Respuesta sintética original.',
+      proposedActions: [{ type: 'none' }],
+      engine: 'nous_hermes',
+      providerModel: 'synthetic',
+      traceId: f.source.id,
+    };
+    const [detached, stored] = await Promise.all([
+      turns.detachNousWait(f.turn.id, token),
+      turns.storeNousResult({
+        turnId: f.turn.id,
+        sourceMessageId: f.source.id,
+        processingToken: token,
+        result,
+      }),
+    ]);
+    expect(detached).toBe(true);
+    expect(stored).toBe(true);
+    expect(await turns.readNousResult(f.turn.id, f.source.id)).toEqual(result);
+    const resumed = await turns.claim(f.turn.id);
+    expect(resumed?.status).toBe(InboundTurnStatus.PROCESSING);
+    expect(resumed?.generationToken).toBe(token);
+    expect(
+      await turns.reserveNousDispatch({
+        turnId: f.turn.id,
+        conversationId: f.conversation.id,
+        sourceMessageId: f.source.id,
+        generationToken: resumed!.processingToken!,
+        normal: true,
+        pilotBudget: { mode: 'MONITOR_ONLY' },
+      }),
+    ).toBe(false);
+    await turns.complete(f.turn.id, resumed!.processingToken!);
+    expect(await turns.readNousResult(f.turn.id, f.source.id)).toBeNull();
+  });
+
+  it('leaves a long worker outage pending and resumes its original result on recovery scan', async () => {
+    const f = await fixture();
+    const turns = new InboundTurnService(
+      prisma,
+      configFor(f.conversation.id, false),
+    );
+    const claim = await turns.claim(f.turn.id);
+    const token = claim!.processingToken!;
+    expect(
+      await turns.markNousQueued({
+        turnId: f.turn.id,
+        sourceMessageId: f.source.id,
+        processingToken: token,
+      }),
+    ).toBe(true);
+    expect(await turns.detachNousWait(f.turn.id, token)).toBe(true);
+    await prisma.inboundTurn.update({
+      where: { id: f.turn.id },
+      data: { processingAt: new Date(Date.now() - 16 * 60_000) },
+    });
+    const queueAdd = jest.fn().mockResolvedValue(undefined);
+    const recovery = new InboundTurnRecoveryService(
+      turns,
+      { add: queueAdd } as unknown as Queue<AutoReplyJobData>,
+      undefined,
+      undefined,
+      {
+        getJob: jest.fn().mockResolvedValue({
+          getState: jest.fn().mockResolvedValue('waiting'),
+        }),
+      } as unknown as Queue<ConversationTurnInput>,
+    );
+    await recovery.scan();
+    expect(queueAdd).not.toHaveBeenCalled();
+    expect(
+      (await prisma.inboundTurn.findUniqueOrThrow({ where: { id: f.turn.id } }))
+        .status,
+    ).toBe(InboundTurnStatus.PROCESSING);
+    expect(
+      await turns.reserveNousDispatch({
+        turnId: f.turn.id,
+        conversationId: f.conversation.id,
+        sourceMessageId: f.source.id,
+        generationToken: token,
+        normal: true,
+        pilotBudget: { mode: 'MONITOR_ONLY' },
+      }),
+    ).toBe(true);
+    expect(
+      await turns.storeNousResult({
+        turnId: f.turn.id,
+        sourceMessageId: f.source.id,
+        processingToken: token,
+        result: {
+          replyText: 'Respuesta después del reinicio.',
+          proposedActions: [{ type: 'none' }],
+          engine: 'nous_hermes',
+          providerModel: 'synthetic',
+          traceId: f.source.id,
+        },
+      }),
+    ).toBe(true);
+    await recovery.scan();
+    expect(queueAdd).toHaveBeenCalledWith(
+      'send-auto-reply',
+      expect.objectContaining({ inboundTurnId: f.turn.id }),
+      expect.any(Object),
+    );
+    const resumed = await turns.claim(f.turn.id);
+    expect(resumed).not.toBeNull();
+    await turns.complete(f.turn.id, resumed!.processingToken!);
+  });
+
+  it('sends a recovered Nous result once through the PostgreSQL delivery ledger', async () => {
+    const f = await fixture();
+    const config = {
+      get: (key: string, fallback?: unknown) =>
+        ({
+          NOUS_PILOT_BUDGET_MODE: 'MONITOR_ONLY',
+          NOUS_PILOT_OPERATIONS_ENABLED: 'true',
+          NOUS_PILOT_COMMERCIAL_ENABLED: 'true',
+          HERMES_CONVERSATION_MESSAGE_DELAY_MS: 0,
+          AI_MESSAGE_PART_DELAY_MS: 0,
+        })[key as 'NOUS_PILOT_BUDGET_MODE'] ?? fallback,
+    } as ConfigService;
+    const turns = new InboundTurnService(prisma, config);
+    const claim = await turns.claim(f.turn.id);
+    const token = claim!.processingToken!;
+    expect(
+      await turns.markNousQueued({
+        turnId: f.turn.id,
+        sourceMessageId: f.source.id,
+        processingToken: token,
+      }),
+    ).toBe(true);
+    expect(
+      await turns.reserveNousDispatch({
+        turnId: f.turn.id,
+        conversationId: f.conversation.id,
+        sourceMessageId: f.source.id,
+        generationToken: token,
+        normal: true,
+        pilotBudget: { mode: 'MONITOR_ONLY' },
+      }),
+    ).toBe(true);
+    expect(await turns.detachNousWait(f.turn.id, token)).toBe(true);
+    expect(
+      await turns.storeNousResult({
+        turnId: f.turn.id,
+        sourceMessageId: f.source.id,
+        processingToken: token,
+        result: {
+          replyText: 'Respuesta recuperada.',
+          proposedActions: [{ type: 'none' }],
+          engine: 'nous_hermes',
+          providerModel: 'synthetic',
+          traceId: f.source.id,
+        },
+      }),
+    ).toBe(true);
+    const sendTextMessage = jest
+      .fn()
+      .mockResolvedValue({ messages: [{ id: `wamid.${randomUUID()}` }] });
+    const meta = {
+      sendTextMessage,
+      showTypingIndicator: jest.fn().mockResolvedValue(undefined),
+    } as unknown as MetaService;
+    const provider = jest.fn();
+    const delivery = new AutomatedDeliveryService(prisma, meta, config);
+    const reply = new AutoReplyService(
+      config,
+      prisma,
+      meta,
+      {
+        selectedEngine: () => 'nous_hermes',
+        respond: provider,
+      } as unknown as ConversationEngineService,
+      { create: jest.fn() } as unknown as HandoffService,
+      {
+        recordCommercialProfileFromConversation: jest
+          .fn()
+          .mockResolvedValue({}),
+        qualifyFromConversation: jest.fn().mockResolvedValue({}),
+      } as unknown as LeadsService,
+      {
+        requestHermesReview: jest.fn(),
+        requestQuote: jest.fn(),
+        requestCallback: jest.fn(),
+      } as unknown as TasksService,
+      new CommercialPolicyService(),
+      {
+        snapshot: jest.fn().mockResolvedValue({
+          market: 'EC',
+          marketSource: 'PROFILE',
+          relevantServiceCodes: [],
+          offers: [],
+          needsMarketClarification: false,
+        }),
+      } as unknown as CommercialAuthorityService,
+      {
+        consumeAiQuota: jest.fn(),
+        inspectGeneratedResponse: () => ({ action: 'ALLOW' }),
+      } as unknown as ConversationGuardService,
+      { add: jest.fn() } as unknown as Queue<AutoReplyJobData>,
+      delivery,
+      turns,
+    );
+    const data = {
+      conversationId: f.conversation.id,
+      contactId: f.contact.id,
+      inboundMessageId: f.source.id,
+      inboundTurnId: f.turn.id,
+    };
+    await reply.process(data);
+    await reply.process(data); // duplicate completion event
+    expect(provider).not.toHaveBeenCalled();
+    expect(sendTextMessage).toHaveBeenCalledTimes(1);
+    expect(
+      await prisma.automatedDelivery.count({
+        where: { sourceMessageId: f.source.id, status: 'CONFIRMED' },
+      }),
+    ).toBe(1);
+    expect(
+      (await prisma.inboundTurn.findUniqueOrThrow({ where: { id: f.turn.id } }))
+        .status,
+    ).toBe(InboundTurnStatus.PROCESSED);
+  });
+
   it('releases a normal turn after a proven pre-HTTP configuration failure', async () => {
     const f = await fixture();
     const normal = new InboundTurnService(
@@ -617,6 +906,7 @@ describe('F3 single-generation canary with PostgreSQL', () => {
     const request = {
       conversationId: f.conversation.id,
       correlationId: f.source.id,
+      contactName: 'Prueba',
       messageContent: 'Consulta sintética',
       conversationHistory: [],
       singleGenerationCanary: {

@@ -422,6 +422,10 @@ model InboundTurn {
   generationToken            String?
   generationEngine           String?
   providerDispatchReservedAt DateTime?
+  nousQueuedAt               DateTime?
+  nousDetachedAt             DateTime?
+  nousResult                 Json?
+  nousResultAt               DateTime?
   generationBlockedAt        DateTime?
   generationBlockReason      String?
   createdAt                  DateTime          @default(now())
@@ -431,6 +435,7 @@ model InboundTurn {
   messages     Message[]
 
   @@index([conversationId, status, dueAt])
+  @@index([status, processingAt, nousQueuedAt])
   @@map("inbound_turns")
 }
 

@@ -29,6 +29,7 @@ import {
 } from '../auto-replies/inbound-turn.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
+import { nousPilotBudgetMode } from './nous-pilot-budget.policy';
 
 type NousRequestMessage = {
   role: 'system' | 'user' | 'assistant';
@@ -144,24 +145,28 @@ export class NousHermesTransport {
             normal: true,
             ...(input.assignedEngine === 'nous_hermes'
               ? {
-                  pilotBudget: {
-                    dailyRequestLimit: this.positiveInteger(
-                      'NOUS_PILOT_DAILY_REQUEST_LIMIT',
-                      100,
-                    ),
-                    dailyEstimatedUsdLimit: Number(
-                      this.config.get<string>(
-                        'NOUS_PILOT_DAILY_ESTIMATED_USD_LIMIT',
-                        '5',
-                      ),
-                    ),
-                    estimatedUsdPerRequest: Number(
-                      this.config.get<string>(
-                        'NOUS_PILOT_ESTIMATED_USD_PER_REQUEST',
-                        '',
-                      ),
-                    ),
-                  },
+                  pilotBudget:
+                    nousPilotBudgetMode(this.config) === 'MONITOR_ONLY'
+                      ? { mode: 'MONITOR_ONLY' as const }
+                      : {
+                          mode: 'ENFORCE' as const,
+                          dailyRequestLimit: this.positiveInteger(
+                            'NOUS_PILOT_DAILY_REQUEST_LIMIT',
+                            100,
+                          ),
+                          dailyEstimatedUsdLimit: Number(
+                            this.config.get<string>(
+                              'NOUS_PILOT_DAILY_ESTIMATED_USD_LIMIT',
+                              '5',
+                            ),
+                          ),
+                          estimatedUsdPerRequest: Number(
+                            this.config.get<string>(
+                              'NOUS_PILOT_ESTIMATED_USD_PER_REQUEST',
+                              '',
+                            ),
+                          ),
+                        },
                 }
               : {}),
           }))
@@ -172,8 +177,16 @@ export class NousHermesTransport {
       } else {
         throw new Error('NOUS_DISPATCH_CLAIM_REQUIRED');
       }
-      if (input.assignedEngine === 'nous_hermes')
-        await this.logPilotDispatch(input);
+      if (input.assignedEngine === 'nous_hermes') {
+        try {
+          await this.logPilotDispatch(input);
+        } catch (error) {
+          if (nousPilotBudgetMode(this.config) !== 'MONITOR_ONLY') throw error;
+          this.logger.warn(
+            JSON.stringify({ event: 'nous_pilot_meter_unavailable' }),
+          );
+        }
+      }
       const response = await axios.post(
         NOUS_HERMES_ENDPOINT,
         {
@@ -270,6 +283,7 @@ export class NousHermesTransport {
       'true'
     )
       return 'NOUS_PILOT_STOPPED';
+    if (nousPilotBudgetMode(this.config) === 'MONITOR_ONLY') return null;
     if (!this.prisma) return 'NOUS_PILOT_METER_UNAVAILABLE';
     const perRequest = Number(
       this.config.get<string>('NOUS_PILOT_ESTIMATED_USD_PER_REQUEST', ''),
@@ -311,7 +325,10 @@ export class NousHermesTransport {
     const perRequest = Number(
       this.config.get<string>('NOUS_PILOT_ESTIMATED_USD_PER_REQUEST', ''),
     );
-    const estimatedUsd = Number((count * perRequest).toFixed(6));
+    const estimatedUsd =
+      Number.isFinite(perRequest) && perRequest > 0
+        ? Number((count * perRequest).toFixed(6))
+        : null;
     const alertAt = Number(
       this.config.get<string>('NOUS_PILOT_SPEND_ALERT_USD', '1'),
     );
@@ -325,10 +342,21 @@ export class NousHermesTransport {
         billedUsd: null,
       }),
     );
-    if (
-      count >= this.positiveInteger('NOUS_PILOT_DAILY_REQUEST_ALERT', 80) ||
-      (Number.isFinite(alertAt) && alertAt > 0 && estimatedUsd >= alertAt)
-    ) {
+    const requestAlert = this.positiveInteger(
+      'NOUS_PILOT_DAILY_REQUEST_ALERT',
+      80,
+    );
+    const requestStep = Math.max(1, Math.floor(requestAlert / 4));
+    const requestCrossed =
+      count === requestAlert ||
+      (count > requestAlert && count % requestStep === 0);
+    const spendCrossed =
+      estimatedUsd !== null &&
+      Number.isFinite(alertAt) &&
+      alertAt > 0 &&
+      Math.floor(estimatedUsd / alertAt) >
+        Math.floor(((count - 1) * perRequest) / alertAt);
+    if (requestCrossed || spendCrossed) {
       this.logger.warn(
         JSON.stringify({
           event: 'nous_pilot_threshold',

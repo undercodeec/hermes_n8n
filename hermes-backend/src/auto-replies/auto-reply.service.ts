@@ -16,6 +16,8 @@ import {
 } from '@prisma/client';
 import { Queue } from 'bullmq';
 import { ConversationEngineService } from '../conversation-engine/conversation-engine.service';
+import { NousQueuePendingError } from '../conversation-engine/nous-hermes.engine';
+import type { ConversationTurnInput } from '../conversation-engine/conversation-engine.types';
 import { MetaMediaUploadError, MetaService } from '../meta/meta.service';
 import { HandoffService } from '../handoff/handoff.service';
 import { LeadsService } from '../leads/leads.service';
@@ -277,6 +279,23 @@ export class AutoReplyService {
         );
         await this.inboundTurns.complete(turn.id, turn.processingToken!);
       } catch (error) {
+        if (error instanceof NousQueuePendingError) {
+          if (
+            !(await this.inboundTurns.detachNousWait(
+              turn.id,
+              turn.processingToken!,
+            ))
+          )
+            throw new Error('NOUS_PENDING_CLAIM_LOST');
+          this.logger.warn(
+            JSON.stringify({
+              event: 'nous_auto_reply_detached',
+              turnId: turn.id,
+              sourceMessageId: turn.lastMessageId,
+            }),
+          );
+          return;
+        }
         await this.inboundTurns.release(turn.id, turn.processingToken!);
         await this.requestBlockedNousReview(turn.id);
         throw error;
@@ -438,7 +457,7 @@ export class AutoReplyService {
       this.logSkip(data, 'CANARY_SOURCE_MISMATCH');
       return;
     }
-    if (claimedTurn?.generationReservedAt) {
+    if (claimedTurn?.generationReservedAt && !claimedTurn.nousResultAt) {
       await this.inboundTurns!.blockAmbiguous(
         claimedTurn.id,
         claimedTurn.processingToken!,
@@ -687,7 +706,10 @@ export class AutoReplyService {
       return;
     }
 
-    if (!(await this.conversationGuard.consumeAiQuota(data.contactId))) {
+    if (
+      !claimedTurn?.nousResultAt &&
+      !(await this.conversationGuard.consumeAiQuota(data.contactId))
+    ) {
       this.logSkip(data, 'AI_QUOTA_EXCEEDED');
       return;
     }
@@ -816,7 +838,7 @@ export class AutoReplyService {
       });
       if (!acquired) throw new Error('CANARY_GENERATION_RESERVATION_DENIED');
     }
-    const engineResult = await this.conversationEngine.respond({
+    const engineInput: ConversationTurnInput = {
       conversationId: data.conversationId,
       ...(assignedEngine ? { assignedEngine } : {}),
       inboundMessageId: inbound.id,
@@ -863,7 +885,11 @@ export class AutoReplyService {
           humanHandoff: true,
         },
       },
-    });
+    };
+    const engineResult = claimedTurn?.nousResultAt
+      ? await this.inboundTurns!.readNousResult(claimedTurn.id, inbound.id)
+      : await this.conversationEngine.respond(engineInput);
+    if (!engineResult) throw new Error('NOUS_PERSISTED_RESULT_INVALID');
     if (normalNousClaim && engineResult.diagnostic) {
       await this.inboundTurns!.blockAmbiguous(
         normalNousClaim.turnId,
@@ -898,7 +924,9 @@ export class AutoReplyService {
       (normalNousClaim && !engineResult.diagnostic
         ? {
             ...normalNousClaim,
-            generationToken: normalNousClaim.processingToken,
+            generationToken: claimedTurn?.nousResultAt
+              ? claimedTurn.generationToken!
+              : normalNousClaim.processingToken,
           }
         : undefined);
     const recordSuppressedInference = (reasonCode: string) =>

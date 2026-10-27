@@ -559,6 +559,102 @@ describe('AutoReplyService', () => {
     );
   });
 
+  it('delivers a persisted Nous result without a second inference or quota debit', async () => {
+    const result = {
+      ...toEngineResult({ response: 'Respuesta durable.' }),
+      engine: 'nous_hermes' as const,
+      traceId: 'inbound-recovery',
+    };
+    const turns = {
+      claim: jest.fn().mockResolvedValue({
+        id: 'turn-normal',
+        lastMessageId: 'inbound-recovery',
+        processingToken: 'recovery-token',
+        generationToken: 'original-token',
+        generationReservedAt: new Date(),
+        nousResultAt: new Date(),
+      }),
+      messages: jest
+        .fn()
+        .mockResolvedValue([
+          { id: 'inbound-recovery', type: 'TEXT', content: 'Consulta actual' },
+        ]),
+      readNousResult: jest.fn().mockResolvedValue(result),
+      complete: jest.fn(),
+    };
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'Respuesta durable.' },
+      engineId: 'nous_hermes',
+      inboundTurns: turns as unknown as InboundTurnService,
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+      inboundTurnId: 'turn-normal',
+    });
+    expect(harness.engine.respond).not.toHaveBeenCalled();
+    expect(harness.guard.consumeAiQuota).not.toHaveBeenCalled();
+    expect(harness.deliveries.prepareBatch).toHaveBeenCalledWith(
+      expect.objectContaining({ sourceMessageId: 'inbound-recovery' }),
+      {
+        turnId: 'turn-normal',
+        processingToken: 'recovery-token',
+        generationToken: 'original-token',
+      },
+    );
+    expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('suppresses a late persisted Nous result after human handoff', async () => {
+    const turns = {
+      claim: jest.fn().mockResolvedValue({
+        id: 'turn-normal',
+        lastMessageId: 'inbound-recovery',
+        processingToken: 'recovery-token',
+        generationToken: 'original-token',
+        generationReservedAt: new Date(),
+        nousResultAt: new Date(),
+      }),
+      messages: jest
+        .fn()
+        .mockResolvedValue([
+          { id: 'inbound-recovery', type: 'TEXT', content: 'Consulta actual' },
+        ]),
+      readNousResult: jest.fn(),
+      complete: jest.fn(),
+    };
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'Respuesta tardía.' },
+      engineId: 'nous_hermes',
+      inboundTurns: turns as unknown as InboundTurnService,
+    });
+    const conversation = (
+      harness.prisma as unknown as {
+        conversation: { findUnique: jest.Mock };
+      }
+    ).conversation;
+    conversation.findUnique.mockResolvedValue({
+      id: 'conversation-1',
+      status: ConversationStatus.HANDED_OFF,
+      metadata: {},
+      contact: { name: 'Ana', waId: '593991234567', email: null },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+      inboundTurnId: 'turn-normal',
+    });
+    expect(harness.engine.respond).not.toHaveBeenCalled();
+    expect(turns.readNousResult).not.toHaveBeenCalled();
+    expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
+    expect(turns.complete).toHaveBeenCalledWith(
+      'turn-normal',
+      'recovery-token',
+    );
+  });
+
   it.each([
     [false, false, 0, 0],
     [true, false, 1, 0],

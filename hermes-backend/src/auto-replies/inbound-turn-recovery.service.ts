@@ -17,6 +17,10 @@ import {
 import { TasksService } from '../tasks/tasks.service';
 import { HandoffReason } from '@prisma/client';
 import { HandoffService } from '../handoff/handoff.service';
+import { NOUS_HERMES_INFERENCE_QUEUE } from '../conversation-engine/nous-hermes.constants';
+import type { ConversationTurnInput } from '../conversation-engine/conversation-engine.types';
+import { InboundTurnStatus } from '@prisma/client';
+import { NOUS_QUEUE_OUTCOME_UNKNOWN } from './inbound-turn.service';
 
 @Injectable()
 export class InboundTurnRecoveryService
@@ -25,6 +29,7 @@ export class InboundTurnRecoveryService
   private readonly logger = new Logger(InboundTurnRecoveryService.name);
   private timer?: NodeJS.Timeout;
   private scanning = false;
+  private readonly pendingLoggedAt = new Map<string, number>();
 
   constructor(
     private readonly turns: InboundTurnService,
@@ -32,6 +37,9 @@ export class InboundTurnRecoveryService
     private readonly queue: Queue<AutoReplyJobData>,
     @Optional() private readonly tasks?: TasksService,
     @Optional() private readonly handoffs?: HandoffService,
+    @Optional()
+    @InjectQueue(NOUS_HERMES_INFERENCE_QUEUE)
+    private readonly nousQueue?: Queue<ConversationTurnInput>,
   ) {}
 
   onModuleInit(): void {
@@ -50,7 +58,13 @@ export class InboundTurnRecoveryService
     try {
       const turns = await this.turns.recoverable();
       for (const turn of turns) {
-        if (
+        if (turn.nousQueuedAt && turn.nousResultAt) {
+          if (
+            turn.status === InboundTurnStatus.PROCESSING &&
+            !(await this.turns.releaseCompletedNousResult(turn.id))
+          )
+            continue;
+        } else if (
           turn.generationReservedAt &&
           (await this.turns.blockAmbiguous(turn.id))
         ) {
@@ -84,6 +98,41 @@ export class InboundTurnRecoveryService
             jobId: `turn-recovery-${turn.id}-${Math.floor(Date.now() / 5000)}`,
           },
         );
+      }
+      for (const turn of await this.turns.stalePendingNous()) {
+        if (!this.nousQueue) throw new Error('NOUS_QUEUE_RECOVERY_UNAVAILABLE');
+        const job = await this.nousQueue.getJob(`nous-${turn.lastMessageId}`);
+        const state = job ? await job.getState() : 'missing';
+        if (state === 'waiting' || state === 'delayed' || state === 'active') {
+          const last = this.pendingLoggedAt.get(turn.id) ?? 0;
+          if (Date.now() - last >= 60_000) {
+            this.pendingLoggedAt.set(turn.id, Date.now());
+            this.logger.warn(
+              JSON.stringify({
+                event: 'nous_pending_recovery',
+                turnId: turn.id,
+                state,
+                ageMs: Date.now() - turn.nousQueuedAt!.getTime(),
+              }),
+            );
+          }
+          continue;
+        }
+        if (
+          await this.turns.blockAmbiguous(
+            turn.id,
+            turn.processingToken ?? undefined,
+            true,
+          )
+        ) {
+          const reason = turn.providerDispatchReservedAt
+            ? NOUS_DISPATCH_AMBIGUOUS
+            : NOUS_QUEUE_OUTCOME_UNKNOWN;
+          await this.requestNousReview({
+            ...turn,
+            generationBlockReason: reason,
+          });
+        }
       }
       for (const turn of await this.turns.pendingNousReviews())
         await this.requestNousReview(turn);

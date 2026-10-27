@@ -11,6 +11,14 @@ import { NOUS_HERMES_INFERENCE_QUEUE } from './nous-hermes.constants';
 import { NousHermesQueueEvents } from './nous-hermes.queue-events';
 import { InboundTurnService } from '../auto-replies/inbound-turn.service';
 import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
+import { nousPilotBudgetMode } from './nous-pilot-budget.policy';
+
+export class NousQueuePendingError extends Error {
+  constructor() {
+    super('NOUS_QUEUE_PENDING');
+    this.name = 'NousQueuePendingError';
+  }
+}
 
 @Injectable()
 export class NousHermesEngine implements ConversationEngine {
@@ -65,27 +73,44 @@ export class NousHermesEngine implements ConversationEngine {
       );
     }
     if (input.assignedEngine === 'nous_hermes') {
-      const waiting = await this.queue.getWaitingCount();
+      const monitorOnly = nousPilotBudgetMode(this.config) === 'MONITOR_ONLY';
+      let waiting: number | undefined;
+      try {
+        waiting = await this.queue.getWaitingCount();
+      } catch (error) {
+        if (!monitorOnly) throw error;
+        this.logger.warn(
+          JSON.stringify({ event: 'nous_pilot_queue_meter_unavailable' }),
+        );
+      }
       const threshold = this.positiveInteger(
         'NOUS_PILOT_QUEUE_ALERT_WAITING',
         5,
       );
-      if (waiting >= threshold) {
-        this.logger.warn(
-          JSON.stringify({
-            event: 'nous_pilot_saturation',
-            waiting,
-            threshold,
-          }),
-        );
-        return this.failureResult(
-          input,
-          'NOUS_PILOT_SATURATED',
-          'Nous pilot queue is saturated',
-          'OUTPUT_BLOCKED',
-          0,
-          true,
-        );
+      if (waiting !== undefined && waiting >= threshold) {
+        if (
+          !monitorOnly ||
+          waiting === threshold ||
+          waiting % threshold === 0
+        ) {
+          this.logger.warn(
+            JSON.stringify({
+              event: 'nous_pilot_saturation',
+              waiting,
+              threshold,
+            }),
+          );
+        }
+        if (!monitorOnly) {
+          return this.failureResult(
+            input,
+            'NOUS_PILOT_SATURATED',
+            'Nous pilot queue is saturated',
+            'OUTPUT_BLOCKED',
+            0,
+            true,
+          );
+        }
       }
     }
 
@@ -97,9 +122,24 @@ export class NousHermesEngine implements ConversationEngine {
       'NOUS_HERMES_QUEUE_WAIT_TIMEOUT_MS',
       120000,
     );
+    const monitorOnly =
+      input.assignedEngine === 'nous_hermes' &&
+      nousPilotBudgetMode(this.config) === 'MONITOR_ONLY';
 
     let job: Job<ConversationTurnInput, ConversationTurnResult>;
     try {
+      if (monitorOnly) {
+        if (
+          !this.inboundTurns ||
+          !input.normalNousClaim ||
+          !(await this.inboundTurns.markNousQueued({
+            turnId: input.normalNousClaim.turnId,
+            sourceMessageId: input.inboundMessageId,
+            processingToken: input.normalNousClaim.processingToken,
+          }))
+        )
+          throw new Error('NOUS_QUEUE_CLAIM_LOST');
+      }
       job = await this.queue.add('infer', input, {
         jobId: `nous-${input.inboundMessageId}`,
         attempts,
@@ -117,11 +157,83 @@ export class NousHermesEngine implements ConversationEngine {
     }
 
     try {
-      return await job.waitUntilFinished(
+      const result = await job.waitUntilFinished(
         this.queueEvents.queueEvents,
         waitTimeout,
       );
-    } catch {
+      if (monitorOnly) {
+        this.logger.log(
+          JSON.stringify({
+            event: 'nous_pilot_queue_result',
+            queueWaitMs:
+              job.processedOn && job.timestamp
+                ? Math.max(0, job.processedOn - job.timestamp)
+                : null,
+            totalMs: job.timestamp
+              ? Math.max(0, Date.now() - job.timestamp)
+              : null,
+          }),
+        );
+      }
+      return result;
+    } catch (error) {
+      if (monitorOnly) {
+        try {
+          const persisted = await this.inboundTurns!.readNousResult(
+            input.normalNousClaim!.turnId,
+            input.inboundMessageId,
+          );
+          if (persisted) return persisted;
+        } catch {
+          this.logger.warn(
+            JSON.stringify({ event: 'nous_pilot_result_meter_unavailable' }),
+          );
+        }
+      }
+      if (
+        monitorOnly &&
+        error instanceof Error &&
+        error.message.includes('timed out before finishing')
+      ) {
+        let state: string;
+        try {
+          state = await job.getState();
+        } catch {
+          state = 'unknown';
+        }
+        if (state === 'waiting' || state === 'delayed') {
+          this.logger.warn(
+            JSON.stringify({ event: 'nous_pilot_queue_detached', state }),
+          );
+          throw new NousQueuePendingError();
+        }
+        if (state === 'active') {
+          try {
+            const current = await this.queue.getJob(job.id ?? '');
+            if (
+              current?.processedOn &&
+              Date.now() - current.processedOn < waitTimeout
+            ) {
+              this.logger.warn(
+                JSON.stringify({ event: 'nous_pilot_queue_detached', state }),
+              );
+              throw new NousQueuePendingError();
+            }
+          } catch (stateError) {
+            if (stateError instanceof NousQueuePendingError) throw stateError;
+          }
+        }
+        // Completion and the state probe can race; a durable result wins.
+        try {
+          const persisted = await this.inboundTurns!.readNousResult(
+            input.normalNousClaim!.turnId,
+            input.inboundMessageId,
+          );
+          if (persisted) return persisted;
+        } catch {
+          // An unreadable durable result remains ambiguous.
+        }
+      }
       if (input.singleGenerationCanary) {
         await this.blockAmbiguousCanary(input);
         throw new Error('CANARY_NOUS_RESULT_AMBIGUOUS');

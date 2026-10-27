@@ -1,4 +1,5 @@
 import { ConfigService } from '@nestjs/config';
+import type { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import {
   InboundTurnService,
@@ -93,5 +94,40 @@ describe('normal Nous pilot reservation', () => {
       }),
     ).toBe(false);
     expect(tx.inboundTurn.updateMany).not.toHaveBeenCalled();
+  });
+
+  it('keeps one conditional reservation in monitor mode beyond both daily caps', async () => {
+    let reserved = false;
+    const updateMany = jest.fn().mockImplementation(() => {
+      if (reserved) return Promise.resolve({ count: 0 });
+      reserved = true;
+      return Promise.resolve({ count: 1 });
+    });
+    const prisma = { inboundTurn: { updateMany } } as unknown as PrismaService;
+    const config = {
+      get: jest.fn((_key: string, fallback: unknown) => fallback),
+    } as unknown as ConfigService;
+    const service = new InboundTurnService(prisma, config);
+    const input = {
+      turnId: 'turn-101',
+      conversationId: 'conversation-1',
+      sourceMessageId: 'message-101',
+      generationToken: 'token-101',
+      normal: true,
+      pilotBudget: { mode: 'MONITOR_ONLY' as const },
+    };
+    expect(await service.reserveNousDispatch(input)).toBe(true);
+    expect(await service.reserveNousDispatch(input)).toBe(false);
+    expect(updateMany).toHaveBeenCalledTimes(2);
+    const calls = updateMany.mock.calls as unknown as Array<
+      [Prisma.InboundTurnUpdateManyArgs]
+    >;
+    expect(calls[0][0].where).toEqual(
+      expect.objectContaining({
+        providerDispatchReservedAt: null,
+        generationReservedAt: null,
+        processingToken: 'token-101',
+      }),
+    );
   });
 });

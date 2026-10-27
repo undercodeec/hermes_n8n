@@ -11,6 +11,7 @@ import {
 import { PrismaService } from '../prisma/prisma.service';
 import { isSingleGenerationCanaryConversation } from './single-generation-canary.policy';
 import { activeCanaryRun, CanaryRun } from './canary-run.policy';
+import type { ConversationTurnResult } from '../conversation-engine/conversation-engine.types';
 
 export const AMBIGUOUS_GENERATION = 'CANARY_BLOCKED_AMBIGUOUS_GENERATION';
 export const NOUS_DISPATCH_AMBIGUOUS = 'NOUS_DISPATCH_AMBIGUOUS';
@@ -111,6 +112,7 @@ export class InboundTurnService {
           {
             status: InboundTurnStatus.PROCESSING,
             processingAt: { lt: staleBefore },
+            nousQueuedAt: null,
           },
         ],
       },
@@ -141,10 +143,15 @@ export class InboundTurnService {
     return this.prisma.inboundTurn.findMany({
       where: {
         OR: [
-          { status: InboundTurnStatus.OPEN, dueAt: { lte: now } },
+          {
+            status: InboundTurnStatus.OPEN,
+            dueAt: { lte: now },
+            OR: [{ nousQueuedAt: null }, { nousResultAt: { not: null } }],
+          },
           {
             status: InboundTurnStatus.PROCESSING,
             processingAt: { lt: staleBefore },
+            OR: [{ nousQueuedAt: null }, { nousResultAt: { not: null } }],
           },
         ],
       },
@@ -202,7 +209,185 @@ export class InboundTurnService {
         status: InboundTurnStatus.PROCESSED,
         processingAt: null,
         processingToken: null,
+        nousResult: Prisma.DbNull,
+        nousResultAt: null,
+        nousDetachedAt: null,
       },
+    });
+  }
+
+  /** Queue identity is recorded before BullMQ admission, without claiming provider dispatch. */
+  async markNousQueued(input: {
+    turnId: string;
+    sourceMessageId: string;
+    processingToken: string;
+  }): Promise<boolean> {
+    const where = {
+      id: input.turnId,
+      lastMessageId: input.sourceMessageId,
+      status: InboundTurnStatus.PROCESSING,
+      processingToken: input.processingToken,
+      generationReservedAt: null,
+      generationBlockedAt: null,
+    };
+    const marked = await this.prisma.inboundTurn.updateMany({
+      where: { ...where, nousQueuedAt: null },
+      data: { nousQueuedAt: new Date() },
+    });
+    if (marked.count === 1) return true;
+    return Boolean(
+      await this.prisma.inboundTurn.findFirst({
+        where: { ...where, nousQueuedAt: { not: null } },
+        select: { id: true },
+      }),
+    );
+  }
+
+  async readNousResult(
+    turnId: string,
+    sourceMessageId: string,
+  ): Promise<ConversationTurnResult | null> {
+    const row = await this.prisma.inboundTurn.findFirst({
+      where: {
+        id: turnId,
+        generationSourceMessageId: sourceMessageId,
+        generationBlockedAt: null,
+        status: { in: [InboundTurnStatus.OPEN, InboundTurnStatus.PROCESSING] },
+        nousResultAt: { not: null },
+      },
+      select: { nousResult: true },
+    });
+    const value = row?.nousResult;
+    if (!value || typeof value !== 'object' || Array.isArray(value))
+      return null;
+    if (
+      value.engine !== 'nous_hermes' ||
+      value.traceId !== sourceMessageId ||
+      typeof value.replyText !== 'string' ||
+      typeof value.providerModel !== 'string' ||
+      !Array.isArray(value.proposedActions)
+    )
+      return null;
+    return value as unknown as ConversationTurnResult;
+  }
+
+  /** Result is durable before BullMQ reports completion. Only the original reserved dispatch may write it. */
+  async storeNousResult(input: {
+    turnId: string;
+    sourceMessageId: string;
+    processingToken: string;
+    result: ConversationTurnResult;
+  }): Promise<boolean> {
+    if (Buffer.byteLength(JSON.stringify(input.result), 'utf8') > 64_000)
+      throw new Error('NOUS_RESULT_TOO_LARGE');
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM inbound_turns WHERE id = ${input.turnId} FOR UPDATE`;
+      const turn = await tx.inboundTurn.findUnique({
+        where: { id: input.turnId },
+      });
+      if (
+        !turn ||
+        turn.status !== InboundTurnStatus.PROCESSING ||
+        turn.processingToken !== input.processingToken ||
+        !turn.nousQueuedAt ||
+        !turn.providerDispatchReservedAt ||
+        turn.generationSourceMessageId !== input.sourceMessageId ||
+        turn.generationBlockedAt ||
+        turn.nousResultAt
+      )
+        return false;
+      const now = new Date();
+      await tx.inboundTurn.update({
+        where: { id: turn.id },
+        data: {
+          nousResult: input.result as unknown as Prisma.InputJsonValue,
+          nousResultAt: now,
+          ...(turn.nousDetachedAt
+            ? {
+                status: InboundTurnStatus.OPEN,
+                processingAt: null,
+                processingToken: null,
+                dueAt: now,
+              }
+            : {}),
+        },
+      });
+      return true;
+    });
+  }
+
+  /** End the bounded waiter while preserving the original provider token. */
+  async detachNousWait(turnId: string, token: string): Promise<boolean> {
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM inbound_turns WHERE id = ${turnId} FOR UPDATE`;
+      const turn = await tx.inboundTurn.findUnique({ where: { id: turnId } });
+      if (
+        !turn ||
+        turn.status !== InboundTurnStatus.PROCESSING ||
+        turn.processingToken !== token ||
+        !turn.nousQueuedAt ||
+        turn.generationBlockedAt
+      )
+        return false;
+      const now = new Date();
+      await tx.inboundTurn.update({
+        where: { id: turnId },
+        data: {
+          nousDetachedAt: now,
+          ...(turn.nousResultAt
+            ? {
+                status: InboundTurnStatus.OPEN,
+                processingAt: null,
+                processingToken: null,
+                dueAt: now,
+              }
+            : {}),
+        },
+      });
+      return true;
+    });
+  }
+
+  /** Recover a completed result after the original auto-reply worker crashed. */
+  async releaseCompletedNousResult(
+    turnId: string,
+    now = new Date(),
+  ): Promise<boolean> {
+    const staleBefore = new Date(
+      now.getTime() - InboundTurnService.PROCESSING_LEASE_MS,
+    );
+    const released = await this.prisma.inboundTurn.updateMany({
+      where: {
+        id: turnId,
+        status: InboundTurnStatus.PROCESSING,
+        processingAt: { lt: staleBefore },
+        nousQueuedAt: { not: null },
+        nousResultAt: { not: null },
+      },
+      data: {
+        status: InboundTurnStatus.OPEN,
+        processingAt: null,
+        processingToken: null,
+        nousDetachedAt: now,
+        dueAt: now,
+      },
+    });
+    return released.count === 1;
+  }
+
+  async stalePendingNous(now = new Date()): Promise<InboundTurn[]> {
+    const staleBefore = new Date(
+      now.getTime() - InboundTurnService.PROCESSING_LEASE_MS,
+    );
+    return this.prisma.inboundTurn.findMany({
+      where: {
+        status: InboundTurnStatus.PROCESSING,
+        processingAt: { lt: staleBefore },
+        nousQueuedAt: { not: null },
+        nousResultAt: null,
+      },
+      orderBy: { processingAt: 'asc' },
+      take: 100,
     });
   }
 
@@ -446,11 +631,14 @@ export class InboundTurnService {
     sourceMessageId: string;
     generationToken: string;
     normal?: boolean;
-    pilotBudget?: {
-      dailyRequestLimit: number;
-      dailyEstimatedUsdLimit: number;
-      estimatedUsdPerRequest: number;
-    };
+    pilotBudget?:
+      | { mode: 'MONITOR_ONLY' }
+      | {
+          mode?: 'ENFORCE';
+          dailyRequestLimit: number;
+          dailyEstimatedUsdLimit: number;
+          estimatedUsdPerRequest: number;
+        };
   }): Promise<boolean> {
     if (input.normal) {
       if (
@@ -478,7 +666,7 @@ export class InboundTurnService {
           },
         });
         const budget = input.pilotBudget;
-        if (budget) {
+        if (budget && budget.mode !== 'MONITOR_ONLY') {
           return this.prisma.$transaction(async (tx) => {
             // Every pilot worker must serialize this count and reservation.
             await tx.$executeRaw`SELECT pg_advisory_xact_lock(710, 10)`;
@@ -554,6 +742,8 @@ export class InboundTurnService {
           turn.generationEngine !== NORMAL_NOUS_GENERATION_ENGINE) ||
         turn.status === InboundTurnStatus.PROCESSED ||
         turn.status === InboundTurnStatus.BLOCKED ||
+        (turn.nousResultAt &&
+          turn.generationEngine === NORMAL_NOUS_GENERATION_ENGINE) ||
         (token && turn.processingToken !== token)
       )
         return false;
@@ -575,6 +765,8 @@ export class InboundTurnService {
           processingAt: null,
           processingToken: null,
           generationBlockedAt: new Date(),
+          nousResult: Prisma.DbNull,
+          nousResultAt: null,
           generationBlockReason:
             queueOutcomeUnknown && !turn.generationReservedAt
               ? NOUS_QUEUE_OUTCOME_UNKNOWN
