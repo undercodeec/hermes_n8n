@@ -17,6 +17,10 @@ import {
 import { ClsService } from 'nestjs-cls';
 import { ConversationHandoffRequestedEvent } from '../common/events/conversation.events';
 import { PrismaService } from '../prisma/prisma.service';
+import {
+  projectCrmHandoff,
+  projectCrmUser,
+} from '../attribution-crm/attribution-crm';
 import { CreateHandoffDto } from './dto/create-handoff.dto';
 import {
   HandoffResolutionAction,
@@ -269,7 +273,7 @@ export class HandoffService {
 
   async findAll(status?: HandoffStatus) {
     const where = status ? { status } : {};
-    return this.prisma.humanHandoff.findMany({
+    const rows = await this.prisma.humanHandoff.findMany({
       where,
       orderBy: { createdAt: 'desc' },
       include: {
@@ -279,6 +283,7 @@ export class HandoffService {
         assignedAgent: true,
       },
     });
+    return rows.map(projectCrmHandoff);
   }
 
   async findOne(id: string) {
@@ -306,7 +311,15 @@ export class HandoffService {
       }),
     ]);
     if (!handoff) throw new NotFoundException('Handoff no encontrado');
-    return { ...handoff, auditLogs };
+    return {
+      ...projectCrmHandoff(handoff),
+      auditLogs: auditLogs.map((log) => ({
+        id: log.id,
+        action: log.action,
+        createdAt: log.createdAt,
+        user: projectCrmUser(log.user),
+      })),
+    };
   }
 
   async assign(id: string, agentId: string, actorUserId: string) {

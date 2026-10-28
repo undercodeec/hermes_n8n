@@ -25,6 +25,15 @@ import {
   QueryMessagesDto,
 } from './dto/query-conversations.dto';
 import { ReplyConversationDto } from './dto/reply-conversation.dto';
+import {
+  originConversationWhere,
+  projectCrmContact,
+  projectCrmHandoff,
+  projectCrmLead,
+  projectCrmMessage,
+  projectCrmState,
+  readAttributions,
+} from '../attribution-crm/attribution-crm';
 
 const OPEN_HANDOFF_STATUSES: HandoffStatus[] = [
   HandoffStatus.PENDING,
@@ -60,38 +69,8 @@ export class ConversationsService {
     return safeStoredIncident(this.objectValue(metadata)?.lastHermesIncident);
   }
 
-  private safeMessage<T extends { metadata?: unknown; rawPayload?: unknown }>(
-    message: T,
-  ): T {
-    const metadata = this.objectValue(message.metadata);
-    const rawPayload = this.objectValue(message.rawPayload);
-    const referral = this.objectValue(rawPayload?.referral);
-    const hasClickId = Boolean(
-      referral && Object.prototype.hasOwnProperty.call(referral, 'ctwa_clid'),
-    );
-    const hasIncident = Boolean(
-      metadata &&
-      Object.prototype.hasOwnProperty.call(metadata, 'hermesIncident'),
-    );
-    if (!hasClickId && !hasIncident) return message;
-    const safeReferral = referral ? { ...referral } : null;
-    if (safeReferral) delete safeReferral.ctwa_clid;
-    return {
-      ...message,
-      ...(hasClickId
-        ? { rawPayload: { ...rawPayload, referral: safeReferral } }
-        : {}),
-      ...(hasIncident
-        ? {
-            metadata: {
-              ...metadata,
-              hermesIncident: this.hermesIncident({
-                lastHermesIncident: metadata?.hermesIncident,
-              }),
-            },
-          }
-        : {}),
-    };
+  private safeMessage<T extends object>(message: T) {
+    return projectCrmMessage(message);
   }
 
   private hermesReviewTask(task: unknown) {
@@ -207,6 +186,16 @@ export class ConversationsService {
         },
       ];
     }
+    if (query.origin) {
+      where.AND = [
+        ...(Array.isArray(where.AND)
+          ? where.AND
+          : where.AND
+            ? [where.AND]
+            : []),
+        originConversationWhere(query.origin),
+      ];
+    }
 
     const [conversations, total] = await Promise.all([
       this.prisma.conversation.findMany({
@@ -249,12 +238,23 @@ export class ConversationsService {
     const lastInboundByConversation = new Map(
       lastInbound.map((item) => [item.conversationId, item._max.createdAt]),
     );
+    const attributions = await readAttributions(this.prisma, conversations);
 
     const data = conversations
       .map((conversation) => {
         const { metadata, tasks, ...safeConversation } = conversation;
         return {
           ...safeConversation,
+          contact: projectCrmContact(conversation.contact),
+          state: projectCrmState(conversation.state),
+          lead: conversation.lead
+            ? projectCrmLead(
+                conversation.lead,
+                attributions.get(conversation.id),
+              )
+            : null,
+          attribution: attributions.get(conversation.id),
+          handoffs: (conversation.handoffs || []).map(projectCrmHandoff),
           messages: conversation.messages.map((message) =>
             this.safeMessage(message),
           ),
@@ -315,9 +315,17 @@ export class ConversationsService {
       throw new NotFoundException('Conversación no encontrada');
     }
 
+    const attributions = await readAttributions(this.prisma, [conversation]);
     const { metadata, tasks, ...safeConversation } = conversation;
     return {
       ...safeConversation,
+      contact: projectCrmContact(conversation.contact),
+      state: projectCrmState(conversation.state),
+      lead: conversation.lead
+        ? projectCrmLead(conversation.lead, attributions.get(conversation.id))
+        : null,
+      attribution: attributions.get(conversation.id),
+      handoffs: (conversation.handoffs || []).map(projectCrmHandoff),
       messages: conversation.messages
         .reverse()
         .map((message) => this.safeMessage(message)),

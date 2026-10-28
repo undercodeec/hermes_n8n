@@ -24,6 +24,7 @@ describe('ConversationsService', () => {
     auditLog: { create: jest.fn() },
   };
   const prisma = {
+    $queryRaw: jest.fn().mockResolvedValue([]),
     conversation: {
       findMany: jest.fn(),
       findUnique: jest.fn(),
@@ -44,6 +45,7 @@ describe('ConversationsService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    (prisma.$queryRaw as jest.Mock).mockResolvedValue([]);
     tx.conversation.findUnique.mockResolvedValue({
       id: 'conversation-1',
       status: ConversationStatus.HANDED_OFF,
@@ -378,7 +380,6 @@ describe('ConversationsService', () => {
     expect(result.data[0]).toEqual(
       expect.objectContaining({
         metadata: expect.objectContaining({
-          legitimateNote: 'Nota del usuario conservada',
           hermesIncident: expect.objectContaining({
             code: 'HERMES_PROVIDER_UNAVAILABLE',
             summary: 'No se pudo completar la respuesta del proveedor.',
@@ -395,7 +396,11 @@ describe('ConversationsService', () => {
     (prisma.message.findMany as unknown as jest.Mock).mockResolvedValue([
       {
         id: 'inbound-ad',
-        metadata: { pilotAd: { ctwaClidPresent: true } },
+        metadata: {
+          pilotOrigin: 'meta_ad',
+          pilotOriginEvidence: 'meta_referral_ad',
+          pilotAd: { ctwaClidPresent: true },
+        },
         rawPayload: {
           referral: {
             source_type: 'ad',
@@ -415,11 +420,17 @@ describe('ConversationsService', () => {
     expect(JSON.stringify(result.data)).not.toContain('private-click-id');
     expect(result.data[0]).toEqual(
       expect.objectContaining({
-        metadata: { pilotAd: { ctwaClidPresent: true } },
-        rawPayload: {
-          referral: { source_type: 'ad', source_id: 'ad-1' },
+        metadata: {
+          pilotOrigin: 'meta_ad',
+          pilotOriginEvidence: 'meta_referral_ad',
+          pilotAd: { ctwaClidPresent: true },
         },
+        attribution: expect.objectContaining({
+          origin: 'meta_ad',
+          ctwaClidPresent: true,
+        }),
       }),
     );
+    expect(JSON.stringify(result.data)).not.toContain('rawPayload');
   });
 });

@@ -28,6 +28,11 @@ import { QueryLeadsDto } from './dto/query-leads.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { CorrectLeadStageDto } from './dto/correct-lead-stage.dto';
 import { CommercialProfile } from '../hermes/dto/hermes-request.dto';
+import {
+  originConversationWhere,
+  projectCrmLead,
+  readAttributions,
+} from '../attribution-crm/attribution-crm';
 
 const OPEN_HANDOFF_STATUSES: HandoffStatus[] = [
   HandoffStatus.PENDING,
@@ -477,6 +482,24 @@ export class LeadsService {
       };
     }
 
+    if (query.origin) {
+      where.AND = [
+        ...(Array.isArray(where.AND)
+          ? where.AND
+          : where.AND
+            ? [where.AND]
+            : []),
+        query.origin === 'unknown'
+          ? {
+              OR: [
+                { conversation: { is: null } },
+                { conversation: { is: originConversationWhere('unknown') } },
+              ],
+            }
+          : { conversation: { is: originConversationWhere(query.origin) } },
+      ];
+    }
+
     const [data, total] = await Promise.all([
       this.prisma.lead.findMany({
         where,
@@ -502,8 +525,24 @@ export class LeadsService {
       this.prisma.lead.count({ where }),
     ]);
 
+    const attributions = await readAttributions(
+      this.prisma,
+      data
+        .filter((lead) => lead.conversation)
+        .map((lead) => ({
+          id: lead.conversation!.id,
+          metadata: lead.conversation!.metadata,
+        })),
+    );
     return {
-      data,
+      data: data.map((lead) =>
+        projectCrmLead(
+          lead,
+          lead.conversationId
+            ? attributions.get(lead.conversationId)
+            : undefined,
+        ),
+      ),
       total,
       page: query.page,
       limit: query.limit,
@@ -540,7 +579,16 @@ export class LeadsService {
     ]);
 
     if (!lead) throw new NotFoundException('Lead no encontrado');
-    return { ...lead, auditLogs };
+    const attributions = await readAttributions(
+      this.prisma,
+      lead.conversation
+        ? [{ id: lead.conversation.id, metadata: lead.conversation.metadata }]
+        : [],
+    );
+    return projectCrmLead(
+      { ...lead, auditLogs },
+      lead.conversationId ? attributions.get(lead.conversationId) : undefined,
+    );
   }
 
   async update(id: string, dto: UpdateLeadDto, userId: string) {

@@ -37,8 +37,9 @@ export class LeadsController {
   @Post()
   @ApiOperation({ summary: 'Crear lead' })
   @ApiResponse({ status: 201, description: 'Lead creado' })
-  create(@Body() dto: CreateLeadDto) {
-    return this.leadsService.create(dto);
+  async create(@Body() dto: CreateLeadDto) {
+    const created = await this.leadsService.create(dto);
+    return this.leadsService.findOne(created.id);
   }
 
   @Get()
@@ -61,12 +62,13 @@ export class LeadsController {
 
   @Put(':id')
   @ApiOperation({ summary: 'Actualizar lead' })
-  update(
+  async update(
     @Param('id') id: string,
     @Body() dto: UpdateLeadDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.leadsService.update(id, dto, userId);
+    await this.leadsService.update(id, dto, userId);
+    return this.leadsService.findOne(id);
   }
 
   @Post(':id/correct-stage')
@@ -75,7 +77,7 @@ export class LeadsController {
     summary: 'Corregir etapa comercial con auditoría administrativa',
   })
   @ApiResponse({ status: 201, description: 'Corrección registrada' })
-  correctStage(
+  async correctStage(
     @Param('id') id: string,
     @Body() dto: CorrectLeadStageDto,
     @CurrentUser('id') userId: string,
@@ -86,7 +88,8 @@ export class LeadsController {
   @Delete(':id')
   @Roles(UserRole.ADMIN)
   @ApiOperation({ summary: 'Eliminar lead' })
-  remove(@Param('id') id: string) {
-    return this.leadsService.remove(id);
+  async remove(@Param('id') id: string) {
+    const removed = await this.leadsService.remove(id);
+    return { id: removed.id };
   }
 }

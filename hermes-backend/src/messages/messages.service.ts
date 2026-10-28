@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateMessageDto } from './dto/create-message.dto';
+import { projectCrmMessage } from '../attribution-crm/attribution-crm';
 
 @Injectable()
 export class MessagesService {
@@ -23,12 +24,18 @@ export class MessagesService {
       this.prisma.message.count({ where: { conversationId } }),
     ]);
 
-    return { data, total, page, limit, totalPages: Math.ceil(total / limit) };
+    return {
+      data: data.map(projectCrmMessage),
+      total,
+      page,
+      limit,
+      totalPages: Math.ceil(total / limit),
+    };
   }
 
   async findOne(id: string) {
     const message = await this.prisma.message.findUnique({ where: { id } });
     if (!message) throw new NotFoundException('Mensaje no encontrado');
-    return message;
+    return projectCrmMessage(message);
   }
 }

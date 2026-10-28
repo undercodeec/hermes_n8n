@@ -17,6 +17,39 @@ import {
 import { HandoffService } from './handoff.service';
 
 describe('HandoffService', () => {
+  it('projects handoff detail without raw messages, passwords or private metadata', async () => {
+    const readPrisma = {
+      humanHandoff: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'h1',
+          metadata: { nousResult: 'private' },
+          assignedAgent: { id: 'u1', name: 'Ana', password: 'hash-secret' },
+          conversation: {
+            id: 'c1',
+            metadata: { pilotEngine: 'private' },
+            contact: { id: 'ct1', waId: '5931' },
+            messages: [
+              {
+                id: 'm1',
+                rawPayload: { referral: { ctwa_clid: 'private-click-id' } },
+              },
+            ],
+          },
+        }),
+      },
+      auditLog: { findMany: jest.fn().mockResolvedValue([]) },
+    } as unknown as PrismaService;
+    const readService = new HandoffService(
+      readPrisma,
+      {} as EventEmitter2,
+      {} as ClsService,
+      {} as ConfigService,
+    );
+    const result = await readService.findOne('h1');
+    expect(JSON.stringify(result)).not.toMatch(
+      /private-click-id|hash-secret|nousResult|pilotEngine/,
+    );
+  });
   const tx = {
     $executeRaw: jest.fn(),
     humanHandoff: {

@@ -26,6 +26,10 @@ describe('LeadsService', () => {
     auditLog: { create: jest.fn() },
   };
   const prisma = {
+    lead: { findMany: jest.fn(), count: jest.fn(), findUnique: jest.fn() },
+    message: { findMany: jest.fn() },
+    auditLog: { findMany: jest.fn() },
+    $queryRaw: jest.fn().mockResolvedValue([]),
     $transaction: jest.fn((callback: (client: typeof tx) => unknown) =>
       callback(tx),
     ),
@@ -41,6 +45,39 @@ describe('LeadsService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    (prisma.$queryRaw as jest.Mock).mockResolvedValue([]);
+  });
+
+  it('does not expose Meta click IDs or private metadata from the latest lead message', async () => {
+    prisma.lead.findMany.mockResolvedValue([
+      {
+        id: 'lead-1',
+        conversationId: 'conversation-1',
+        conversation: {
+          id: 'conversation-1',
+          metadata: {
+            pilotOrigin: 'meta_ad',
+            pilotOriginEvidence: 'meta_referral_ad',
+            pilotAd: { sourceId: 'ad-1', ctwaClidPresent: true },
+            pilotEngine: 'private',
+          },
+          messages: [
+            {
+              id: 'message-1',
+              content: 'Hola',
+              rawPayload: { referral: { ctwa_clid: 'private-click-id' } },
+              metadata: { nousResult: 'private' },
+            },
+          ],
+        },
+      },
+    ]);
+    prisma.lead.count.mockResolvedValue(1);
+    const result = await service.findAll({ page: 1, limit: 20 });
+    expect(JSON.stringify(result)).not.toContain('private-click-id');
+    expect(JSON.stringify(result)).not.toContain('pilotEngine');
+    expect(JSON.stringify(result)).not.toContain('nousResult');
+    expect(result.data[0].attribution.origin).toBe('meta_ad');
   });
 
   it('impide cerrar manualmente una transferencia abierta', async () => {

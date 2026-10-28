@@ -19,6 +19,10 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { ConversationsService } from './conversations.service';
+import {
+  projectCrmConversationRecord,
+  projectCrmMessage,
+} from '../attribution-crm/attribution-crm';
 import { CreateConversationDto } from './dto/create-conversation.dto';
 import {
   QueryConversationsDto,
@@ -41,8 +45,10 @@ export class ConversationsController {
 
   @Post()
   @ApiOperation({ summary: 'Crear conversación' })
-  create(@Body() dto: CreateConversationDto) {
-    return this.conversationsService.create(dto);
+  async create(@Body() dto: CreateConversationDto) {
+    return projectCrmConversationRecord(
+      await this.conversationsService.create(dto),
+    );
   }
 
   @Get()
@@ -86,23 +92,29 @@ export class ConversationsController {
   @ApiOperation({
     summary: 'Responder manualmente dentro de la ventana de 24 horas',
   })
-  reply(
+  async reply(
     @Param('id') id: string,
     @Body() dto: ReplyConversationDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.conversationsService.reply(id, dto, userId);
+    return projectCrmMessage(
+      await this.conversationsService.reply(id, dto, userId),
+    );
   }
 
   @Put(':id/close')
   @ApiOperation({ summary: 'Cerrar conversación' })
-  close(@Param('id') id: string, @CurrentUser('id') userId: string) {
-    return this.conversationsService.close(id, userId);
+  async close(@Param('id') id: string, @CurrentUser('id') userId: string) {
+    return projectCrmConversationRecord(
+      await this.conversationsService.close(id, userId),
+    );
   }
 
   @Put(':id/reopen')
   @ApiOperation({ summary: 'Reabrir conversación con Hermes' })
-  reopen(@Param('id') id: string, @CurrentUser('id') userId: string) {
-    return this.conversationsService.reopen(id, userId);
+  async reopen(@Param('id') id: string, @CurrentUser('id') userId: string) {
+    return projectCrmConversationRecord(
+      await this.conversationsService.reopen(id, userId),
+    );
   }
 }

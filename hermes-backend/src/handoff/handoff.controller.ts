@@ -22,6 +22,7 @@ import { RolesGuard } from '../common/guards/roles.guard';
 import { CreateHandoffDto } from './dto/create-handoff.dto';
 import { AssignHandoffDto, ResolveHandoffDto } from './dto/handoff-actions.dto';
 import { HandoffService } from './handoff.service';
+import { projectCrmHandoff } from '../attribution-crm/attribution-crm';
 
 @ApiTags('Handoff')
 @ApiBearerAuth()
@@ -33,8 +34,11 @@ export class HandoffController {
 
   @Post()
   @ApiOperation({ summary: 'Crear handoff idempotente' })
-  create(@Body() dto: CreateHandoffDto, @CurrentUser('id') userId: string) {
-    return this.handoffService.create(dto, userId);
+  async create(
+    @Body() dto: CreateHandoffDto,
+    @CurrentUser('id') userId: string,
+  ) {
+    return projectCrmHandoff(await this.handoffService.create(dto, userId));
   }
 
   @Get()
@@ -52,29 +56,35 @@ export class HandoffController {
 
   @Put(':id/take')
   @ApiOperation({ summary: 'Tomar el handoff y marcarlo en progreso' })
-  take(@Param('id') id: string, @CurrentUser('id') userId: string) {
-    return this.handoffService.assign(id, userId, userId);
+  async take(@Param('id') id: string, @CurrentUser('id') userId: string) {
+    return projectCrmHandoff(
+      await this.handoffService.assign(id, userId, userId),
+    );
   }
 
   @Put(':id/assign')
   @ApiOperation({ summary: 'Asignar agente y marcar el handoff en progreso' })
-  assign(
+  async assign(
     @Param('id') id: string,
     @Body() dto: AssignHandoffDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.handoffService.assign(id, dto.agentId ?? userId, userId);
+    return projectCrmHandoff(
+      await this.handoffService.assign(id, dto.agentId ?? userId, userId),
+    );
   }
 
   @Put(':id/resolve')
   @ApiOperation({
     summary: 'Resolver, cerrar, devolver a Hermes o mantener control humano',
   })
-  resolve(
+  async resolve(
     @Param('id') id: string,
     @Body() dto: ResolveHandoffDto,
     @CurrentUser('id') userId: string,
   ) {
-    return this.handoffService.resolve(id, dto, userId);
+    return projectCrmHandoff(
+      await this.handoffService.resolve(id, dto, userId),
+    );
   }
 }

@@ -3,6 +3,7 @@ import { ConversationStatus } from '@prisma/client';
 import { Transform, TransformFnParams } from 'class-transformer';
 import {
   IsBoolean,
+  IsIn,
   IsDateString,
   IsEnum,
   IsInt,
@@ -13,6 +14,10 @@ import {
 } from 'class-validator';
 
 export class QueryConversationsDto {
+  @ApiPropertyOptional({ enum: ['meta_ad', 'organic', 'unknown'] })
+  @IsOptional()
+  @IsIn(['meta_ad', 'organic', 'unknown'])
+  origin?: 'meta_ad' | 'organic' | 'unknown';
   @ApiPropertyOptional({ default: 1, minimum: 1 })
   @IsOptional()
   @IsInt()
