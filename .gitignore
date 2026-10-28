@@ -60,6 +60,8 @@ hermes-backend/artifacts/f2-provider-evaluation/
 
 # Documentación interna: ignorada por defecto, salvo excepciones explícitas
 *.md
+!HERMES_A7_D16_R1_NOUS_E2E_TEST_HARNESS_REPORT.md
+!HERMES_A7_D16_R2_PILOT_CRITICAL_VALIDATION_REPORT.md
 !ProyectMD/registro-documental.md
 !hermes-backend/docs/README.md
 !hermes-backend/docs/deployment-runbook.md

@@ -20,6 +20,7 @@ import { randomUUID } from 'crypto';
 import { MetaSendError, MetaService } from '../meta/meta.service';
 import { whatsappReplyWindow } from '../meta/whatsapp-service-window';
 import { PrismaService } from '../prisma/prisma.service';
+import { TasksService } from '../tasks/tasks.service';
 import { isSingleGenerationCanaryConversation } from '../auto-replies/single-generation-canary.policy';
 import {
   AutomatedDeliveryBatchResult,
@@ -70,6 +71,7 @@ export class AutomatedDeliveryService
     private readonly prisma: PrismaService,
     private readonly meta: MetaService,
     @Optional() private readonly config?: ConfigService,
+    @Optional() private readonly tasks?: TasksService,
   ) {}
 
   async prepareBatch(
@@ -244,13 +246,47 @@ export class AutomatedDeliveryService
     if (!first) return { handled: false, confirmed: 0, terminal: false };
     // Serialize whole batches across workers and replicas. Claiming individual
     // parts alone permits a second turn to interleave between two Meta calls.
-    return this.prisma.$transaction(
+    const result = await this.prisma.$transaction(
       async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${first.conversationId}))`;
         return this.deliverLockedBatch(sourceMessageId);
       },
       { timeout: 360_000 },
     );
+    if (result.terminal) await this.requestAmbiguousNousReview(sourceMessageId);
+    return result;
+  }
+
+  private async requestAmbiguousNousReview(
+    sourceMessageId: string,
+  ): Promise<void> {
+    if (!this.tasks) return;
+    const delivery = await this.prisma.automatedDelivery.findFirst({
+      where: {
+        sourceMessageId,
+        deliveryKind: 'HERMES_REPLY',
+        status: AutomatedDeliveryStatus.AMBIGUOUS,
+      },
+      select: { conversationId: true, contactId: true, metadata: true },
+    });
+    const metadata = delivery?.metadata;
+    if (
+      !delivery ||
+      !metadata ||
+      typeof metadata !== 'object' ||
+      Array.isArray(metadata) ||
+      metadata.conversationEngine !== 'nous_hermes'
+    )
+      return;
+    await this.tasks.requestHermesReview({
+      conversationId: delivery.conversationId,
+      contactId: delivery.contactId,
+      sourceMessageId,
+      category: 'PROVIDER_ERROR',
+      code: 'NOUS_META_DELIVERY_AMBIGUOUS',
+      summary:
+        'Entrega Meta incierta; comprobar el resultado antes de responder manualmente.',
+    });
   }
 
   private async deliverLockedBatch(
@@ -355,6 +391,17 @@ export class AutomatedDeliveryService
   }
 
   async recoverExpiredClaims(now = new Date()): Promise<number> {
+    const expired = this.tasks
+      ? await this.prisma.automatedDelivery.findMany({
+          where: {
+            status: AutomatedDeliveryStatus.DISPATCHING,
+            claimExpiresAt: { lt: now },
+            deliveryKind: 'HERMES_REPLY',
+          },
+          select: { sourceMessageId: true },
+          distinct: ['sourceMessageId'],
+        })
+      : [];
     const result = await this.prisma.automatedDelivery.updateMany({
       where: {
         status: AutomatedDeliveryStatus.DISPATCHING,
@@ -368,6 +415,8 @@ export class AutomatedDeliveryService
         claimExpiresAt: null,
       },
     });
+    for (const row of expired)
+      await this.requestAmbiguousNousReview(row.sourceMessageId);
     return result.count;
   }
 

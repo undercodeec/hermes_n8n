@@ -1,0 +1,37 @@
+name: A7-D16 Nous isolated E2E
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Check out the exact selected commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: hermes-backend/package-lock.json
+      - name: Install dependencies
+        working-directory: hermes-backend
+        run: npm ci --ignore-scripts
+      - name: Run synthetic E2E and remove temporary services
+        working-directory: hermes-backend
+        run: npm run test:a7-d16:e2e
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a7-d16-nous-e2e-results
+          path: hermes-backend/artifacts/a7-d16-e2e/
+          if-no-files-found: warn

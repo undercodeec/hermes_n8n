@@ -1,0 +1,9 @@
+{
+  "moduleFileExtensions": ["js", "json", "ts"],
+  "rootDir": "..",
+  "testRegex": ".*\\.(integration|e2e)-spec\\.ts$",
+  "transform": { "^.+\\.(t|j)s$": "ts-jest" },
+  "testEnvironment": "node",
+  "testTimeout": 60000,
+  "setupFiles": ["<rootDir>/test/a7-d16-egress-guard.cjs"]
+}

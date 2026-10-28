@@ -125,7 +125,7 @@ describe('NousHermesTransport', () => {
     expect(result.diagnostic?.code).toBe('NOUS_PILOT_DAILY_SPEND_LIMIT');
   });
 
-  it.each([44, 100, 101])(
+  it.each([44, 80, 100, 101])(
     'allows monitored commercial request %i and records its estimate',
     async (dailyRequests) => {
       post.mockResolvedValue({

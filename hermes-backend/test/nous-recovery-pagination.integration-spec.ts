@@ -16,10 +16,16 @@ const databaseUrl = process.env.DATABASE_INTEGRATION_URL;
 const redisUrl = process.env.REDIS_INTEGRATION_URL;
 if (
   !databaseUrl ||
-  !/127\.0\.0\.1:55432\/hermes_learning_test/.test(databaseUrl)
+  ![
+    'postgresql://learning_test:learning_test_only@127.0.0.1:55432/hermes_learning_test?schema=public',
+    'postgresql://a7_d16_test:a7_d16_test_only@127.0.0.1:55433/hermes_a7_d16_test?schema=public',
+  ].includes(databaseUrl)
 )
   throw new Error('Refusing non-isolated PostgreSQL');
-if (!redisUrl || !redisUrl.startsWith('redis://127.0.0.1:56379/'))
+if (
+  !redisUrl ||
+  !['redis://127.0.0.1:56379/0', 'redis://127.0.0.1:56380/0'].includes(redisUrl)
+)
   throw new Error('Refusing non-isolated Redis');
 
 describe('Nous pending recovery pagination (PostgreSQL + Redis)', () => {

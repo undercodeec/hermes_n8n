@@ -1,0 +1,32 @@
+name: hermes-a7-d16-e2e
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: a7_d16_test
+      POSTGRES_PASSWORD: a7_d16_test_only
+      POSTGRES_DB: hermes_a7_d16_test
+    ports:
+      - '127.0.0.1:55433:5432'
+    volumes:
+      - a7_d16_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U a7_d16_test -d hermes_a7_d16_test']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    ports:
+      - '127.0.0.1:56380:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+volumes:
+  a7_d16_pgdata:

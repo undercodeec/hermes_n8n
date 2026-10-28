@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { writeFileSync } from 'node:fs';
 import { ConfigService } from '@nestjs/config';
 import { Queue, QueueEvents, Worker } from 'bullmq';
 import { InboundTurnService } from '../src/auto-replies/inbound-turn.service';
@@ -38,14 +39,14 @@ describe('Nous BullMQ global concurrency (integration)', () => {
     await queue.close();
   });
 
-  it('runs only one job across two workers', async () => {
+  it('runs 101 jobs with global concurrency one across two workers', async () => {
     let active = 0;
     let maximumActive = 0;
     const processor = async () => {
       active += 1;
       maximumActive = Math.max(maximumActive, active);
       try {
-        await new Promise((resolve) => setTimeout(resolve, 50));
+        await new Promise((resolve) => setTimeout(resolve, 3));
         return 'ok';
       } finally {
         active -= 1;
@@ -57,14 +58,43 @@ describe('Nous BullMQ global concurrency (integration)', () => {
     );
     await events.waitUntilReady();
     await queue.setGlobalConcurrency(1);
+    const startedAt = Date.now();
     const jobs = await Promise.all(
-      Array.from({ length: 4 }, (_, index) =>
+      Array.from({ length: 101 }, (_, index) =>
         queue.add('infer', { index }, { removeOnComplete: false }),
       ),
     );
-    await Promise.all(jobs.map((job) => job.waitUntilFinished(events, 10_000)));
+    const latencies = await Promise.all(
+      jobs.map(async (job) => {
+        await job.waitUntilFinished(events, 10_000);
+        return Date.now() - job.timestamp;
+      }),
+    );
+    latencies.sort((a, b) => a - b);
+    const elapsedMs = Date.now() - startedAt;
     expect(maximumActive).toBe(1);
     expect(await queue.getGlobalConcurrency()).toBe(1);
+    if (process.env.A7_D16_CAPACITY_FILE)
+      writeFileSync(
+        process.env.A7_D16_CAPACITY_FILE,
+        JSON.stringify(
+          {
+            jobs: jobs.length,
+            elapsedMs,
+            throughputPerSecond: Number(
+              ((jobs.length * 1000) / elapsedMs).toFixed(2),
+            ),
+            maximumActive,
+            completionLatencyMs: {
+              p50: latencies[Math.ceil(latencies.length * 0.5) - 1],
+              p95: latencies[Math.ceil(latencies.length * 0.95) - 1],
+              max: latencies.at(-1),
+            },
+          },
+          null,
+          2,
+        ),
+      );
   });
 
   it('returns all 20 original results through a waiting backlog and worker restart', async () => {
