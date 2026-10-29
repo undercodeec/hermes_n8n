@@ -67,7 +67,7 @@ No se modificaron motor, prompts, reglas comerciales, handoff, STOP, F3/F4, apre
 
 ## Git y preparación de publicación
 
-Rama local: `feat/audio-fallback-humanization`, creada desde `bae4abee5b6836ff2512c36f00f2a6b7e4ad3b31` (cabeza de `origin/pilot/a7-d12-monitor-only-20261026` y `origin/feat/inbox-audio-playback` al iniciar). Commit de código: `d23ca971c9484a31c99f1ab8301ae18a5bd1977e`. La rama se publicará por `origin` después de incorporar este informe; el estado remoto final debe verificarse tras el push.
+Rama `feat/audio-fallback-humanization`, creada desde `bae4abee5b6836ff2512c36f00f2a6b7e4ad3b31` (cabeza de `origin/pilot/a7-d12-monitor-only-20261026` y `origin/feat/inbox-audio-playback` al iniciar). Commit de código: `d23ca971c9484a31c99f1ab8301ae18a5bd1977e`. La rama y este informe se publicaron en `origin/feat/audio-fallback-humanization`; el worktree de desarrollo quedó limpio tras el push. El checkout principal conserva cambios ajenos a esta tarea y no se modificó para la implementación.
 
 Esta rama es candidata de backend. Para una publicación productiva futura se requiere promover/integrar el commit en la rama de release autorizada, producir la imagen aprobada y efectuar la verificación y despliegue mediante el procedimiento independiente de Codex VPS. No se hizo ninguna de esas operaciones en este trabajo local.
 
