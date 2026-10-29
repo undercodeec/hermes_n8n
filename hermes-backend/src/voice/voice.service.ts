@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
-import { MetaService } from '../meta/meta.service';
+import { MetaInboundAudioError, MetaService } from '../meta/meta.service';
 
 export type VoiceTranscript = {
   text: string;
@@ -26,7 +26,7 @@ export type VoiceFailureDiagnostics = {
 };
 
 type VoiceFailureLogDiagnostics = {
-  provider: 'elevenlabs' | 'openai' | null;
+  provider: 'elevenlabs' | 'openai' | 'meta' | null;
   modelId: string | null;
   mimeType: string | null;
   audioBytes: number | null;
@@ -61,7 +61,8 @@ export function voiceFailureLogDiagnostics(
   return {
     provider:
       diagnostics?.provider === 'elevenlabs' ||
-      diagnostics?.provider === 'openai'
+      diagnostics?.provider === 'openai' ||
+      diagnostics?.provider === 'meta'
         ? diagnostics.provider
         : null,
     modelId: safeIdentifier(diagnostics?.modelId, 100),
@@ -78,9 +79,7 @@ export function voiceFailureLogDiagnostics(
       (diagnostics?.providerHttpStatus ?? 600) <= 599
         ? (diagnostics?.providerHttpStatus ?? null)
         : null,
-    providerErrorCode: sanitizeVoiceDiagnosticText(
-      diagnostics?.providerErrorCode,
-    ),
+    providerErrorCode: safeIdentifier(diagnostics?.providerErrorCode, 80),
     providerMessage: sanitizeVoiceDiagnosticText(diagnostics?.providerMessage),
     transportCode: safeIdentifier(diagnostics?.transportCode, 80),
     transportMessage: sanitizeVoiceDiagnosticText(
@@ -161,10 +160,13 @@ export class VoiceService {
       'HERMES_AUDIO_MAX_BYTES',
       16 * 1024 * 1024,
     );
-    const { bytes, mimeType } = await this.meta.downloadInboundAudio(
-      mediaId,
-      maxBytes,
-    );
+    let downloaded: { bytes: Buffer; mimeType: string };
+    try {
+      downloaded = await this.meta.downloadInboundAudio(mediaId, maxBytes);
+    } catch (error) {
+      throw this.metaDownloadFailure(error);
+    }
+    const { bytes, mimeType } = downloaded;
     const duration = await this.audioDuration(bytes);
     if (duration > this.positiveInteger('HERMES_AUDIO_MAX_SECONDS', 120))
       throw new VoiceProcessingError('AUDIO_TOO_LONG');
@@ -209,13 +211,11 @@ export class VoiceService {
         });
       }
     } else if (provider === 'openai') {
-      form.append(
-        'model',
-        this.config.get<string>(
-          'HERMES_STT_MODEL_ID',
-          'gpt-4o-mini-transcribe',
-        ),
+      const modelId = this.config.get<string>(
+        'HERMES_STT_MODEL_ID',
+        'gpt-4o-mini-transcribe',
       );
+      form.append('model', modelId);
       try {
         const result = await axios.post<typeof response>(
           'https://api.openai.com/v1/audio/transcriptions',
@@ -229,15 +229,21 @@ export class VoiceService {
           },
         );
         response = result.data;
-      } catch {
-        throw new VoiceProcessingError('STT_PROVIDER_FAILED');
+      } catch (error) {
+        throw this.providerFailure(error, {
+          provider,
+          modelId,
+          mimeType,
+          audioBytes: bytes.length,
+        });
       }
     } else {
       throw new VoiceProcessingError('STT_PROVIDER_UNSUPPORTED');
     }
     const text = typeof response.text === 'string' ? response.text.trim() : '';
-    if (!text || text.length > 4000)
-      throw new VoiceProcessingError('STT_EMPTY_OR_TOO_LONG');
+    if (!text) throw new VoiceProcessingError('STT_EMPTY');
+    if (text.length > 4000)
+      throw new VoiceProcessingError('STT_TRANSCRIPT_TOO_LONG');
     const confidence =
       typeof response.confidence === 'number' ? response.confidence : undefined;
     if (confidence !== undefined && confidence < 0.65)
@@ -438,6 +444,40 @@ export class VoiceService {
       diagnostics.transportMessage = this.safeDiagnosticText(error.message);
     }
     return new VoiceProcessingError('STT_PROVIDER_FAILED', diagnostics);
+  }
+
+  private metaDownloadFailure(error: unknown): VoiceProcessingError {
+    const diagnostics: VoiceFailureDiagnostics = {
+      provider: 'meta',
+      modelId: null,
+      mimeType: null,
+      audioBytes: null,
+      providerHttpStatus: null,
+      providerErrorCode: null,
+      providerMessage: null,
+      transportCode: null,
+      transportMessage: null,
+      requestId: null,
+      failureKind: 'INTERNAL',
+    };
+    if (error instanceof MetaInboundAudioError)
+      return new VoiceProcessingError(error.reasonCode, diagnostics);
+    if (axios.isAxiosError(error)) {
+      diagnostics.transportCode = this.safeDiagnosticText(error.code);
+      if (error.response) {
+        diagnostics.failureKind = 'HTTP';
+        diagnostics.providerHttpStatus = error.response.status;
+        diagnostics.requestId = this.requestId(error.response.headers);
+      } else if (error.request) {
+        diagnostics.failureKind = 'TRANSPORT';
+      }
+    }
+    const code =
+      diagnostics.providerHttpStatus === 404 ||
+      diagnostics.providerHttpStatus === 410
+        ? 'META_MEDIA_UNAVAILABLE'
+        : 'META_MEDIA_DOWNLOAD_FAILED';
+    return new VoiceProcessingError(code, diagnostics);
   }
 
   private providerErrorDetail(data: unknown): {

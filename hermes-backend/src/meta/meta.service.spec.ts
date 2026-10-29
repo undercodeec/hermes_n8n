@@ -319,6 +319,33 @@ describe('MetaService typing indicator', () => {
     );
     expect(get).not.toHaveBeenCalled();
   });
+
+  it.each([
+    [
+      { url: undefined, mime_type: 'audio/ogg', file_size: 5 },
+      'META_MEDIA_UNAVAILABLE',
+    ],
+    [
+      {
+        url: 'https://lookaside.fbsbx.com/audio',
+        mime_type: 'image/png',
+        file_size: 5,
+      },
+      'AUDIO_FORMAT_UNSUPPORTED',
+    ],
+  ])(
+    'labels an invalid inbound audio metadata response',
+    async (data, reasonCode) => {
+      const service = createService();
+      const graph = service as unknown as { graphClient: { get: jest.Mock } };
+      graph.graphClient.get = jest.fn().mockResolvedValue({ data });
+      const get = jest.spyOn(axios, 'get');
+      await expect(
+        service.downloadInboundAudio('media-1', 100),
+      ).rejects.toEqual(expect.objectContaining({ reasonCode }));
+      expect(get).not.toHaveBeenCalled();
+    },
+  );
   it.each([
     [429, 'DEFINITIVE_REJECTION', true, 'META_HTTP_429'],
     [400, 'DEFINITIVE_REJECTION', false, 'META_HTTP_400'],

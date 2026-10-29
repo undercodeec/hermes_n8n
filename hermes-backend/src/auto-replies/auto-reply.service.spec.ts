@@ -2879,78 +2879,97 @@ describe('AutoReplyService', () => {
     );
   });
 
-  it('transcribes an audio turn before inference and selects voice in MIRROR mode', async () => {
-    const harness = setupProcessHarness({
-      hermesResponse: {
-        response: 'Sí, podemos crear esa web.',
-        detectedIntent: 'consulta_servicio',
-      },
-    });
-    const at = new Date('2026-09-20T18:00:00.000Z');
-    const audio = {
-      id: 'inbound-recovery',
-      wamid: 'wamid.audio',
-      type: 'AUDIO',
-      content: '[Audio]',
-      createdAt: at,
-      rawPayload: { audio: { id: 'media-inbound' } },
-    };
-    const turns = {
-      claim: jest.fn().mockResolvedValue({
-        id: 'turn-audio',
-        lastMessageId: audio.id,
-        processingToken: 'claim-token',
-      }),
-      messages: jest
-        .fn()
-        .mockResolvedValueOnce([audio])
-        .mockResolvedValueOnce([
-          { ...audio, content: 'Necesito una página web para una lavandería.' },
-        ]),
-      complete: jest.fn(),
-      release: jest.fn(),
-      findOpen: jest.fn(),
-    };
-    const voice = {
-      transcribe: jest.fn().mockResolvedValue({
-        text: 'Necesito una página web para una lavandería.',
-        language: 'es',
-        sourceType: 'AUDIO',
-      }),
-      synthesize: jest.fn().mockResolvedValue(Buffer.from('OggSopus')),
-    };
-    Object.assign(harness.service, {
-      inboundTurns: turns as unknown as InboundTurnService,
-      voice: voice as unknown as VoiceService,
-    });
-    const internals = harness.service as unknown as {
-      prisma: { message: { update: jest.Mock } };
-    };
-    internals.prisma.message.update = jest.fn().mockResolvedValue({});
+  it.each(['gemini_direct', 'nous_hermes'] as const)(
+    'transcribes an audio turn before %s inference and selects voice in MIRROR mode',
+    async (engineId) => {
+      const harness = setupProcessHarness({
+        hermesResponse: {
+          response: 'Sí, podemos crear esa web.',
+          detectedIntent: 'consulta_servicio',
+        },
+        engineId,
+      });
+      harness.engine.respond.mockResolvedValue({
+        ...toEngineResult({
+          response: 'Sí, podemos crear esa web.',
+          detectedIntent: 'consulta_servicio',
+        }),
+        engine: engineId,
+      });
+      const at = new Date('2026-09-20T18:00:00.000Z');
+      const audio = {
+        id: 'inbound-recovery',
+        wamid: 'wamid.audio',
+        type: 'AUDIO',
+        content: '[Audio]',
+        createdAt: at,
+        rawPayload: { audio: { id: 'media-inbound' } },
+      };
+      const turns = {
+        claim: jest.fn().mockResolvedValue({
+          id: 'turn-audio',
+          lastMessageId: audio.id,
+          processingToken: 'claim-token',
+        }),
+        messages: jest
+          .fn()
+          .mockResolvedValueOnce([audio])
+          .mockResolvedValueOnce([
+            {
+              ...audio,
+              content: 'Necesito una página web para una lavandería.',
+            },
+          ]),
+        complete: jest.fn(),
+        release: jest.fn(),
+        findOpen: jest.fn(),
+      };
+      const voice = {
+        transcribe: jest.fn().mockResolvedValue({
+          text: 'Necesito una página web para una lavandería.',
+          language: 'es',
+          sourceType: 'AUDIO',
+        }),
+        synthesize: jest.fn().mockResolvedValue(Buffer.from('OggSopus')),
+      };
+      Object.assign(harness.service, {
+        inboundTurns: turns as unknown as InboundTurnService,
+        voice: voice as unknown as VoiceService,
+      });
+      const internals = harness.service as unknown as {
+        prisma: { message: { update: jest.Mock } };
+      };
+      internals.prisma.message.update = jest.fn().mockResolvedValue({});
 
-    await harness.service.process({
-      conversationId: 'conversation-1',
-      contactId: 'contact-1',
-      inboundMessageId: audio.id,
-      inboundTurnId: 'turn-audio',
-    });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: audio.id,
+        inboundTurnId: 'turn-audio',
+      });
 
-    expect(voice.transcribe).toHaveBeenCalledWith('media-inbound');
-    expect(harness.engine.respond).toHaveBeenCalledTimes(1);
-    expect(voice.synthesize).toHaveBeenCalled();
-    expect(harness.meta.uploadVoiceNote).toHaveBeenCalled();
-    expect(harness.deliveries.prepareBatch).toHaveBeenCalledWith(
-      expect.objectContaining({
-        parts: expect.arrayContaining([
-          expect.objectContaining({
-            metadata: expect.objectContaining({
-              voiceMediaId: 'media-voice-1',
+      expect(voice.transcribe).toHaveBeenCalledWith('media-inbound');
+      expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+      expect(harness.engine.respond).toHaveBeenCalledWith(
+        expect.objectContaining({
+          customerMessage: expect.stringContaining('lavandería'),
+        }),
+      );
+      expect(voice.synthesize).toHaveBeenCalled();
+      expect(harness.meta.uploadVoiceNote).toHaveBeenCalled();
+      expect(harness.deliveries.prepareBatch.mock.calls[0][0]).toEqual(
+        expect.objectContaining({
+          parts: expect.arrayContaining([
+            expect.objectContaining({
+              metadata: expect.objectContaining({
+                voiceMediaId: 'media-voice-1',
+              }),
             }),
-          }),
-        ]),
-      }),
-    );
-  });
+          ]),
+        }),
+      );
+    },
+  );
 
   it('passes an audio price question to the existing commercial authority', async () => {
     (authority.snapshot as jest.Mock).mockResolvedValueOnce({
@@ -3307,7 +3326,7 @@ describe('AutoReplyService', () => {
     );
   });
 
-  it('does not describe a missing STT provider as an unclear recording', async () => {
+  it('uses the human fallback for a missing STT provider', async () => {
     const harness = setupProcessHarness({
       hermesResponse: { response: 'No debe generarse' },
     });
@@ -3346,10 +3365,9 @@ describe('AutoReplyService', () => {
     const prepared = harness.deliveries.prepareBatch.mock.calls[0][0] as {
       parts: Array<{ content: string; metadata: { reasonCode?: string } }>;
     };
-    expect(prepared.parts[0].content).toContain(
-      'No puedo procesar notas de voz',
+    expect(prepared.parts[0].content).toBe(
+      'Hola, Ana. 😊\n\nRecibí su nota de voz, pero esta vez no pude escucharla correctamente.\n\n¿Podría escribirme por aquí lo que necesita? Con gusto le ayudo.',
     );
-    expect(prepared.parts[0].content).not.toContain('escuchar bien');
     expect(prepared.parts[0].metadata.reasonCode).toBe('STT_NOT_CONFIGURED');
     expect(harness.engine.respond).not.toHaveBeenCalled();
   });
@@ -3410,23 +3428,34 @@ describe('AutoReplyService', () => {
     const event = warn.mock.calls
       .map(([message]) => JSON.parse(message as string) as { event?: string })
       .find((entry) => entry.event === 'audio_transcription_failed');
-    expect(event).toEqual({
-      event: 'audio_transcription_failed',
-      conversationId: 'conversation-1',
-      inboundMessageId: 'inbound-recovery',
-      reasonCode: 'STT_PROVIDER_FAILED',
-      provider: 'elevenlabs',
-      modelId: 'scribe_v2',
-      mimeType: 'audio/ogg',
-      audioBytes: 31415,
-      providerHttpStatus: 422,
-      providerErrorCode: 'invalid_audio',
-      providerMessage: 'El proveedor rechazó el formato.',
-      transportCode: 'ERR_BAD_REQUEST',
-      transportMessage: 'Request failed with status code 422',
-      requestId: 'eleven-request-1',
-      failureKind: 'HTTP',
-    });
+    expect(event).toEqual(
+      expect.objectContaining({
+        event: 'audio_transcription_failed',
+        conversationId: 'conversation-1',
+        inboundMessageId: 'inbound-recovery',
+        reasonCode: 'STT_PROVIDER_FAILED',
+        category: 'UNSUPPORTED_FORMAT',
+        operationStatus: 'FAILED',
+        recoverable: false,
+        provider: 'elevenlabs',
+        modelId: 'scribe_v2',
+        mimeType: 'audio/ogg',
+        audioBytes: 31415,
+        providerHttpStatus: 422,
+        providerErrorCode: 'invalid_audio',
+        transportCode: 'ERR_BAD_REQUEST',
+        requestId: 'eleven-request-1',
+        failureKind: 'HTTP',
+      }),
+    );
+    expect(event).toEqual(
+      expect.objectContaining({
+        durationMs: expect.any(Number),
+        occurredAt: expect.any(String),
+      }),
+    );
+    expect(event).not.toHaveProperty('providerMessage');
+    expect(event).not.toHaveProperty('transportMessage');
     expect(harness.engine.respond).not.toHaveBeenCalled();
   });
 
@@ -3509,8 +3538,162 @@ describe('AutoReplyService', () => {
     expect(serialized).not.toContain('transport-secret');
     expect(serialized).not.toContain('request-secret');
     expect(serialized).not.toContain('provider.example');
-    expect(serialized).toContain('[redacted]');
+    expect(serialized).not.toContain('providerMessage');
+    expect(serialized).not.toContain('transportMessage');
   });
+
+  it.each([
+    {
+      label: 'empty transcript',
+      name: 'Carlos Pérez',
+      failure: new VoiceProcessingError('STT_EMPTY'),
+      category: 'EMPTY_TRANSCRIPT',
+      greeting: 'Hola, Carlos. 😊',
+    },
+    {
+      label: 'Meta download',
+      name: null,
+      failure: new VoiceProcessingError('META_MEDIA_DOWNLOAD_FAILED', {
+        provider: 'meta',
+        modelId: null,
+        mimeType: null,
+        audioBytes: null,
+        providerHttpStatus: 500,
+        providerErrorCode: null,
+        providerMessage: null,
+        transportCode: 'ERR_BAD_RESPONSE',
+        transportMessage: null,
+        requestId: null,
+        failureKind: 'HTTP',
+      }),
+      category: 'META_DOWNLOAD',
+      greeting: 'Hola. 😊',
+    },
+    {
+      label: 'provider quota',
+      name: 'María-José Paredes',
+      failure: new VoiceProcessingError('STT_PROVIDER_FAILED', {
+        provider: 'elevenlabs',
+        modelId: 'scribe_v2',
+        mimeType: 'audio/ogg',
+        audioBytes: 100,
+        providerHttpStatus: 402,
+        providerErrorCode: 'insufficient_credits',
+        providerMessage: null,
+        transportCode: 'ERR_BAD_REQUEST',
+        transportMessage: null,
+        requestId: 'request-quota',
+        failureKind: 'HTTP',
+      }),
+      category: 'QUOTA',
+      greeting: 'Hola, María-José. 😊',
+    },
+    {
+      label: 'provider timeout',
+      name: '593991234567',
+      failure: new VoiceProcessingError('STT_PROVIDER_FAILED', {
+        provider: 'elevenlabs',
+        modelId: 'scribe_v2',
+        mimeType: 'audio/ogg',
+        audioBytes: 100,
+        providerHttpStatus: null,
+        providerErrorCode: null,
+        providerMessage: null,
+        transportCode: 'ETIMEDOUT',
+        transportMessage: null,
+        requestId: null,
+        failureKind: 'TRANSPORT',
+      }),
+      category: 'TIMEOUT',
+      greeting: 'Hola. 😊',
+    },
+  ])(
+    'delivers one safe apology for $label, even if the turn repeats',
+    async ({ name, failure, category, greeting }) => {
+      const harness = setupProcessHarness({
+        hermesResponse: { response: 'No debe generarse' },
+      });
+      const warn = jest.spyOn(
+        (harness.service as unknown as { logger: Logger }).logger,
+        'warn',
+      );
+      const conversation = (
+        harness.prisma as unknown as {
+          conversation: { findUnique: jest.Mock };
+        }
+      ).conversation;
+      conversation.findUnique.mockResolvedValue({ contact: { name } });
+      const turn = {
+        id: 'turn-audio',
+        lastMessageId: 'inbound-recovery',
+        processingToken: 'claim-token',
+      };
+      const turns = {
+        claim: jest
+          .fn()
+          .mockResolvedValueOnce(turn)
+          .mockResolvedValueOnce(null),
+        findPending: jest.fn().mockResolvedValue(null),
+        messages: jest.fn().mockResolvedValue([
+          {
+            id: 'inbound-recovery',
+            wamid: 'wamid.audio',
+            type: 'AUDIO',
+            content: '[Audio]',
+            rawPayload: { audio: { id: 'media-inbound' } },
+          },
+        ]),
+        complete: jest.fn(),
+        release: jest.fn(),
+      };
+      const voice = { transcribe: jest.fn().mockRejectedValue(failure) };
+      Object.assign(harness.service, {
+        inboundTurns: turns as unknown as InboundTurnService,
+        voice: voice as unknown as VoiceService,
+      });
+      const job = {
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+        inboundTurnId: 'turn-audio',
+      };
+      await harness.service.process(job);
+      await harness.service.process(job);
+
+      const prepared = harness.deliveries.prepareBatch.mock.calls[0][0] as {
+        sourceMessageId: string;
+        parts: Array<{ content: string; metadata: { reasonCode: string } }>;
+      };
+      expect(prepared.sourceMessageId).toBe('inbound-recovery');
+      expect(prepared.parts[0].content).toBe(
+        `${greeting}\n\nRecibí su nota de voz, pero esta vez no pude escucharla correctamente.\n\n¿Podría escribirme por aquí lo que necesita? Con gusto le ayudo.`,
+      );
+      expect(prepared.parts[0].metadata.reasonCode).toBe(failure.code);
+      expect(harness.deliveries.prepareBatch).toHaveBeenCalledTimes(1);
+      expect(harness.deliveries.deliverPreparedBatch).toHaveBeenCalledTimes(1);
+      expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(1);
+      expect(turns.complete).toHaveBeenCalledTimes(1);
+      expect(turns.release).not.toHaveBeenCalled();
+      expect(voice.transcribe).toHaveBeenCalledTimes(1);
+      expect(harness.engine.respond).not.toHaveBeenCalled();
+      const event = warn.mock.calls
+        .map(
+          ([message]) =>
+            JSON.parse(message as string) as Record<string, unknown>,
+        )
+        .find((entry) => entry.event === 'audio_transcription_failed');
+      expect(event).toEqual(
+        expect.objectContaining({
+          category,
+          operationStatus: 'FAILED',
+          inboundMessageId: 'inbound-recovery',
+          reasonCode: failure.code,
+          durationMs: expect.any(Number),
+          occurredAt: expect.any(String),
+        }),
+      );
+    },
+  );
 
   it('resumes a prepared batch before quota or inference', async () => {
     const harness = setupProcessHarness({

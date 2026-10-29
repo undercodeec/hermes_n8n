@@ -1,7 +1,7 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
-import { MetaService } from '../meta/meta.service';
+import { MetaInboundAudioError, MetaService } from '../meta/meta.service';
 import { VoiceProcessingError, VoiceService } from './voice.service';
 
 type VoiceInternals = {
@@ -88,6 +88,88 @@ describe('VoiceService', () => {
       new VoiceProcessingError('STT_NOT_CONFIGURED'),
     );
     expect(meta.downloadInboundAudio).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [404, 'META_MEDIA_UNAVAILABLE'],
+    [500, 'META_MEDIA_DOWNLOAD_FAILED'],
+  ])(
+    'preserves Meta HTTP %i as an internal download reason',
+    async (status, code) => {
+      const { voice, meta } = setup({ ELEVENLABS_API_KEY: 'test-key' });
+      meta.downloadInboundAudio.mockRejectedValue({
+        isAxiosError: true,
+        code: 'ERR_BAD_RESPONSE',
+        request: { method: 'GET' },
+        response: {
+          status,
+          headers: { 'x-request-id': 'meta-request-1' },
+          data: { error: { message: 'private-provider-body' } },
+        },
+      });
+      const error = await rejectedVoiceError(voice.transcribe('media-1'));
+      expect(error.code).toBe(code);
+      expect(error.diagnostics).toEqual(
+        expect.objectContaining({
+          provider: 'meta',
+          providerHttpStatus: status,
+          requestId: 'meta-request-1',
+        }),
+      );
+      expect(JSON.stringify(error)).not.toContain('private-provider-body');
+    },
+  );
+
+  it('preserves an explicit unsupported Meta format', async () => {
+    const { voice, meta } = setup({ ELEVENLABS_API_KEY: 'test-key' });
+    meta.downloadInboundAudio.mockRejectedValue(
+      new MetaInboundAudioError(
+        'AUDIO_FORMAT_UNSUPPORTED',
+        'Formato no admitido',
+      ),
+    );
+    const error = await rejectedVoiceError(voice.transcribe('media-1'));
+    expect(error.code).toBe('AUDIO_FORMAT_UNSUPPORTED');
+  });
+
+  it('marks an empty transcript distinctly from an oversized transcript', async () => {
+    const { voice } = setup({ ELEVENLABS_API_KEY: 'test-key' });
+    jest.spyOn(axios, 'post').mockResolvedValue({ data: { text: '  ' } });
+    expect((await rejectedVoiceError(voice.transcribe('media-1'))).code).toBe(
+      'STT_EMPTY',
+    );
+  });
+
+  it('retains safe OpenAI transcription diagnostics', async () => {
+    const { voice } = setup({
+      HERMES_STT_PROVIDER: 'openai',
+      OPENAI_API_KEY: 'test-key',
+    });
+    jest.spyOn(axios, 'post').mockRejectedValue({
+      isAxiosError: true,
+      code: 'ERR_BAD_REQUEST',
+      request: { method: 'POST' },
+      response: {
+        status: 429,
+        headers: { 'x-request-id': 'openai-request-1' },
+        data: {
+          error: {
+            code: 'rate_limit_exceeded',
+            message: 'private-provider-body',
+          },
+        },
+      },
+    });
+    const error = await rejectedVoiceError(voice.transcribe('media-1'));
+    expect(error.code).toBe('STT_PROVIDER_FAILED');
+    expect(error.diagnostics).toEqual(
+      expect.objectContaining({
+        provider: 'openai',
+        providerHttpStatus: 429,
+        providerErrorCode: 'rate_limit_exceeded',
+        requestId: 'openai-request-1',
+      }),
+    );
   });
 
   it.each([400, 401, 403, 422, 429, 500])(

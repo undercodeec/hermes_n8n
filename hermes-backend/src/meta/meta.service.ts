@@ -33,6 +33,16 @@ export class MetaMediaUploadError extends ServiceUnavailableException {
     this.name = 'MetaMediaUploadError';
   }
 }
+
+export class MetaInboundAudioError extends BadRequestException {
+  constructor(
+    public readonly reasonCode: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'MetaInboundAudioError';
+  }
+}
 export interface MetaTemplate {
   id?: string;
   name: string;
@@ -305,9 +315,20 @@ export class MetaService {
       },
     );
     const { url, mime_type: mimeType, file_size: size } = metadata.data;
-    if (!url || !mimeType?.startsWith('audio/') || (size && size > maxBytes))
-      throw new BadRequestException(
-        'Audio de Meta no válido o demasiado grande',
+    if (!url)
+      throw new MetaInboundAudioError(
+        'META_MEDIA_UNAVAILABLE',
+        'Audio de Meta no disponible',
+      );
+    if (!mimeType?.startsWith('audio/'))
+      throw new MetaInboundAudioError(
+        'AUDIO_FORMAT_UNSUPPORTED',
+        'Formato de audio no admitido',
+      );
+    if (size && size > maxBytes)
+      throw new MetaInboundAudioError(
+        'AUDIO_TOO_LARGE',
+        'Audio de Meta demasiado grande',
       );
     const parsed = new URL(url);
     if (
@@ -316,7 +337,10 @@ export class MetaService {
       parsed.username ||
       parsed.password
     )
-      throw new BadRequestException('Host de descarga de Meta no permitido');
+      throw new MetaInboundAudioError(
+        'META_MEDIA_DOWNLOAD_INVALID_URL',
+        'Host de descarga de Meta no permitido',
+      );
     const response = await axios.get<ArrayBuffer>(url, {
       headers: {
         Authorization: `Bearer ${this.config.get<string>('META_ACCESS_TOKEN', '')}`,
@@ -327,8 +351,16 @@ export class MetaService {
       maxRedirects: 0,
     });
     const bytes = Buffer.from(response.data);
-    if (!bytes.length || bytes.length > maxBytes)
-      throw new BadRequestException('Audio de Meta vacío o demasiado grande');
+    if (!bytes.length)
+      throw new MetaInboundAudioError(
+        'META_MEDIA_UNAVAILABLE',
+        'Audio de Meta vacío',
+      );
+    if (bytes.length > maxBytes)
+      throw new MetaInboundAudioError(
+        'AUDIO_TOO_LARGE',
+        'Audio de Meta demasiado grande',
+      );
     return { bytes, mimeType };
   }
 

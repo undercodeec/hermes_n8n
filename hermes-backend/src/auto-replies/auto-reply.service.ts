@@ -83,6 +83,11 @@ import {
   VoiceService,
   voiceFailureLogDiagnostics,
 } from '../voice/voice.service';
+import {
+  audioFailureCategory,
+  audioFailureNotice,
+  audioFailureRecoverable,
+} from './audio-fallback';
 
 @Injectable()
 export class AutoReplyService {
@@ -176,6 +181,7 @@ export class AutoReplyService {
           return;
         }
         if (audio.length) {
+          const transcriptionStartedAt = Date.now();
           try {
             if (!this.voice)
               throw new VoiceProcessingError('STT_NOT_CONFIGURED');
@@ -191,7 +197,8 @@ export class AutoReplyService {
                 typeof payload.audio.id === 'string'
                   ? payload.audio.id
                   : undefined;
-              if (!mediaId) throw new Error('AUDIO_MEDIA_ID_MISSING');
+              if (!mediaId)
+                throw new VoiceProcessingError('META_MEDIA_UNAVAILABLE');
               const transcript = await this.voice.transcribe(mediaId);
               await this.prisma.message.update({
                 where: { id: message.id },
@@ -216,37 +223,40 @@ export class AutoReplyService {
                 ? error.diagnostics
                 : undefined,
             );
+            const category = audioFailureCategory(reasonCode, diagnostics);
             this.logger.warn(
               JSON.stringify({
                 event: 'audio_transcription_failed',
                 conversationId: data.conversationId,
                 inboundMessageId: turn.lastMessageId,
                 reasonCode,
+                category,
+                operationStatus: 'FAILED',
+                durationMs: Math.max(0, Date.now() - transcriptionStartedAt),
+                occurredAt: new Date().toISOString(),
+                recoverable: audioFailureRecoverable(category, diagnostics),
                 provider: diagnostics.provider,
                 modelId: diagnostics.modelId,
                 mimeType: diagnostics.mimeType,
                 audioBytes: diagnostics.audioBytes,
                 providerHttpStatus: diagnostics.providerHttpStatus,
                 providerErrorCode: diagnostics.providerErrorCode,
-                providerMessage: diagnostics.providerMessage,
                 transportCode: diagnostics.transportCode,
-                transportMessage: diagnostics.transportMessage,
                 requestId: diagnostics.requestId,
                 failureKind: diagnostics.failureKind,
               }),
             );
-            const notice =
-              reasonCode === 'STT_NOT_CONFIGURED' ||
-              reasonCode === 'STT_PROVIDER_UNSUPPORTED' ||
-              reasonCode === 'STT_PROVIDER_FAILED' ||
-              reasonCode === 'AUDIO_TOOL_UNAVAILABLE'
-                ? 'No puedo procesar notas de voz en este momento. ¿Podría escribirme su mensaje?'
-                : reasonCode === 'AUDIO_TOO_LONG'
-                  ? 'La nota de voz es demasiado larga para procesarla. ¿Podría enviarla en partes más cortas o escribirme su mensaje?'
-                  : reasonCode === 'STT_LOW_CONFIDENCE' ||
-                      reasonCode === 'STT_EMPTY_OR_TOO_LONG'
-                    ? 'No pude entender bien esa nota de voz. ¿Podría reenviarla o escribirme esa parte?'
-                    : 'No pude procesar esa nota de voz. ¿Podría reenviarla o escribirme esa parte?';
+            let contactName: string | null = null;
+            try {
+              const conversation = await this.prisma.conversation.findUnique({
+                where: { id: data.conversationId },
+                select: { contact: { select: { name: true } } },
+              });
+              contactName = conversation?.contact?.name ?? null;
+            } catch {
+              // A failed name lookup must not prevent the apology.
+            }
+            const notice = audioFailureNotice(contactName);
             await this.deliveries.prepareBatch({
               deliveryKind: 'SYSTEM_NOTICE',
               conversationId: data.conversationId,
