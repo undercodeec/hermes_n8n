@@ -3,11 +3,14 @@ import {
   BadGatewayException,
   BadRequestException,
   ConflictException,
+  NotFoundException,
 } from '@nestjs/common';
 import {
   ConversationStatus,
   HandoffStatus,
+  MessageDirection,
   MessageSender,
+  MessageType,
   TaskStatus,
   TaskType,
 } from '@prisma/client';
@@ -40,7 +43,11 @@ describe('ConversationsService', () => {
       callback(tx),
     ),
   } as unknown as PrismaService;
-  const meta = { sendTextMessage: jest.fn() } as unknown as MetaService;
+  const meta = {
+    sendTextMessage: jest.fn(),
+    downloadInboundAudio: jest.fn(),
+    fetchInboxMedia: jest.fn(),
+  } as unknown as MetaService;
   const service = new ConversationsService(prisma, meta);
 
   beforeEach(() => {
@@ -432,5 +439,111 @@ describe('ConversationsService', () => {
       }),
     );
     expect(JSON.stringify(result.data)).not.toContain('rawPayload');
+  });
+
+  it('retrieves customer audio by its WhatsApp media ID within the conversation', async () => {
+    (prisma.message.findFirst as jest.Mock).mockResolvedValue({
+      type: MessageType.AUDIO,
+      direction: MessageDirection.INBOUND,
+      sender: MessageSender.CONTACT,
+      rawPayload: { audio: { id: 'customer-audio-id' } },
+      metadata: { transcriptionStatus: 'READY' },
+    });
+    const audio = { bytes: Buffer.from('OggS'), mimeType: 'audio/ogg' };
+    (meta.downloadInboundAudio as jest.Mock).mockResolvedValue(audio);
+
+    await expect(
+      service.inboxMedia('conversation-1', 'message-1'),
+    ).resolves.toEqual(audio);
+    expect(prisma.message.findFirst).toHaveBeenCalledWith({
+      where: expect.objectContaining({
+        id: 'message-1',
+        conversationId: 'conversation-1',
+        type: {
+          in: [MessageType.IMAGE, MessageType.DOCUMENT, MessageType.AUDIO],
+        },
+      }),
+      select: expect.objectContaining({
+        rawPayload: true,
+        metadata: true,
+        type: true,
+      }),
+    });
+    expect(meta.downloadInboundAudio).toHaveBeenCalledWith(
+      'customer-audio-id',
+      16 * 1024 * 1024,
+    );
+  });
+
+  it('retrieves assistant audio from its stored voice media ID', async () => {
+    (prisma.message.findFirst as jest.Mock).mockResolvedValue({
+      type: MessageType.AUDIO,
+      direction: MessageDirection.OUTBOUND,
+      sender: MessageSender.HERMES,
+      rawPayload: null,
+      metadata: { voiceMediaId: 'assistant-audio-id' },
+    });
+    const audio = { bytes: Buffer.from('OggS'), mimeType: 'audio/ogg' };
+    (meta.downloadInboundAudio as jest.Mock).mockResolvedValue(audio);
+
+    await expect(
+      service.inboxMedia('conversation-1', 'message-2'),
+    ).resolves.toEqual(audio);
+    expect(meta.downloadInboundAudio).toHaveBeenCalledWith(
+      'assistant-audio-id',
+      16 * 1024 * 1024,
+    );
+  });
+
+  it('does not fetch an audio with no media ID', async () => {
+    (prisma.message.findFirst as jest.Mock).mockResolvedValue({
+      type: MessageType.AUDIO,
+      direction: MessageDirection.OUTBOUND,
+      sender: MessageSender.HERMES,
+      rawPayload: null,
+      metadata: {},
+    });
+
+    await expect(
+      service.inboxMedia('conversation-1', 'message-3'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(meta.downloadInboundAudio).not.toHaveBeenCalled();
+  });
+
+  it('keeps customer image retrieval on the existing media path', async () => {
+    (prisma.message.findFirst as jest.Mock).mockResolvedValue({
+      type: MessageType.IMAGE,
+      direction: MessageDirection.INBOUND,
+      sender: MessageSender.CONTACT,
+      rawPayload: { image: { id: 'customer-image-id' } },
+      metadata: null,
+    });
+    const image = { bytes: Buffer.from('image'), mimeType: 'image/png' };
+    (meta.fetchInboxMedia as jest.Mock).mockResolvedValue(image);
+
+    await expect(
+      service.inboxMedia('conversation-1', 'message-4'),
+    ).resolves.toEqual(image);
+    expect(meta.fetchInboxMedia).toHaveBeenCalledWith('customer-image-id');
+    expect(meta.downloadInboundAudio).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [MessageSender.HUMAN, MessageDirection.OUTBOUND, MessageType.AUDIO],
+    [MessageSender.HERMES, MessageDirection.OUTBOUND, MessageType.DOCUMENT],
+  ])('rejects unsupported media from %s', async (sender, direction, type) => {
+    (prisma.message.findFirst as jest.Mock).mockResolvedValue({
+      type,
+      direction,
+      sender,
+      rawPayload: { audio: { id: 'other-audio-id' } },
+      metadata: { voiceMediaId: 'other-audio-id' },
+    });
+
+    await expect(
+      service.inboxMedia('conversation-1', 'message-5'),
+    ).rejects.toBeInstanceOf(NotFoundException);
+    expect(meta.fetchInboxMedia).not.toHaveBeenCalled();
+    expect(meta.downloadInboundAudio).not.toHaveBeenCalled();
   });
 });

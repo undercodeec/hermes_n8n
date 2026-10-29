@@ -375,20 +375,37 @@ export class ConversationsService {
       where: {
         id: messageId,
         conversationId,
-        sender: MessageSender.CONTACT,
-        direction: MessageDirection.INBOUND,
-        type: { in: [MessageType.IMAGE, MessageType.DOCUMENT] },
+        type: {
+          in: [MessageType.IMAGE, MessageType.DOCUMENT, MessageType.AUDIO],
+        },
       },
-      select: { rawPayload: true, type: true },
+      select: {
+        rawPayload: true,
+        metadata: true,
+        type: true,
+        sender: true,
+        direction: true,
+      },
     });
-    if (!message)
+    const inbound =
+      message?.sender === MessageSender.CONTACT &&
+      message.direction === MessageDirection.INBOUND;
+    const assistantVoice =
+      message?.type === MessageType.AUDIO &&
+      message.sender === MessageSender.HERMES &&
+      message.direction === MessageDirection.OUTBOUND;
+    if (!message || (!inbound && !assistantVoice))
       throw new NotFoundException('Adjunto no encontrado en esta conversación');
-    const payload = this.objectValue(message.rawPayload);
-    const media = this.objectValue(payload?.[message.type.toLowerCase()]);
-    const mediaId = media?.id;
+    const mediaId = assistantVoice
+      ? this.objectValue(message.metadata)?.voiceMediaId
+      : this.objectValue(
+          this.objectValue(message.rawPayload)?.[message.type.toLowerCase()],
+        )?.id;
     if (typeof mediaId !== 'string' || !mediaId)
       throw new NotFoundException('Media ID no disponible');
-    return this.metaService.fetchInboxMedia(mediaId);
+    return message.type === MessageType.AUDIO
+      ? this.metaService.downloadInboundAudio(mediaId, 16 * 1024 * 1024)
+      : this.metaService.fetchInboxMedia(mediaId);
   }
 
   async reply(id: string, dto: ReplyConversationDto, userId: string) {

@@ -71,6 +71,7 @@ export class ConversationsController {
 
   @Get(':id/messages/:messageId/media')
   @Header('Cache-Control', 'private, no-store')
+  @Header('X-Content-Type-Options', 'nosniff')
   async inboxMedia(
     @Param('id') id: string,
     @Param('messageId') messageId: string,
