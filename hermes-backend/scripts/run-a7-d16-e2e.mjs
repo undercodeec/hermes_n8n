@@ -89,7 +89,7 @@ try {
   );
   if (
     postgresProbe.status !== 0 ||
-    postgresProbe.stdout.trim() !== '26' ||
+    postgresProbe.stdout.trim() !== '27' ||
     redisProbe.status !== 0 ||
     redisProbe.stdout.trim() !== 'PONG'
   )
@@ -98,7 +98,7 @@ try {
     `${artifactDir}/infrastructure.json`,
     JSON.stringify(
       {
-        postgresqlAppliedMigrations: 26,
+        postgresqlAppliedMigrations: 27,
         redisPing: 'PONG',
         database: 'hermes_a7_d16_test',
         ports: [55433, 56380],
