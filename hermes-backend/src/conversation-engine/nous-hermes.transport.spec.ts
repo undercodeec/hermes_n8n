@@ -10,6 +10,7 @@ import {
   NousHermesTransport,
 } from './nous-hermes.transport';
 import type { ConversationTurnInput } from './conversation-engine.types';
+import { BLACK_FRIDAY_LANDING_POLICY_VERSION } from '../hermes/black-friday-landing';
 
 const baseInput = (
   overrides: Partial<ConversationTurnInput> = {},
@@ -63,6 +64,69 @@ describe('NousHermesTransport', () => {
       secretReader,
     );
   }
+
+  it('gives Nous campaign answer rules only when the approved offer is active', async () => {
+    post.mockResolvedValue({
+      data: {
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: JSON.stringify({
+                replyText: 'La landing cuesta USD $80.00.',
+              }),
+            },
+          },
+        ],
+      },
+    });
+    const campaign = baseInput({
+      customerMessage: '¿Qué incluye Black Friday?',
+      approvedContext: {
+        ...baseInput().approvedContext,
+        contactName: '',
+        commercialSnapshot: {
+          marketSource: 'UNKNOWN',
+          relevantServiceCodes: ['LANDING_PAGE'],
+          needsMarketClarification: false,
+          offers: [
+            {
+              id: 'bf-80',
+              name: 'Black Friday — Landing Page',
+              serviceCode: 'LANDING_PAGE',
+              marketScope: 'GLOBAL',
+              priceType: 'FIXED',
+              amount: '80.00',
+              currency: 'USD',
+              scope:
+                'Captación de leads; una sola sección; diseño responsive; WhatsApp y llamada; formulario; beneficios; dominio .com y hosting básico por 1 año; 5 correos; SEO técnico base; 1 mes de soporte',
+              policyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+              promotion: true,
+            },
+          ],
+        },
+      },
+    });
+    await configuredTransport().execute(campaign);
+    const request = post.mock.calls[0][1] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(request.messages[0].content).toMatch(
+      /Black Friday.*diez caracter[ií]sticas/i,
+    );
+    expect(request.messages[0].content).toMatch(/consulta general.*precio/i);
+    const state = JSON.parse(request.messages.at(-1)!.content) as {
+      approvedState: { contactName?: string };
+    };
+    expect(state.approvedState.contactName).toBeUndefined();
+    await configuredTransport().execute(baseInput());
+    const ordinary = post.mock.calls[1][1] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(ordinary.messages[0].content).not.toMatch(
+      /Black Friday.*diez caracter[ií]sticas/i,
+    );
+  });
 
   it('uses only the exact alias, stateless messages, and minimal headers', async () => {
     post.mockResolvedValue({
