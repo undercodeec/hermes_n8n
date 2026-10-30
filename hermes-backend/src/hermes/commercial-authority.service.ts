@@ -203,11 +203,15 @@ export class CommercialAuthorityService {
           normalize(input.customerMessage),
         ),
     };
-    if (
+    const deliveryRequested =
       /\b(?:plazo|tiempo de entrega|cuanto tarda|cuanto demora|dias laborables|para cuando|fecha de entrega)\b/.test(
         normalize(input.customerMessage),
-      )
-    ) {
+      );
+    if (deliveryRequested && blackFridayRequested) {
+      result.policies = [
+        'El plazo de entrega de la promoción Black Friday no está confirmado; un asesor puede verificarlo.',
+      ];
+    } else if (deliveryRequested) {
       try {
         const deliveryPolicy = await this.prisma.knowledgeDocument.findUnique({
           where: { id: 'commercial-delivery-policy-v1' },

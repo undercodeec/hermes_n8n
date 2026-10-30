@@ -50,8 +50,18 @@ describe('Black Friday landing commercial authority', () => {
     supersedesPriceListId: base.id,
   };
 
-  function authority(prices: Array<typeof base | typeof promotion>) {
+  function authority(
+    prices: Array<typeof base | typeof promotion>,
+    deliveryPolicy?: string,
+  ) {
     const prisma = {
+      knowledgeDocument: {
+        findUnique: jest
+          .fn()
+          .mockResolvedValue(
+            deliveryPolicy ? { content: deliveryPolicy, isActive: true } : null,
+          ),
+      },
       product: {
         findMany: jest.fn().mockResolvedValue([
           {
@@ -146,6 +156,20 @@ describe('Black Friday landing commercial authority', () => {
       now,
     });
     expect(result.offers[0]?.id).toBe(promotion.id);
+  });
+
+  it('does not inherit the normal delivery timeline for the campaign', async () => {
+    const result = await authority(
+      [base, promotion],
+      'Los planes básicos tardan aproximadamente 10 días laborables.',
+    ).snapshot({
+      customerMessage: '¿Cuánto tarda la landing de Black Friday?',
+      priceRequested: false,
+      now,
+    });
+    const knowledge = commercialSnapshotKnowledge(result).join(' ');
+    expect(knowledge).not.toContain('10 días laborables');
+    expect(knowledge).toMatch(/plazo.*no est[aá] confirmado/i);
   });
 
   it('does not announce the $80 offer when the promotion is inactive', async () => {

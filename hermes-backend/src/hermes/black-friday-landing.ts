@@ -33,8 +33,8 @@ export function recognizesBlackFridayLanding(
       )
     );
   };
-  if (explicit(message)) return true;
   if (switchesService(current)) return false;
+  if (explicit(message)) return true;
   if (!current) return false;
   for (const previous of [...recentCustomerMessages].reverse()) {
     const previousText = normalize(previous);

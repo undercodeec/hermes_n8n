@@ -40,6 +40,20 @@ describe('Black Friday landing recognition', () => {
     ).toBe(false);
   });
 
+  it('honors an explicit store request even when Black Friday is mentioned', () => {
+    expect(
+      recognizesBlackFridayLanding(
+        'Quiero una tienda online para Black Friday',
+      ),
+    ).toBe(false);
+    expect(
+      recognizesBlackFridayLanding(
+        'Necesito una tienda online para Black Friday',
+        ['Vi su promoción de Black Friday'],
+      ),
+    ).toBe(false);
+  });
+
   it.each([
     'Tengo 80 dólares de presupuesto para mi tienda online',
     'Quiero un sitio web de 80 páginas',
