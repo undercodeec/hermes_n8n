@@ -44,6 +44,10 @@ import {
   commercialSnapshotKnowledge,
 } from '../hermes/commercial-authority.service';
 import {
+  BLACK_FRIDAY_LANDING_POLICY_VERSION,
+  isGeneralBlackFridayInquiry,
+} from '../hermes/black-friday-landing';
+import {
   answerExplicitPriceIfMissing,
   hasAuthorizedMonetaryValue,
   reviewCommercialClaims,
@@ -630,6 +634,16 @@ export class AutoReplyService {
         .map((message) => message.content),
       priceRequested: policy.guidance.priceAnswerRequired,
     });
+    if (
+      isGeneralBlackFridayInquiry(customerMessage) &&
+      commercialSnapshot.offers.some(
+        (offer) =>
+          offer.promotion &&
+          offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION,
+      )
+    ) {
+      policy.guidance.priceAnswerRequired = true;
+    }
     policy.guidance.allowPriceAnswer =
       !commercialSnapshot.needsMarketClarification &&
       commercialSnapshot.offers.some(

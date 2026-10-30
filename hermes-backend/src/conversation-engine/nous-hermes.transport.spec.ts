@@ -11,6 +11,7 @@ import type { ConversationTurnInput } from './conversation-engine.types';
 import { InboundTurnService } from '../auto-replies/inbound-turn.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { NORMAL_NOUS_GENERATION_ENGINE } from '../auto-replies/inbound-turn.service';
+import { BLACK_FRIDAY_LANDING_POLICY_VERSION } from '../hermes/black-friday-landing';
 
 const baseInput = (
   overrides: Partial<ConversationTurnInput> = {},
@@ -71,6 +72,65 @@ describe('NousHermesTransport', () => {
       prisma,
     );
   }
+
+  it('gives Nous campaign rules only for an approved Black Friday offer', async () => {
+    post.mockResolvedValue({
+      data: {
+        model: 'hermes-agent',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: JSON.stringify({
+                replyText: 'La landing cuesta USD $80.',
+              }),
+            },
+          },
+        ],
+      },
+    });
+    const campaign = baseInput({
+      customerMessage: '¿Qué incluye Black Friday?',
+      approvedContext: {
+        ...baseInput().approvedContext,
+        commercialSnapshot: {
+          marketSource: 'UNKNOWN',
+          relevantServiceCodes: ['LANDING_PAGE'],
+          needsMarketClarification: false,
+          offers: [
+            {
+              id: 'bf-80',
+              name: 'Black Friday — Landing Page',
+              serviceCode: 'LANDING_PAGE',
+              marketScope: 'GLOBAL',
+              priceType: 'FIXED',
+              amount: '80.00',
+              currency: 'USD',
+              scope:
+                'Captación de leads; una sola sección; diseño responsive; WhatsApp y llamada; formulario; beneficios; dominio .com y hosting básico por 1 año; 5 correos; SEO técnico base; 1 mes de soporte',
+              policyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+              promotion: true,
+            },
+          ],
+        },
+      },
+    });
+    await configuredTransport().execute(campaign);
+    const request = post.mock.calls[0][1] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(request.messages[0].content).toMatch(
+      /Black Friday.*diez caracter[ií]sticas/i,
+    );
+    expect(request.messages[0].content).toMatch(/consulta general.*precio/i);
+    await configuredTransport().execute(baseInput());
+    const ordinary = post.mock.calls[1][1] as {
+      messages: Array<{ role: string; content: string }>;
+    };
+    expect(ordinary.messages[0].content).not.toMatch(
+      /Black Friday.*diez caracter[ií]sticas/i,
+    );
+  });
 
   it('stops a queued commercial turn before HTTP when operations are disabled', async () => {
     const transport = configuredTransport({

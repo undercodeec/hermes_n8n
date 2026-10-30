@@ -7,6 +7,10 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { requestedSolutionKinds } from './commercial-catalog';
+import {
+  BLACK_FRIDAY_LANDING_POLICY_VERSION,
+  recognizesBlackFridayLanding,
+} from './black-friday-landing';
 import type { CommercialProfile } from './dto/hermes-request.dto';
 
 export type AuthorizedOffer = {
@@ -19,7 +23,7 @@ export type AuthorizedOffer = {
   priceType: CommercialPriceType;
   amount?: string;
   currency: 'USD' | 'EUR';
-  taxMode: CommercialTaxMode;
+  taxMode?: CommercialTaxMode;
   taxLabel?: string;
   taxRatePercent?: string;
   scope: string;
@@ -147,10 +151,13 @@ export class CommercialAuthorityService {
     ]
       .filter(Boolean)
       .join(' ');
-    const currentServiceCodes = requestedSolutionKinds(
+    const blackFridayRequested = recognizesBlackFridayLanding(
       input.customerMessage,
-      false,
+      input.recentCustomerMessages,
     );
+    const currentServiceCodes: string[] = blackFridayRequested
+      ? ['LANDING_PAGE']
+      : requestedSolutionKinds(input.customerMessage, false);
     const explicitCurrentService =
       /\b(?:landing|p[aá]gina de aterrizaje|sitio web|p[aá]gina web|tienda online|ecommerce|comercio electr[oó]nico|app m[oó]vil|software a medida)\b/i.test(
         input.customerMessage,
@@ -160,8 +167,9 @@ export class CommercialAuthorityService {
         .reverse()
         .map((message) => requestedSolutionKinds(message, false))
         .find((codes) => codes.length > 0) ?? [];
-    const relevantServiceCodes =
-      currentServiceCodes.length && explicitCurrentService
+    const relevantServiceCodes = blackFridayRequested
+      ? ['LANDING_PAGE']
+      : currentServiceCodes.length && explicitCurrentService
         ? currentServiceCodes
         : requestedSolutionKinds(priorContext, false).length
           ? requestedSolutionKinds(priorContext, false)
@@ -253,9 +261,22 @@ export class CommercialAuthorityService {
         },
         take: 20,
       });
-      result.offers = products.flatMap((product) =>
-        this.currentOffer(product, resolution.market),
-      );
+      result.offers = products
+        .flatMap((product) =>
+          this.currentOffer(product, resolution.market, blackFridayRequested),
+        )
+        .filter(
+          (offer) =>
+            !blackFridayRequested ||
+            (offer.promotion &&
+              offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION),
+        );
+      if (blackFridayRequested && !result.offers.length) {
+        result.policies = [
+          ...(result.policies ?? []),
+          'La promoción Black Friday de Landing Page no está activa. No confirmes el precio promocional; un asesor puede verificar su vigencia.',
+        ];
+      }
       const scopeText = normalize(
         [
           ...(input.recentCustomerMessages ?? []),
@@ -350,17 +371,26 @@ export class CommercialAuthorityService {
   private currentOffer(
     product: ProductWithPrices,
     market?: CommercialMarket,
+    blackFridayRequested = false,
   ): AuthorizedOffer[] {
     if (!product.serviceCode) return [];
-    const eligible = product.priceLists.filter((price) =>
-      this.isEligible(price),
+    const eligible = product.priceLists.filter(
+      (price) =>
+        this.isEligible(price) &&
+        (price.policyVersion !== BLACK_FRIDAY_LANDING_POLICY_VERSION ||
+          blackFridayRequested) &&
+        (!blackFridayRequested ||
+          !price.isPromotion ||
+          price.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION),
     );
     const marketSpecific = market
       ? eligible.filter((price) => price.market === market)
       : [];
-    const applicable = marketSpecific.length
-      ? marketSpecific
-      : eligible.filter((price) => price.market === null);
+    const applicable = blackFridayRequested
+      ? eligible.filter((price) => price.market === null)
+      : marketSpecific.length
+        ? marketSpecific
+        : eligible.filter((price) => price.market === null);
     const base = applicable.filter((price) => !price.isPromotion);
     const promotion = applicable.filter((price) => price.isPromotion);
     let selected: (typeof eligible)[number] | undefined;
@@ -389,14 +419,17 @@ export class CommercialAuthorityService {
     return [
       {
         id: selected.id,
-        name: product.name,
+        name:
+          selected.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION
+            ? selected.name
+            : product.name,
         serviceCode: product.serviceCode,
         ...(selected.market ? { market: selected.market } : {}),
         marketScope: selected.market ? 'MARKET' : 'GLOBAL',
         priceType: selected.priceType!,
         ...(selected.price ? { amount: selected.price.toFixed(2) } : {}),
         currency: selected.currency as 'USD' | 'EUR',
-        taxMode: selected.taxMode!,
+        ...(selected.taxMode ? { taxMode: selected.taxMode } : {}),
         ...(selected.taxLabel ? { taxLabel: selected.taxLabel } : {}),
         ...(selected.taxRatePercent
           ? { taxRatePercent: selected.taxRatePercent.toFixed(2) }
@@ -407,11 +440,13 @@ export class CommercialAuthorityService {
           : {}),
         policyVersion: selected.policyVersion!.trim(),
         promotion: selected.isPromotion,
-        ...(terms.renewalUsdPerYear === 40 || terms.renewalUsdPerYear === 80
+        ...(selected.policyVersion !== BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+        (terms.renewalUsdPerYear === 40 || terms.renewalUsdPerYear === 80)
           ? { renewalUsdPerYear: terms.renewalUsdPerYear }
           : {}),
-        ...(terms.estimatedBusinessDays === 10 ||
-        terms.estimatedBusinessDays === 20
+        ...(selected.policyVersion !== BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+        (terms.estimatedBusinessDays === 10 ||
+          terms.estimatedBusinessDays === 20)
           ? { estimatedBusinessDays: terms.estimatedBusinessDays }
           : {}),
         ...(selected.validUntil
@@ -424,11 +459,14 @@ export class CommercialAuthorityService {
   private isEligible(price: ProductWithPrices['priceLists'][number]): boolean {
     return Boolean(
       price.priceType &&
-      price.taxMode &&
+      (price.taxMode ||
+        (price.isPromotion &&
+          price.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION)) &&
       price.scope?.trim() &&
       price.policyVersion?.trim() &&
       (price.currency === 'USD' || price.currency === 'EUR') &&
-      (price.taxMode === CommercialTaxMode.NOT_APPLICABLE ||
+      (price.taxMode === null ||
+        price.taxMode === CommercialTaxMode.NOT_APPLICABLE ||
         price.taxLabel?.trim()) &&
       (price.priceType === CommercialPriceType.QUOTE_REQUIRED
         ? price.price === null
@@ -459,12 +497,24 @@ export function commercialSnapshotKnowledge(
       ...offer,
     }),
   );
+  if (
+    snapshot.offers.some(
+      (offer) =>
+        offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+        offer.promotion,
+    )
+  ) {
+    offerKnowledge.push(
+      'Black Friday — Landing Page USD $80: es una página de una sola sección para presentar un negocio, producto o servicio y facilitar la captación de prospectos. Si preguntan qué incluye, enumera las diez características confirmadas en scope. Si preguntan solo por una característica, responde solo esa. Adapta la explicación al negocio conocido y pregunta por su actividad cuando sea útil. No es una tienda online. No afirmes impuestos, plazo de entrega, revisiones, pago, fecha de cierre, renovaciones ni resultados garantizados; un asesor puede confirmar condiciones no documentadas.',
+      'Formulaciones oficiales equivalentes de las prestaciones: incluye cinco correos corporativos; incluye dominio .com durante un año; incluye hosting básico durante un año; incluye configuración SEO técnica básica; incluye un mes de soporte posterior a la entrega.',
+    );
+  }
   const recommended = snapshot.offers.find(
     (offer) => offer.id === snapshot.recommendedOfferId,
   );
   if (recommended)
     offerKnowledge.push(
-      `Plan principal sugerido: ${recommended.name}. Explica las prestaciones relevantes de su scope. No menciones el precio salvo que el cliente lo solicite. ${snapshot.additionalScope?.length ? `Necesidades adicionales por valorar separadamente: ${snapshot.additionalScope.join('; ')}. No presentes todo el proyecto como personalizado.` : ''}`,
+      `Plan principal sugerido: ${recommended.name}. Explica las prestaciones relevantes de su scope. ${recommended.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION ? 'En una consulta general sobre la promoción, indica el precio aprobado; en una pregunta puntual sin solicitud de precio, responde solo lo solicitado.' : 'No menciones el precio salvo que el cliente lo solicite.'} ${snapshot.additionalScope?.length ? `Necesidades adicionales por valorar separadamente: ${snapshot.additionalScope.join('; ')}. No presentes todo el proyecto como personalizado.` : ''}`,
     );
   if (recommended?.renewalUsdPerYear && snapshot.renewalRequested)
     offerKnowledge.push(

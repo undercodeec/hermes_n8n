@@ -55,6 +55,7 @@ import { ConversationReviewService } from '../learning/conversation-review.servi
 import { LearningRetrievalService } from '../learning/learning-retrieval.service';
 import { ReviewModelService } from '../learning/review-model.service';
 import { ReviewCanaryPolicy } from '../learning/review-canary.policy';
+import { BLACK_FRIDAY_LANDING_POLICY_VERSION } from '../hermes/black-friday-landing';
 
 describe('AutoReplyService', () => {
   const testOffer = (
@@ -2970,6 +2971,124 @@ describe('AutoReplyService', () => {
       );
     },
   );
+
+  it('keeps the approved Black Friday price in one general text reply', async () => {
+    const promotion: AuthorizedOffer = {
+      ...testOffer('Black Friday — Landing Page', '80.00', 'LANDING_PAGE'),
+      marketScope: 'GLOBAL',
+      market: undefined,
+      taxMode: undefined,
+      taxLabel: undefined,
+      policyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+      promotion: true,
+      scope: 'Landing page de una sola sección; captación de leads',
+    };
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [promotion],
+      recommendedOfferId: promotion.id,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: 'Vi su promoción de Black Friday. Quiero información.',
+      hermesResponse: {
+        response:
+          'La landing page de una sola sección facilita captar clientes potenciales. La promoción cuesta USD $80.00. ¿A qué se dedica su negocio?',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(
+      harness.engine.respond.mock.calls[0][0].approvedContext
+        .conversationGuidance.priceAnswerRequired,
+    ).toBe(true);
+    expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+    expect(harness.deliveries.prepareBatch).toHaveBeenCalledTimes(1);
+    expect(
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
+    ).toContain('USD $80.00');
+  });
+
+  it('uses a transcribed Black Friday request for one approved reply', async () => {
+    const promotion: AuthorizedOffer = {
+      ...testOffer('Black Friday — Landing Page', '80.00', 'LANDING_PAGE'),
+      marketScope: 'GLOBAL',
+      market: undefined,
+      taxMode: undefined,
+      taxLabel: undefined,
+      policyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+      promotion: true,
+    };
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [promotion],
+      recommendedOfferId: promotion.id,
+      needsMarketClarification: false,
+    });
+    const transcript = 'Vi su promoción de Black Friday. Quiero información.';
+    const harness = setupProcessHarness({
+      hermesResponse: { response: 'La landing cuesta USD $80.00.' },
+    });
+    const audio = {
+      id: 'inbound-recovery',
+      wamid: 'wamid.audio-black-friday',
+      type: 'AUDIO',
+      content: '[Audio]',
+      createdAt: new Date('2026-09-20T18:00:00.000Z'),
+      rawPayload: { audio: { id: 'media-black-friday' } },
+    };
+    const turns = {
+      claim: jest.fn().mockResolvedValue({
+        id: 'turn-black-friday',
+        lastMessageId: audio.id,
+        processingToken: 'claim-token',
+      }),
+      messages: jest
+        .fn()
+        .mockResolvedValueOnce([audio])
+        .mockResolvedValueOnce([{ ...audio, content: transcript }]),
+      complete: jest.fn(),
+      release: jest.fn(),
+    };
+    const voice = {
+      transcribe: jest
+        .fn()
+        .mockResolvedValue({ text: transcript, sourceType: 'AUDIO' }),
+      synthesize: jest.fn().mockResolvedValue(Buffer.from('OggSopus')),
+    };
+    Object.assign(harness.service, {
+      inboundTurns: turns as unknown as InboundTurnService,
+      voice: voice as unknown as VoiceService,
+    });
+    const internals = harness.service as unknown as {
+      prisma: { message: { update: jest.Mock } };
+    };
+    internals.prisma.message.update = jest.fn().mockResolvedValue({});
+
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: audio.id,
+      inboundTurnId: 'turn-black-friday',
+    });
+
+    expect(voice.transcribe).toHaveBeenCalledWith('media-black-friday');
+    expect(authority.snapshot).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customerMessage: expect.stringContaining(transcript),
+      }),
+    );
+    expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+    expect(harness.deliveries.prepareBatch).toHaveBeenCalledTimes(1);
+    expect(
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
+    ).toContain('USD $80.00');
+  });
 
   it('passes an audio price question to the existing commercial authority', async () => {
     (authority.snapshot as jest.Mock).mockResolvedValueOnce({
