@@ -3,6 +3,24 @@ import { PrismaService } from '../prisma/prisma.service';
 import { UpdatePriceListDto } from './dto/update-price-list.dto';
 import { PriceListsService } from './price-lists.service';
 
+type StatusAuditArgs = {
+  data: {
+    userId: string;
+    entity: string;
+    entityId: string;
+    action: string;
+    changes: {
+      before: { isActive: boolean };
+      after: { isActive: boolean };
+      result: string;
+    };
+  };
+};
+
+function firstCallArg(callLog: unknown): unknown {
+  return (callLog as Array<[unknown]>)[0]?.[0];
+}
+
 describe('PriceListsService', () => {
   it('clears an existing expiration when validUntil is null', async () => {
     type UpdateArgs = {
@@ -21,7 +39,10 @@ describe('PriceListsService', () => {
         return Promise.resolve({ ...priceList, validUntil: null });
       }),
     };
-    const tx = { priceList: priceListDelegate, auditLog: { create: jest.fn() } };
+    const tx = {
+      priceList: priceListDelegate,
+      auditLog: { create: jest.fn() },
+    };
     const prisma = {
       $transaction: (fn: (client: typeof tx) => unknown) => fn(tx),
     } as unknown as PrismaService;
@@ -51,13 +72,20 @@ describe('PriceListsService', () => {
         return Promise.resolve({ ...priceList, name: 'Precio actualizado' });
       }),
     };
-    const tx = { priceList: priceListDelegate, auditLog: { create: jest.fn() } };
+    const tx = {
+      priceList: priceListDelegate,
+      auditLog: { create: jest.fn() },
+    };
     const prisma = {
       $transaction: (fn: (client: typeof tx) => unknown) => fn(tx),
     } as unknown as PrismaService;
     const service = new PriceListsService(prisma);
 
-    await service.update('price-list-1', { name: 'Precio actualizado' }, 'admin-1');
+    await service.update(
+      'price-list-1',
+      { name: 'Precio actualizado' },
+      'admin-1',
+    );
 
     expect(capturedUpdateArgs?.data).not.toHaveProperty('validUntil');
     expect(capturedUpdateArgs?.data).toHaveProperty(
@@ -69,8 +97,12 @@ describe('PriceListsService', () => {
 
 describe('PriceListsService commercial audit', () => {
   const before = {
-    id: 'promo-1', isPromotion: true, isActive: false,
-    name: 'Oferta sintética', price: '80.00', product: { id: 'product-1' },
+    id: 'promo-1',
+    isPromotion: true,
+    isActive: false,
+    name: 'Oferta sintética',
+    price: '80.00',
+    product: { id: 'product-1' },
   };
 
   it('stores the administrator and before/after state in the same transaction', async () => {
@@ -81,17 +113,29 @@ describe('PriceListsService commercial audit', () => {
       },
       auditLog: { create: jest.fn().mockResolvedValue({}) },
     };
-    const prisma = { $transaction: jest.fn((fn: (client: typeof tx) => unknown) => fn(tx)) } as unknown as PrismaService;
+    const prisma = {
+      $transaction: jest.fn((fn: (client: typeof tx) => unknown) => fn(tx)),
+    } as unknown as PrismaService;
     const service = new PriceListsService(prisma);
 
     await service.update('promo-1', { isActive: true }, 'admin-1');
 
-    expect(tx.priceList.update).toHaveBeenCalledWith({ where: { id: 'promo-1' }, data: { isActive: true } });
-    expect(tx.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({
-      userId: 'admin-1', entity: 'price_lists', entityId: 'promo-1',
-      action: 'PRICE_LIST_UPDATED',
-      changes: expect.objectContaining({ before: { isActive: false }, after: { isActive: true }, result: 'SUCCESS' }),
-    }) });
+    expect(tx.priceList.update).toHaveBeenCalledWith({
+      where: { id: 'promo-1' },
+      data: { isActive: true },
+    });
+    const audit = firstCallArg(
+      tx.auditLog.create.mock.calls,
+    ) as StatusAuditArgs;
+    expect(audit.data.userId).toBe('admin-1');
+    expect(audit.data.entity).toBe('price_lists');
+    expect(audit.data.entityId).toBe('promo-1');
+    expect(audit.data.action).toBe('PRICE_LIST_UPDATED');
+    expect(audit.data.changes).toEqual({
+      before: { isActive: false },
+      after: { isActive: true },
+      result: 'SUCCESS',
+    });
   });
 
   it('does not write audit history when the update fails', async () => {
@@ -102,13 +146,26 @@ describe('PriceListsService commercial audit', () => {
       },
       auditLog: { create: jest.fn() },
     };
-    const prisma = { $transaction: jest.fn((fn: (client: typeof tx) => unknown) => fn(tx)) } as unknown as PrismaService;
-    await expect(new PriceListsService(prisma).update('promo-1', { isActive: true }, 'admin-1')).rejects.toThrow('write failed');
+    const prisma = {
+      $transaction: jest.fn((fn: (client: typeof tx) => unknown) => fn(tx)),
+    } as unknown as PrismaService;
+    await expect(
+      new PriceListsService(prisma).update(
+        'promo-1',
+        { isActive: true },
+        'admin-1',
+      ),
+    ).rejects.toThrow('write failed');
     expect(tx.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('deactivates a promotion without changing price or offer details', async () => {
-    const active = { ...before, isActive: true, scope: 'Diez prestaciones', restrictions: 'Vigencia comercial' };
+    const active = {
+      ...before,
+      isActive: true,
+      scope: 'Diez prestaciones',
+      restrictions: 'Vigencia comercial',
+    };
     const tx = {
       priceList: {
         findUnique: jest.fn().mockResolvedValue(active),
@@ -116,36 +173,100 @@ describe('PriceListsService commercial audit', () => {
       },
       auditLog: { create: jest.fn() },
     };
-    const prisma = { $transaction: jest.fn((fn: (client: typeof tx) => unknown) => fn(tx)) } as unknown as PrismaService;
-    await new PriceListsService(prisma).update('promo-1', { isActive: false }, 'admin-1');
-    expect(tx.priceList.update.mock.calls[0][0].data).toEqual({ isActive: false });
-    expect(tx.auditLog.create).toHaveBeenCalledWith({ data: expect.objectContaining({
-      changes: expect.objectContaining({ before: { isActive: true }, after: { isActive: false } }),
-    }) });
+    const prisma = {
+      $transaction: jest.fn((fn: (client: typeof tx) => unknown) => fn(tx)),
+    } as unknown as PrismaService;
+    await new PriceListsService(prisma).update(
+      'promo-1',
+      { isActive: false },
+      'admin-1',
+    );
+    const updateArgs = firstCallArg(tx.priceList.update.mock.calls) as {
+      data: unknown;
+    };
+    expect(updateArgs.data).toEqual({
+      isActive: false,
+    });
+    const audit = firstCallArg(
+      tx.auditLog.create.mock.calls,
+    ) as StatusAuditArgs;
+    expect(audit.data.changes.before).toEqual({ isActive: true });
+    expect(audit.data.changes.after).toEqual({ isActive: false });
   });
 
   it('rejects a missing tariff before any write or audit', async () => {
     const tx = {
-      priceList: { findUnique: jest.fn().mockResolvedValue(null), update: jest.fn() },
+      priceList: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        update: jest.fn(),
+      },
       auditLog: { create: jest.fn() },
     };
-    const prisma = { $transaction: jest.fn((fn: (client: typeof tx) => unknown) => fn(tx)) } as unknown as PrismaService;
-    await expect(new PriceListsService(prisma).update('missing', { isActive: true }, 'admin-1')).rejects.toMatchObject({ status: 404 });
+    const prisma = {
+      $transaction: jest.fn((fn: (client: typeof tx) => unknown) => fn(tx)),
+    } as unknown as PrismaService;
+    await expect(
+      new PriceListsService(prisma).update(
+        'missing',
+        { isActive: true },
+        'admin-1',
+      ),
+    ).rejects.toMatchObject({ status: 404 });
     expect(tx.priceList.update).not.toHaveBeenCalled();
     expect(tx.auditLog.create).not.toHaveBeenCalled();
   });
 
   it('returns the last audit entry with the responsible user', async () => {
-    const findMany = jest.fn().mockResolvedValue([{ createdAt: new Date('2026-10-30T12:00:00Z'), user: { name: 'Admin' } }]);
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        createdAt: new Date('2026-10-30T12:00:00Z'),
+        user: { name: 'Admin' },
+      },
+    ]);
     const prisma = {
       priceList: { findUnique: jest.fn().mockResolvedValue(before) },
       auditLog: { findMany },
     } as unknown as PrismaService;
     const result = await new PriceListsService(prisma).audit('promo-1');
     expect(result).toHaveLength(1);
-    expect(findMany).toHaveBeenCalledWith(expect.objectContaining({
-      where: { entity: 'price_lists', entityId: 'promo-1' },
-      orderBy: { createdAt: 'desc' }, take: 10,
-    }));
+    expect(findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { entity: 'price_lists', entityId: 'promo-1' },
+        orderBy: { createdAt: 'desc' },
+        take: 10,
+      }),
+    );
+  });
+
+  it('uses serializable isolation and retries a concurrent write with a fresh before-state', async () => {
+    const current = { ...before, isActive: true };
+    const auditLog = { create: jest.fn().mockResolvedValue({}) };
+    const tx = {
+      priceList: {
+        findUnique: jest.fn().mockResolvedValue(current),
+        update: jest.fn().mockResolvedValue({ ...current, isActive: false }),
+      },
+      auditLog,
+    };
+    const transaction = jest
+      .fn()
+      .mockRejectedValueOnce({ code: 'P2034' })
+      .mockImplementation((fn: (client: typeof tx) => unknown) => fn(tx));
+    const prisma = { $transaction: transaction } as unknown as PrismaService;
+
+    await new PriceListsService(prisma).update(
+      'promo-1',
+      { isActive: false },
+      'admin-1',
+    );
+
+    expect(transaction).toHaveBeenCalledTimes(2);
+    const transactionOptions = (transaction.mock.calls as unknown[][])[0][1];
+    expect(transactionOptions).toEqual({
+      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
+    });
+    const audit = firstCallArg(auditLog.create.mock.calls) as StatusAuditArgs;
+    expect(audit.data.changes.before).toEqual({ isActive: true });
+    expect(audit.data.changes.after).toEqual({ isActive: false });
   });
 });

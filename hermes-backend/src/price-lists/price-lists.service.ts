@@ -63,31 +63,44 @@ export class PriceListsService {
         ? {}
         : { validUntil: validUntil === null ? null : new Date(validUntil) }),
     };
-    return this.prisma.$transaction(async (tx) => {
-      const previous = await tx.priceList.findUnique({ where: { id } });
-      if (!previous)
-        throw new NotFoundException('Lista de precios no encontrada');
-      const saved = await tx.priceList.update({ where: { id }, data });
-      const changedKeys = Object.keys(dto);
-      const snapshot = (record: Record<string, unknown>) =>
-        Object.fromEntries(changedKeys.map((key) => [key, record[key] ?? null]));
-      await tx.auditLog.create({
-        data: {
-          userId,
-          action: 'PRICE_LIST_UPDATED',
-          entity: 'price_lists',
-          entityId: id,
-          changes: JSON.parse(
-            JSON.stringify({
-              before: snapshot(previous),
-              after: snapshot(saved),
-              result: 'SUCCESS',
-            }),
-          ) as Prisma.InputJsonValue,
-        },
-      });
-      return saved;
-    });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      try {
+        return await this.prisma.$transaction(
+          async (tx) => {
+            const previous = await tx.priceList.findUnique({ where: { id } });
+            if (!previous)
+              throw new NotFoundException('Lista de precios no encontrada');
+            const saved = await tx.priceList.update({ where: { id }, data });
+            const changedKeys = Object.keys(dto);
+            const snapshot = (record: Record<string, unknown>) =>
+              Object.fromEntries(
+                changedKeys.map((key) => [key, record[key] ?? null]),
+              );
+            await tx.auditLog.create({
+              data: {
+                userId,
+                action: 'PRICE_LIST_UPDATED',
+                entity: 'price_lists',
+                entityId: id,
+                changes: JSON.parse(
+                  JSON.stringify({
+                    before: snapshot(previous),
+                    after: snapshot(saved),
+                    result: 'SUCCESS',
+                  }),
+                ) as Prisma.InputJsonValue,
+              },
+            });
+            return saved;
+          },
+          { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
+        );
+      } catch (error) {
+        if ((error as { code?: string })?.code !== 'P2034' || attempt === 2)
+          throw error;
+      }
+    }
+    throw new Error('No se pudo completar la actualización de tarifa');
   }
 
   async remove(id: string) {
