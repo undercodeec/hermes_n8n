@@ -1,10 +1,16 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
-import { copyFileSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
+import {
+  copyFileSync,
+  cpSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import test from 'node:test';
+import test, { after } from 'node:test';
 
 const execFileAsync = promisify(execFile);
 const port = process.env.COMMERCIAL_RECOVERY_TEST_PORT;
@@ -18,17 +24,41 @@ const preflight = join(baseDir, 'preflight.sql');
 const repair = join(baseDir, 'repair.sql');
 const verify = join(baseDir, 'verify.sql');
 let sequence = 0;
+const createdSchemas = [];
 
 function envFor(schema) {
+  const inheritedEnv = { ...process.env };
+  delete inheritedEnv.PGSERVICE;
   return {
-    ...process.env,
+    ...inheritedEnv,
     PGHOST: '127.0.0.1',
+    PGHOSTADDR: '127.0.0.1',
     PGPORT: port,
     PGUSER: 'hermes_recovery',
     PGDATABASE: 'postgres',
+    PGSSLMODE: 'disable',
     PGOPTIONS: `-c search_path=${schema},public`,
     PGCONNECT_TIMEOUT: '3',
   };
+}
+
+const expectedDataDirectory = resolve(
+  tmpdir(),
+  'hermes-catalog-recovery-20261030-local',
+).toLowerCase();
+const serverIdentity = sql(
+  'public',
+  `SELECT host(inet_server_addr()), current_database(), current_user, current_setting('data_directory');`,
+).split('|');
+if (
+  serverIdentity[0] !== '127.0.0.1' ||
+  serverIdentity[1] !== 'postgres' ||
+  serverIdentity[2] !== 'hermes_recovery' ||
+  resolve(serverIdentity[3]).toLowerCase() !== expectedDataDirectory
+) {
+  throw new Error(
+    `Refusing writes to unexpected PostgreSQL server: ${serverIdentity.join('|')}`,
+  );
 }
 
 function sql(schema, source) {
@@ -55,8 +85,15 @@ function file(schema, path) {
 function emptySchema() {
   const schema = `recovery_${process.pid}_${++sequence}`;
   sql('public', `CREATE SCHEMA ${schema};`);
+  createdSchemas.push(schema);
   return schema;
 }
+
+after(() => {
+  for (const schema of createdSchemas) {
+    sql('public', `DROP SCHEMA ${schema} CASCADE;`);
+  }
+});
 
 function setup() {
   const schema = emptySchema();
@@ -179,6 +216,33 @@ test('a second global-v1 tariff for the product is a blocking conflict', () => {
   assert.equal(counts(schema), '1|0');
 });
 
+test('an incompatible existing Black Friday row blocks base recovery', () => {
+  const schema = setup();
+  file(schema, repair);
+  sql(
+    schema,
+    `INSERT INTO price_lists ("id","productId","name","price","currency","priceType","policyVersion","isPromotion","supersedesPriceListId","validFrom","isActive","createdAt","updatedAt") VALUES
+      ('commercial-price-landing-black-friday-80-global-v1','commercial-product-landing-basic','Black Friday — Landing Page',90.00,'USD','FIXED','black-friday-landing-80-v1',true,'commercial-price-landing-basic-global-v1',CURRENT_TIMESTAMP,false,CURRENT_TIMESTAMP,CURRENT_TIMESTAMP);`,
+  );
+  assert.equal(verdict(schema), 'BASE_CATALOG_CONFLICT');
+  assert.throws(() => file(schema, verify));
+  assert.throws(() => file(schema, repair));
+});
+
+test('ignores an inherited libpq host address and connects only to loopback', () => {
+  const previous = process.env.PGHOSTADDR;
+  process.env.PGHOSTADDR = '127.0.0.2';
+  try {
+    assert.equal(
+      sql('public', 'SELECT host(inet_server_addr());'),
+      '127.0.0.1',
+    );
+  } finally {
+    if (previous === undefined) delete process.env.PGHOSTADDR;
+    else process.env.PGHOSTADDR = previous;
+  }
+});
+
 test('an insert failure rolls back the product and tariff together', () => {
   const schema = setup();
   sql(
@@ -204,25 +268,32 @@ test('Prisma applies Black Friday after repair and leaves it inactive', () => {
   const schema = emptySchema();
   const temp = mkdtempSync(join(tmpdir(), 'hermes-recovery-prisma-'));
   const migrations = join(temp, 'migrations');
-  const baseline = join(migrations, '20261028000000_test_schema');
   const campaign = join(migrations, '20261029200000_black_friday_landing_80');
-  mkdirSync(baseline, { recursive: true });
+  mkdirSync(migrations);
   copyFileSync(resolve('prisma/schema.prisma'), join(temp, 'schema.prisma'));
   copyFileSync(
     resolve('prisma/migrations/migration_lock.toml'),
     join(migrations, 'migration_lock.toml'),
   );
-  writeFileSync(
-    join(baseline, 'migration.sql'),
-    `CREATE TABLE products (LIKE public.products INCLUDING ALL);
-    CREATE TABLE price_lists (LIKE public.price_lists INCLUDING ALL);
-    ALTER TABLE price_lists ADD CONSTRAINT price_lists_productId_fkey FOREIGN KEY ("productId") REFERENCES products("id") ON DELETE CASCADE ON UPDATE CASCADE;`,
-  );
+  for (const migration of readdirSync(resolve('prisma/migrations'), {
+    withFileTypes: true,
+  })) {
+    if (
+      migration.isDirectory() &&
+      migration.name < '20261029200000_black_friday_landing_80'
+    ) {
+      cpSync(
+        resolve('prisma/migrations', migration.name),
+        join(migrations, migration.name),
+        { recursive: true },
+      );
+    }
+  }
   const prisma = resolve('node_modules/prisma/build/index.js');
   const prismaOptions = {
     cwd: process.cwd(),
     env: {
-      ...process.env,
+      ...envFor(schema),
       DATABASE_URL: `postgresql://hermes_recovery@127.0.0.1:${port}/postgres?schema=${schema}`,
     },
     encoding: 'utf8',
@@ -233,8 +304,33 @@ test('Prisma applies Black Friday after repair and leaves it inactive', () => {
     [prisma, 'migrate', 'deploy', '--schema', join(temp, 'schema.prisma')],
     prismaOptions,
   );
+  assert.equal(
+    sql(
+      schema,
+      `SELECT count(*) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL;`,
+    ),
+    '26',
+  );
+  sql(
+    schema,
+    `DELETE FROM price_lists WHERE "id"='commercial-price-landing-basic-global-v1';
+     DELETE FROM products WHERE "id"='commercial-product-landing-basic';`,
+  );
+  const unrelatedBefore = sql(
+    schema,
+    `SELECT (SELECT count(*) FROM products WHERE "id" <> 'commercial-product-landing-basic'),
+      (SELECT count(*) FROM price_lists WHERE "id" <> 'commercial-price-landing-basic-global-v1');`,
+  );
   assert.equal(verdict(schema), 'BASE_CATALOG_MISSING');
   file(schema, repair);
+  assert.equal(
+    sql(
+      schema,
+      `SELECT (SELECT count(*) FROM products WHERE "id" <> 'commercial-product-landing-basic'),
+        (SELECT count(*) FROM price_lists WHERE "id" <> 'commercial-price-landing-basic-global-v1');`,
+    ),
+    unrelatedBefore,
+  );
   mkdirSync(campaign);
   copyFileSync(
     resolve(
@@ -250,9 +346,17 @@ test('Prisma applies Black Friday after repair and leaves it inactive', () => {
   assert.equal(
     sql(
       schema,
+      `SELECT count(*) FROM "_prisma_migrations" WHERE finished_at IS NOT NULL;`,
+    ),
+    '27',
+  );
+  assert.equal(
+    sql(
+      schema,
       `SELECT count(*) FROM price_lists WHERE "id"='commercial-price-landing-black-friday-80-global-v1' AND "price"=80.00 AND "isActive"=false AND "validUntil" IS NULL AND "supersedesPriceListId"='commercial-price-landing-basic-global-v1';`,
     ),
     '1',
   );
+  assert.match(file(schema, verify), /BASE_CATALOG_ALREADY_VALID/);
   assert.equal(counts(schema), '1|1');
 });

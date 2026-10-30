@@ -31,8 +31,14 @@ BEGIN
     RAISE EXCEPTION 'BASE_CATALOG_CONFLICT: another global-v1 tariff exists for this product';
   END IF;
   IF EXISTS (SELECT 1 FROM price_lists p WHERE p."id" = 'commercial-price-landing-black-friday-80-global-v1'
-    AND (p."productId" <> 'commercial-product-landing-basic' OR p."supersedesPriceListId" IS DISTINCT FROM 'commercial-price-landing-basic-global-v1' OR p."isActive" = true)) THEN
-    RAISE EXCEPTION 'BASE_CATALOG_CONFLICT: campaign row is incompatible or active';
+    AND (ROW(p."productId", p."name", p."price", p."currency", p."market", p."priceType", p."taxMode", p."taxLabel", p."taxRatePercent", p."scope", p."policyVersion", p."isPromotion", p."supersedesPriceListId", p."validUntil", p."restrictions", p."notes", p."isActive")
+      IS DISTINCT FROM ROW('commercial-product-landing-basic', 'Black Friday — Landing Page', 80.00::numeric, 'USD', NULL::"CommercialMarket", 'FIXED'::"CommercialPriceType", NULL::"CommercialTaxMode", NULL::text, NULL::numeric,
+        'Captación de leads; landing page de una sola sección; diseño responsive para celulares; botón flotante de WhatsApp y llamada directa; formulario de contacto o captura de prospectos; apartado de beneficios del servicio o producto; dominio .com y hosting básico por 1 año; 5 correos corporativos; SEO técnico base; 1 mes de soporte posterior a la entrega.',
+        'black-friday-landing-80-v1', true, 'commercial-price-landing-basic-global-v1', NULL::timestamp,
+        'No incluye tienda online. Impuestos, tiempo de entrega, condiciones de pago, renovaciones posteriores y condiciones de soporte adicionales requieren confirmación.',
+        'Promoción temporal. Activar o desactivar mediante isActive; no inventar fecha de cierre.', false)
+      OR p."validFrom" > clock_timestamp())) THEN
+    RAISE EXCEPTION 'BASE_CATALOG_CONFLICT: campaign row differs from versioned source or is active';
   END IF;
 
   IF NOT EXISTS (SELECT 1 FROM products WHERE "id" = 'commercial-product-landing-basic') THEN
