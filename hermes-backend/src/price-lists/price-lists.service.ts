@@ -38,8 +38,23 @@ export class PriceListsService {
     return priceList;
   }
 
-  async update(id: string, dto: UpdatePriceListDto) {
+  async audit(id: string) {
     await this.findOne(id);
+    return this.prisma.auditLog.findMany({
+      where: { entity: 'price_lists', entityId: id },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+      select: {
+        id: true,
+        action: true,
+        changes: true,
+        createdAt: true,
+        user: { select: { id: true, name: true, email: true } },
+      },
+    });
+  }
+
+  async update(id: string, dto: UpdatePriceListDto, userId: string) {
     const { validFrom, validUntil, ...fields } = dto;
     const data: Prisma.PriceListUncheckedUpdateInput = {
       ...fields,
@@ -48,7 +63,31 @@ export class PriceListsService {
         ? {}
         : { validUntil: validUntil === null ? null : new Date(validUntil) }),
     };
-    return this.prisma.priceList.update({ where: { id }, data });
+    return this.prisma.$transaction(async (tx) => {
+      const previous = await tx.priceList.findUnique({ where: { id } });
+      if (!previous)
+        throw new NotFoundException('Lista de precios no encontrada');
+      const saved = await tx.priceList.update({ where: { id }, data });
+      const changedKeys = Object.keys(dto);
+      const snapshot = (record: Record<string, unknown>) =>
+        Object.fromEntries(changedKeys.map((key) => [key, record[key] ?? null]));
+      await tx.auditLog.create({
+        data: {
+          userId,
+          action: 'PRICE_LIST_UPDATED',
+          entity: 'price_lists',
+          entityId: id,
+          changes: JSON.parse(
+            JSON.stringify({
+              before: snapshot(previous),
+              after: snapshot(saved),
+              result: 'SUCCESS',
+            }),
+          ) as Prisma.InputJsonValue,
+        },
+      });
+      return saved;
+    });
   }
 
   async remove(id: string) {
