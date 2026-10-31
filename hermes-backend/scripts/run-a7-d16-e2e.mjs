@@ -15,7 +15,10 @@ const databaseUrl =
   'postgresql://a7_d16_test:a7_d16_test_only@127.0.0.1:55433/hermes_a7_d16_test?schema=public';
 const redisUrl = 'redis://127.0.0.1:56380/0';
 const compose = 'docker-compose.a7-d16-e2e.yml';
-const artifactDir = resolve('artifacts/a7-d16-e2e');
+const artifactSubdir = process.env.A7_D16_ARTIFACT_SUBDIR || 'a7-d16-e2e';
+if (!/^[a-z0-9][a-z0-9_-]*$/i.test(artifactSubdir))
+  throw new Error('Invalid A7-D16 artifact subdirectory');
+const artifactDir = resolve('artifacts', artifactSubdir);
 mkdirSync(artifactDir, { recursive: true });
 rmSync(`${artifactDir}/jest-results.json`, { force: true });
 rmSync(`${artifactDir}/capacity.json`, { force: true });

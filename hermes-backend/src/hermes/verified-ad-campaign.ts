@@ -22,19 +22,23 @@ export function resolveVerifiedBlackFridayAd(input: {
   };
 }): VerifiedBlackFridayAd | undefined {
   const utcTimestamp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/u;
+  const parseOptionalBound = (value: string): number | undefined => {
+    if (!value) return undefined;
+    if (!utcTimestamp.test(value)) return NaN;
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) &&
+      new Date(parsed).toISOString().startsWith(value.slice(0, 19))
+      ? parsed
+      : NaN;
+  };
+  const start = parseOptionalBound(input.config.startsAt);
+  const end = parseOptionalBound(input.config.endsAt);
   if (
-    !utcTimestamp.test(input.config.startsAt) ||
-    !utcTimestamp.test(input.config.endsAt)
-  )
-    return undefined;
-  const start = Date.parse(input.config.startsAt);
-  const end = Date.parse(input.config.endsAt);
-  if (
-    !Number.isFinite(start) ||
-    !Number.isFinite(end) ||
-    start >= end ||
-    input.now.getTime() < start ||
-    input.now.getTime() >= end
+    Number.isNaN(start) ||
+    Number.isNaN(end) ||
+    (start !== undefined && end !== undefined && start >= end) ||
+    (start !== undefined && input.now.getTime() < start) ||
+    (end !== undefined && input.now.getTime() >= end)
   )
     return undefined;
 
@@ -58,8 +62,8 @@ export function resolveVerifiedBlackFridayAd(input: {
   if (
     occurred === undefined ||
     !Number.isFinite(occurred) ||
-    occurred < start ||
-    occurred >= end ||
+    (start !== undefined && occurred < start) ||
+    (end !== undefined && occurred >= end) ||
     input.now.getTime() - occurred > 7 * 86_400_000
   )
     return undefined;
@@ -77,7 +81,9 @@ export function resolveVerifiedBlackFridayAd(input: {
         }
       : undefined;
   }
-  return input.config.fallbackEnabled
+  return input.config.fallbackEnabled &&
+    start !== undefined &&
+    end !== undefined
     ? {
         policyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
         source: 'VERIFIED_META_AD_FALLBACK',

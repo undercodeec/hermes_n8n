@@ -1,7 +1,7 @@
 import { resolveVerifiedBlackFridayAd } from './verified-ad-campaign';
 
 const config = {
-  sourceIds: 'black-friday-ad-1,black-friday-ad-2',
+  sourceIds: '52583085497631',
   fallbackEnabled: false,
   startsAt: '2026-10-30T00:00:00.000Z',
   endsAt: '2026-11-02T00:00:00.000Z',
@@ -14,10 +14,108 @@ const verified = (sourceId?: string) => ({
 });
 
 describe('verified Black Friday ad campaign', () => {
+  it('recognizes the approved Ad ID with no campaign dates', () => {
+    expect(
+      resolveVerifiedBlackFridayAd({
+        currentMetadata: verified('52583085497631'),
+        currentOccurredAt: now,
+        now,
+        config: { ...config, startsAt: '', endsAt: '' },
+      }),
+    ).toEqual({
+      policyVersion: 'black-friday-landing-80-v1',
+      source: 'SOURCE_ID',
+    });
+    expect(
+      resolveVerifiedBlackFridayAd({
+        currentMetadata: verified('another-ad'),
+        currentOccurredAt: now,
+        now,
+        config: { ...config, startsAt: '', endsAt: '' },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('keeps a seven-day attribution limit without campaign dates', () => {
+    expect(
+      resolveVerifiedBlackFridayAd({
+        conversationMetadata: verified('52583085497631'),
+        conversationCreatedAt: new Date('2026-10-22T12:00:00Z'),
+        now,
+        config: { ...config, startsAt: '', endsAt: '' },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('validates each optional bound and never opens an unbounded fallback', () => {
+    const metadata = verified('52583085497631');
+    const withoutDates = { ...config, startsAt: '', endsAt: '' };
+    expect(
+      resolveVerifiedBlackFridayAd({
+        currentMetadata: metadata,
+        now,
+        config: { ...withoutDates, startsAt: 'not-a-date' },
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveVerifiedBlackFridayAd({
+        currentMetadata: metadata,
+        now,
+        config: { ...withoutDates, startsAt: '2026-11-01T00:00:00Z' },
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveVerifiedBlackFridayAd({
+        currentMetadata: metadata,
+        now,
+        config: { ...withoutDates, endsAt: '2026-10-29T00:00:00Z' },
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveVerifiedBlackFridayAd({
+        currentMetadata: metadata,
+        now,
+        config: { ...withoutDates, startsAt: '2026-10-29T00:00:00Z' },
+      })?.source,
+    ).toBe('SOURCE_ID');
+    expect(
+      resolveVerifiedBlackFridayAd({
+        currentMetadata: metadata,
+        now,
+        config: { ...withoutDates, endsAt: '2026-11-01T00:00:00Z' },
+      })?.source,
+    ).toBe('SOURCE_ID');
+    expect(
+      resolveVerifiedBlackFridayAd({
+        currentMetadata: metadata,
+        now,
+        config: {
+          ...withoutDates,
+          startsAt: '2026-10-30T12:00:00Z',
+          endsAt: '2026-10-30T12:00:00Z',
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveVerifiedBlackFridayAd({
+        currentMetadata: metadata,
+        now,
+        config: { ...withoutDates, startsAt: '2026-02-30T00:00:00Z' },
+      }),
+    ).toBeUndefined();
+    expect(
+      resolveVerifiedBlackFridayAd({
+        currentMetadata: verified(),
+        now,
+        config: { ...withoutDates, fallbackEnabled: true },
+      }),
+    ).toBeUndefined();
+  });
+
   it('maps only an allowlisted Meta source ID', () => {
     expect(
       resolveVerifiedBlackFridayAd({
-        currentMetadata: verified('black-friday-ad-1'),
+        currentMetadata: verified('52583085497631'),
         now,
         config,
       }),
@@ -75,14 +173,14 @@ describe('verified Black Friday ad campaign', () => {
   it('expires the campaign and never revives an old ad attribution', () => {
     expect(
       resolveVerifiedBlackFridayAd({
-        currentMetadata: verified('black-friday-ad-1'),
+        currentMetadata: verified('52583085497631'),
         now: new Date('2026-11-03T00:00:00Z'),
         config,
       }),
     ).toBeUndefined();
     expect(
       resolveVerifiedBlackFridayAd({
-        conversationMetadata: verified('black-friday-ad-1'),
+        conversationMetadata: verified('52583085497631'),
         conversationCreatedAt: new Date('2026-10-20T00:00:00Z'),
         now,
         config,
@@ -90,7 +188,7 @@ describe('verified Black Friday ad campaign', () => {
     ).toBeUndefined();
     expect(
       resolveVerifiedBlackFridayAd({
-        conversationMetadata: verified('black-friday-ad-1'),
+        conversationMetadata: verified('52583085497631'),
         conversationCreatedAt: now,
         now,
         config,
@@ -98,7 +196,7 @@ describe('verified Black Friday ad campaign', () => {
     ).toBe('SOURCE_ID');
     expect(
       resolveVerifiedBlackFridayAd({
-        conversationMetadata: verified('black-friday-ad-1'),
+        conversationMetadata: verified('52583085497631'),
         conversationCreatedAt: new Date('2026-10-20T12:00:00Z'),
         now,
         config: { ...config, startsAt: '2026-10-01T00:00:00Z' },
@@ -107,7 +205,7 @@ describe('verified Black Friday ad campaign', () => {
   });
 
   it('uses the latest verified referral in an existing conversation', () => {
-    const conversationMetadata = verified('black-friday-ad-1');
+    const conversationMetadata = verified('52583085497631');
     expect(
       resolveVerifiedBlackFridayAd({
         conversationMetadata,
@@ -122,7 +220,7 @@ describe('verified Black Friday ad campaign', () => {
       resolveVerifiedBlackFridayAd({
         conversationMetadata: { pilotOrigin: 'unknown' },
         conversationCreatedAt: new Date('2026-10-20T00:00:00Z'),
-        priorMetadata: verified('black-friday-ad-2'),
+        priorMetadata: verified('52583085497631'),
         priorOccurredAt: now,
         now,
         config,

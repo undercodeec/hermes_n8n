@@ -38,6 +38,7 @@ const promotion = {
 };
 
 function authority(active: boolean) {
+  let promotionActive = active;
   const findMany = jest.fn(
     (input: { where: { serviceCode: { in: string[] } } }) => {
       const { where } = input;
@@ -48,7 +49,7 @@ function authority(active: boolean) {
             name: 'Landing Page',
             serviceCode: 'LANDING_PAGE',
             metadata: {},
-            priceLists: active ? [base, promotion] : [base],
+            priceLists: promotionActive ? [base, promotion] : [base],
           },
         ];
       return [];
@@ -59,10 +60,37 @@ function authority(active: boolean) {
       product: { findMany },
     } as unknown as PrismaService),
     findMany,
+    setPromotionActive: (value: boolean) => {
+      promotionActive = value;
+    },
   };
 }
 
 describe('Commercial Authority with verified ad context', () => {
+  it('reads CRM activation on every turn without changing the base tariff', async () => {
+    const { service, findMany, setPromotionActive } = authority(true);
+    const input = {
+      customerMessage: 'Hola, quiero más información',
+      verifiedAdPolicyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+      priceRequested: false,
+      now,
+    };
+    const first = await service.snapshot(input);
+    expect(first.offers.map((offer) => offer.amount)).toEqual(['80.00']);
+    setPromotionActive(false);
+    const second = await service.snapshot(input);
+    expect(second.offers).toEqual([]);
+    expect(commercialSnapshotKnowledge(second).join(' ')).not.toContain(
+      'USD $80',
+    );
+    setPromotionActive(true);
+    const third = await service.snapshot(input);
+    expect(third.offers.map((offer) => offer.amount)).toEqual(['80.00']);
+    expect(findMany).toHaveBeenCalledTimes(3);
+    expect(base.price.toString()).toBe('250');
+    expect(promotion.price.toString()).toBe('80');
+  });
+
   it('selects the active authorized Black Friday tariff for a generic incident message', async () => {
     const { service } = authority(true);
     const snapshot = await service.snapshot({
@@ -136,6 +164,20 @@ describe('Commercial Authority with verified ad context', () => {
       priceRequested: false,
       now,
     });
+    expect(snapshot.offers.some((offer) => offer.promotion)).toBe(false);
+  });
+
+  it('keeps the established landing project after promotional attribution expires', async () => {
+    const { service } = authority(true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Tengo una barbería',
+      productOfInterest: 'Landing Page',
+      recentCustomerMessages: ['Vi la promoción Black Friday'],
+      ignoreHistoricalPromotion: true,
+      priceRequested: false,
+      now,
+    });
+    expect(snapshot.relevantServiceCodes).toEqual(['LANDING_PAGE']);
     expect(snapshot.offers.some((offer) => offer.promotion)).toBe(false);
   });
 });
