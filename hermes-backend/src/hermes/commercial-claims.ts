@@ -1,10 +1,15 @@
-import { CommercialPriceType, CommercialTaxMode } from '@prisma/client';
+import {
+  CommercialMarket,
+  CommercialPriceType,
+  CommercialTaxMode,
+} from '@prisma/client';
 import type {
   AuthorizedOffer,
   CommercialSnapshot,
 } from './commercial-authority.service';
 import { requestedSolutionKinds } from './commercial-catalog';
 import { monetaryValuesIn } from './monetary-values';
+import { BLACK_FRIDAY_LANDING_POLICY_VERSION } from './black-friday-landing';
 import {
   commercialClauses,
   joinReviewedClauses,
@@ -18,11 +23,44 @@ function normalized(value: string): string {
     .replace(/[\u0300-\u036f]/g, '');
 }
 
+function dualCampaignOffers(
+  offers: AuthorizedOffer[],
+): { eur: AuthorizedOffer; usd: AuthorizedOffer } | undefined {
+  if (
+    offers.length !== 2 ||
+    offers.some(
+      (offer) =>
+        !offer.promotion ||
+        offer.policyVersion !== BLACK_FRIDAY_LANDING_POLICY_VERSION ||
+        offer.priceType !== CommercialPriceType.FIXED ||
+        !offer.amount,
+    )
+  )
+    return undefined;
+  const eur = offers.find((offer) => offer.currency === 'EUR');
+  const usd = offers.find((offer) => offer.currency === 'USD');
+  return eur?.market === CommercialMarket.ES &&
+    usd?.market === CommercialMarket.EC
+    ? { eur, usd }
+    : undefined;
+}
+
 function referencedOffer(
   sentence: string,
   priceIndex: number,
   offers: AuthorizedOffer[],
+  currency?: 'USD' | 'EUR',
 ): AuthorizedOffer | undefined {
+  const dual = dualCampaignOffers(offers);
+  if (dual && currency) {
+    const mentionedServices = requestedSolutionKinds(sentence, false);
+    if (
+      /\btienda\b/.test(normalized(sentence)) ||
+      (mentionedServices.length && !mentionedServices.includes('LANDING_PAGE'))
+    )
+      return undefined;
+    return currency === 'EUR' ? dual.eur : dual.usd;
+  }
   const preceding = normalized(sentence.slice(0, priceIndex));
   const named = offers
     .map((offer) => ({
@@ -91,7 +129,12 @@ export function reviewCommercialClaims(
       const renewalOffer = snapshot.offers.find(
         (offer) => offer.id === snapshot.recommendedOfferId,
       );
-      const offer = referencedOffer(sentence, token.index, snapshot.offers);
+      const offer = referencedOffer(
+        sentence,
+        token.index,
+        snapshot.offers,
+        token.currency,
+      );
       const { amount, currency } = token;
       if (
         renewal &&
@@ -250,6 +293,10 @@ export function answerExplicitPriceIfMissing(
     return '¿El proyecto sería para Ecuador o España?';
   if (snapshot.needsCampaignTariffConfirmation)
     return 'Necesito verificar la tarifa de Black Friday para la moneda o el país indicado con el equipo comercial.';
+  const dualCampaign = dualCampaignOffers(snapshot.offers);
+  if (dualCampaign) {
+    return `La promoción ${dualCampaign.eur.name} cuesta €${dualCampaign.eur.amount} en España o USD $${dualCampaign.usd.amount} en Ecuador. Es una página de una sola sección para presentar su negocio y captar prospectos.`;
+  }
   if (hasAuthorizedMonetaryValue(response, snapshot)) return response;
   const offer =
     snapshot.offers.find((item) => item.id === snapshot.recommendedOfferId) ??

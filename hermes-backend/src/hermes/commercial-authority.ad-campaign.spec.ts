@@ -9,7 +9,10 @@ import {
   commercialSnapshotKnowledge,
 } from './commercial-authority.service';
 import { BLACK_FRIDAY_LANDING_POLICY_VERSION } from './black-friday-landing';
-import { answerExplicitPriceIfMissing } from './commercial-claims';
+import {
+  answerExplicitPriceIfMissing,
+  reviewCommercialClaims,
+} from './commercial-claims';
 import { PrismaService } from '../prisma/prisma.service';
 
 const now = new Date('2026-10-30T12:00:00Z');
@@ -42,6 +45,10 @@ const promotion = {
   scope:
     'Captación de leads; una sección; móvil; WhatsApp y llamada; formulario; beneficios; dominio .com y hosting básico por un año; cinco correos corporativos; SEO técnico base; un mes de soporte',
 };
+const ecuadorPromotion = {
+  ...promotion,
+  market: CommercialMarket.EC,
+};
 const spanishPromotion = {
   ...promotion,
   id: 'commercial-price-landing-black-friday-80-es-v1',
@@ -65,7 +72,9 @@ function authority(active: boolean, dualMarket = false, spanishOnly = false) {
             priceLists: promotionActive
               ? [
                   base,
-                  ...(spanishOnly ? [] : [promotion]),
+                  ...(spanishOnly
+                    ? []
+                    : [dualMarket ? ecuadorPromotion : promotion]),
                   ...(dualMarket || spanishOnly ? [spanishPromotion] : []),
                 ]
               : [base],
@@ -205,7 +214,7 @@ describe('Commercial Authority with verified ad context', () => {
     ).toMatch(/verificar la tarifa de Black Friday/iu);
   });
 
-  it('asks for the market when both campaign currencies are active and neither is known', async () => {
+  it('shows both approved campaign currencies when neither currency nor market is known', async () => {
     const { service } = authority(true, true);
     const snapshot = await service.snapshot({
       customerMessage: 'Hola, quiero información de Black Friday',
@@ -213,17 +222,21 @@ describe('Commercial Authority with verified ad context', () => {
       priceRequested: false,
       now,
     });
-    expect(snapshot.offers).toEqual([]);
-    expect(snapshot.needsMarketClarification).toBe(true);
-    expect(commercialSnapshotKnowledge(snapshot).join(' ')).toMatch(
-      /Ecuador o España/iu,
-    );
+    expect(snapshot.offers).toEqual([
+      expect.objectContaining({ id: promotion.id, currency: 'USD' }),
+      expect.objectContaining({ id: spanishPromotion.id, currency: 'EUR' }),
+    ]);
+    expect(snapshot.needsMarketClarification).toBe(false);
+    const answer = answerExplicitPriceIfMissing('', snapshot, true);
+    expect(answer).toMatch(/€80\.00.*USD \$80\.00/iu);
+    expect(answer).not.toMatch(/¿El proyecto sería para Ecuador o España/iu);
+    expect(reviewCommercialClaims(answer, snapshot).reasons).toEqual([]);
     expect(commercialSnapshotKnowledge(snapshot).join(' ')).not.toMatch(
       /no está activa/iu,
     );
   });
 
-  it('asks for the market when only a market-specific campaign offer is active', async () => {
+  it('labels the market when only one specific campaign offer is active', async () => {
     const { service } = authority(true, false, true);
     const snapshot = await service.snapshot({
       customerMessage: 'Hola, quiero información de Black Friday',
@@ -231,8 +244,10 @@ describe('Commercial Authority with verified ad context', () => {
       priceRequested: false,
       now,
     });
-    expect(snapshot.offers).toEqual([]);
-    expect(snapshot.needsMarketClarification).toBe(true);
+    expect(snapshot.offers).toEqual([
+      expect.objectContaining({ id: spanishPromotion.id, currency: 'EUR' }),
+    ]);
+    expect(snapshot.needsMarketClarification).toBe(false);
   });
 
   it('does not substitute the landing for an explicit online store', async () => {

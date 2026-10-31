@@ -127,6 +127,9 @@ describe('NousHermesTransport', () => {
       /consulta general[^.]*un solo mensaje breve/i,
     );
     expect(request.messages[0].content).toMatch(/euros.*EUR.*d[oó]lares.*USD/i);
+    expect(request.messages[0].content).toMatch(
+      /muestra ambas.*sin preguntarle en qu[eé] pa[ií]s/iu,
+    );
     expect(request.messages[0].content).not.toContain('USD $80');
     await configuredTransport().execute(baseInput());
     const ordinary = post.mock.calls[1][1] as {

@@ -3310,12 +3310,24 @@ describe('AutoReplyService', () => {
     },
   );
 
-  it('asks for the country instead of quoting a currency for a generic dual-market ad enquiry', async () => {
+  it('shows both approved currencies without asking the country for a generic dual-market ad enquiry', async () => {
+    const usd = {
+      ...approvedCampaignOffer(),
+      market: CommercialMarket.EC,
+      marketScope: 'MARKET' as const,
+    };
+    const eur = {
+      ...approvedCampaignOffer(),
+      id: 'commercial-price-landing-black-friday-80-es-v1',
+      market: CommercialMarket.ES,
+      marketScope: 'MARKET' as const,
+      currency: 'EUR' as const,
+    };
     (authority.snapshot as jest.Mock).mockResolvedValueOnce({
       marketSource: 'UNKNOWN',
       relevantServiceCodes: ['LANDING_PAGE'],
-      offers: [],
-      needsMarketClarification: true,
+      offers: [usd, eur],
+      needsMarketClarification: false,
     });
     const harness = setupProcessHarness({
       engineId: 'nous_hermes',
@@ -3338,9 +3350,8 @@ describe('AutoReplyService', () => {
     });
     const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
     expect(parts).toHaveLength(1);
-    expect(parts[0].content).toMatch(
-      /^Hola, Ana\. ¿El proyecto sería para Ecuador o España\?$/u,
-    );
+    expect(parts[0].content).toMatch(/€80\.00.*USD \$80\.00/iu);
+    expect(parts[0].content).not.toMatch(/¿El proyecto sería/iu);
   });
 
   it.each([null, 'Cliente', '593991234567'])(

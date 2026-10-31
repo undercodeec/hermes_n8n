@@ -320,17 +320,10 @@ export class CommercialAuthorityService {
             this.isEligible(price),
         ),
       );
-      result.needsMarketClarification =
-        blackFridayRequested &&
-        !result.offers.length &&
-        activeCampaignPrices.some((price) => price.market !== null) &&
-        (!requestedCurrency || requestedCurrency === 'AMBIGUOUS') &&
-        (!resolution.market || requestedCurrency === 'AMBIGUOUS');
       result.needsCampaignTariffConfirmation =
         blackFridayRequested &&
         !result.offers.length &&
-        activeCampaignPrices.length > 0 &&
-        !result.needsMarketClarification;
+        activeCampaignPrices.length > 0;
       if (
         blackFridayRequested &&
         !result.offers.length &&
@@ -368,9 +361,10 @@ export class CommercialAuthorityService {
       const named = ordered.find((offer) =>
         normalize(scopeText).includes(normalize(offer.name)),
       );
-      result.recommendedOfferId = (
-        named ?? ordered[advanced ? 2 : growth ? 1 : 0]
-      )?.id;
+      result.recommendedOfferId =
+        blackFridayRequested && ordered.length > 1
+          ? undefined
+          : (named ?? ordered[advanced ? 2 : growth ? 1 : 0])?.id;
       const collectionRequest =
         /\b(?:agendar|agendamiento de|programar|coordinar|reservar|solicitar)\s+(?:(?:un|una|el|la|los|las)\s+)?(?:retiros?|recogidas?|recoleccion(?:es)?)\b(?!\s+de\s+efectivo)/;
       const scopeClauses = scopeText.split(
@@ -440,7 +434,8 @@ export class CommercialAuthorityService {
     blackFridayRequested = false,
     requestedCurrency?: 'USD' | 'EUR' | 'AMBIGUOUS',
   ): AuthorizedOffer[] {
-    if (!product.serviceCode) return [];
+    const serviceCode = product.serviceCode;
+    if (!serviceCode) return [];
     const eligible = product.priceLists.filter(
       (price) =>
         this.isEligible(price) &&
@@ -459,26 +454,27 @@ export class CommercialAuthorityService {
             !base.isPromotion && base.id === price.supersedesPriceListId,
         ),
     );
-    const matchedCampaign = requestedCurrency
-      ? requestedCurrency === 'AMBIGUOUS'
-        ? []
-        : campaignPromotions.filter(
+    const matchedCampaign =
+      requestedCurrency && requestedCurrency !== 'AMBIGUOUS'
+        ? campaignPromotions.filter(
             (price) => price.currency === requestedCurrency,
           )
-      : market
-        ? campaignPromotions.filter(
-            (price) =>
-              price.market === market ||
-              (market === CommercialMarket.EC &&
-                price.market === null &&
-                price.currency === 'USD'),
-          )
-        : campaignPromotions;
+        : market && requestedCurrency !== 'AMBIGUOUS'
+          ? campaignPromotions.filter(
+              (price) =>
+                price.market === market ||
+                (market === CommercialMarket.EC &&
+                  price.market === null &&
+                  price.currency === 'USD'),
+            )
+          : campaignPromotions;
     const selectedCampaign =
-      matchedCampaign.length === 1 &&
-      (requestedCurrency || market || matchedCampaign[0].market === null)
-        ? matchedCampaign[0]
-        : undefined;
+      matchedCampaign.length === 1 ||
+      (matchedCampaign.length === 2 &&
+        new Set(matchedCampaign.map((price) => price.currency)).size === 2 &&
+        (!market || requestedCurrency === 'AMBIGUOUS'))
+        ? matchedCampaign
+        : [];
     const marketSpecific = market
       ? eligible.filter((price) => price.market === market)
       : [];
@@ -488,18 +484,26 @@ export class CommercialAuthorityService {
     const base = applicable.filter((price) => !price.isPromotion);
     const promotion = applicable.filter((price) => price.isPromotion);
     let selected: (typeof eligible)[number] | undefined;
-    if (blackFridayRequested) {
-      selected = selectedCampaign;
-    } else if (
+    if (
+      !blackFridayRequested &&
       promotion.length === 1 &&
       base.length === 1 &&
       promotion[0].supersedesPriceListId === base[0].id
     ) {
       selected = promotion[0];
-    } else if (promotion.length === 0 && base.length === 1) {
+    } else if (
+      !blackFridayRequested &&
+      promotion.length === 0 &&
+      base.length === 1
+    ) {
       selected = base[0];
     }
-    if (!selected) return [];
+    const selectedPrices = blackFridayRequested
+      ? selectedCampaign
+      : selected
+        ? [selected]
+        : [];
+    if (!selectedPrices.length) return [];
     const metadata =
       product.metadata &&
       typeof product.metadata === 'object' &&
@@ -512,44 +516,39 @@ export class CommercialAuthorityService {
       !Array.isArray(metadata.commercialTerms)
         ? (metadata.commercialTerms as Record<string, unknown>)
         : {};
-    return [
-      {
-        id: selected.id,
-        name:
-          selected.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION
-            ? selected.name
-            : product.name,
-        serviceCode: product.serviceCode,
-        ...(selected.market ? { market: selected.market } : {}),
-        marketScope: selected.market ? 'MARKET' : 'GLOBAL',
-        priceType: selected.priceType!,
-        ...(selected.price ? { amount: selected.price.toFixed(2) } : {}),
-        currency: selected.currency as 'USD' | 'EUR',
-        ...(selected.taxMode ? { taxMode: selected.taxMode } : {}),
-        ...(selected.taxLabel ? { taxLabel: selected.taxLabel } : {}),
-        ...(selected.taxRatePercent
-          ? { taxRatePercent: selected.taxRatePercent.toFixed(2) }
-          : {}),
-        scope: selected.scope!.trim(),
-        ...(selected.restrictions
-          ? { restrictions: selected.restrictions }
-          : {}),
-        policyVersion: selected.policyVersion!.trim(),
-        promotion: selected.isPromotion,
-        ...(selected.policyVersion !== BLACK_FRIDAY_LANDING_POLICY_VERSION &&
-        (terms.renewalUsdPerYear === 40 || terms.renewalUsdPerYear === 80)
-          ? { renewalUsdPerYear: terms.renewalUsdPerYear }
-          : {}),
-        ...(selected.policyVersion !== BLACK_FRIDAY_LANDING_POLICY_VERSION &&
-        (terms.estimatedBusinessDays === 10 ||
-          terms.estimatedBusinessDays === 20)
-          ? { estimatedBusinessDays: terms.estimatedBusinessDays }
-          : {}),
-        ...(selected.validUntil
-          ? { validUntil: selected.validUntil.toISOString() }
-          : {}),
-      },
-    ];
+    return selectedPrices.map((selected) => ({
+      id: selected.id,
+      name:
+        selected.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION
+          ? selected.name
+          : product.name,
+      serviceCode,
+      ...(selected.market ? { market: selected.market } : {}),
+      marketScope: selected.market ? 'MARKET' : 'GLOBAL',
+      priceType: selected.priceType!,
+      ...(selected.price ? { amount: selected.price.toFixed(2) } : {}),
+      currency: selected.currency as 'USD' | 'EUR',
+      ...(selected.taxMode ? { taxMode: selected.taxMode } : {}),
+      ...(selected.taxLabel ? { taxLabel: selected.taxLabel } : {}),
+      ...(selected.taxRatePercent
+        ? { taxRatePercent: selected.taxRatePercent.toFixed(2) }
+        : {}),
+      scope: selected.scope!.trim(),
+      ...(selected.restrictions ? { restrictions: selected.restrictions } : {}),
+      policyVersion: selected.policyVersion!.trim(),
+      promotion: selected.isPromotion,
+      ...(selected.policyVersion !== BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+      (terms.renewalUsdPerYear === 40 || terms.renewalUsdPerYear === 80)
+        ? { renewalUsdPerYear: terms.renewalUsdPerYear }
+        : {}),
+      ...(selected.policyVersion !== BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+      (terms.estimatedBusinessDays === 10 || terms.estimatedBusinessDays === 20)
+        ? { estimatedBusinessDays: terms.estimatedBusinessDays }
+        : {}),
+      ...(selected.validUntil
+        ? { validUntil: selected.validUntil.toISOString() }
+        : {}),
+    }));
   }
 
   private isEligible(price: ProductWithPrices['priceLists'][number]): boolean {
@@ -604,6 +603,21 @@ export function commercialSnapshotKnowledge(
       offer.promotion,
   );
   if (campaignOffer) {
+    if (
+      snapshot.offers.length === 2 &&
+      snapshot.offers.some(
+        (offer) =>
+          offer.currency === 'EUR' && offer.market === CommercialMarket.ES,
+      ) &&
+      snapshot.offers.some(
+        (offer) =>
+          offer.currency === 'USD' && offer.market === CommercialMarket.EC,
+      )
+    ) {
+      offerKnowledge.push(
+        'Se seleccionaron las dos tarifas Black Friday aprobadas. Preséntalas en un solo mensaje breve: EUR para España y USD para Ecuador. No preguntes al cliente en qué país será el proyecto.',
+      );
+    }
     offerKnowledge.push(
       'La oferta Black Friday seleccionada en CRM es una landing de una sola sección para presentar un negocio, producto o servicio y captar prospectos. El precio y la moneda autorizados constan exclusivamente en el objeto CRM_APPROVED_PRICE_LIST anterior. Si preguntan qué incluye, enumera las diez características confirmadas en scope. Si preguntan solo por una característica, responde solo esa. Adapta la explicación al negocio conocido y pregunta por su actividad cuando sea útil. No es una tienda online. No afirmes impuestos, plazo de entrega, revisiones, pago, fecha de cierre, renovaciones ni resultados garantizados; un asesor puede confirmar condiciones no documentadas.',
     );

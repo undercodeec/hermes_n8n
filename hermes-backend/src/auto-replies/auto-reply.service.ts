@@ -1358,13 +1358,22 @@ export class AutoReplyService {
       policy.guidance.priceAnswerRequired,
     );
     if (initialCampaignInquiry && !response.diagnostic) {
-      const campaignOffer = commercialSnapshot.offers.find(
+      const campaignOffers = commercialSnapshot.offers.filter(
         (offer) =>
           offer.promotion &&
           offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION &&
           offer.priceType !== 'QUOTE_REQUIRED' &&
           Boolean(offer.amount),
       );
+      const campaignOffer = campaignOffers[0];
+      const dualCurrencyCampaign =
+        campaignOffers.length === 2 &&
+        campaignOffers.some(
+          (offer) => offer.currency === 'EUR' && offer.market === 'ES',
+        ) &&
+        campaignOffers.some(
+          (offer) => offer.currency === 'USD' && offer.market === 'EC',
+        );
       const scopeItems =
         campaignOffer?.scope
           .split(';')
@@ -1383,7 +1392,7 @@ export class AutoReplyService {
         /¿[^?]+\?/u.test(response.response) &&
         !/¿(?:en qu[eé]|qu[eé] servicio)\b[^?]*\?/iu.test(response.response) &&
         repeatedScopeItems < 4;
-      if (campaignOffer && !usefulAnswer) {
+      if (campaignOffer && !usefulAnswer && !dualCurrencyCampaign) {
         const name = /black friday/iu.test(campaignOffer.name)
           ? campaignOffer.name
           : `Black Friday ${campaignOffer.name}`;
