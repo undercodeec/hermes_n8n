@@ -81,21 +81,55 @@ describeDatabase(
     };
     function applySql(schema: string, sql: string): void {
       const url = new URL(databaseUrl!);
+      const mode = process.env.CALENDAR_TEST_PSQL_MODE;
+      if (mode && mode !== 'docker-integration-gate')
+        throw new Error('Unsupported calendar psql mode');
+      const dockerProject = process.env.CALENDAR_TEST_COMPOSE_PROJECT;
+      if (
+        mode === 'docker-integration-gate' &&
+        (url.hostname !== '127.0.0.1' ||
+          url.port !== '55432' ||
+          url.pathname !== '/hermes_learning_test' ||
+          url.username !== 'learning_test' ||
+          !/^hermes-integration-gate-\d+$/u.test(dockerProject ?? ''))
+      )
+        throw new Error(
+          'Calendar container psql requires the exact isolated gate',
+        );
+      const dockerMode = mode === 'docker-integration-gate';
       const result = spawnSync(
-        psql,
-        [
-          '-h',
-          url.hostname,
-          '-p',
-          url.port || '5432',
-          '-U',
-          decodeURIComponent(url.username),
-          '-d',
-          url.pathname.slice(1),
-          '--no-password',
-          '-v',
-          'ON_ERROR_STOP=1',
-        ],
+        dockerMode ? 'docker' : psql,
+        dockerMode
+          ? [
+              'compose',
+              '-f',
+              join(__dirname, '../docker-compose.integration-gate.yml'),
+              '-p',
+              dockerProject!,
+              'exec',
+              '-T',
+              'postgres-main',
+              'psql',
+              '-U',
+              decodeURIComponent(url.username),
+              '-d',
+              url.pathname.slice(1),
+              '-v',
+              'ON_ERROR_STOP=1',
+            ]
+          : [
+              '-h',
+              url.hostname,
+              '-p',
+              url.port || '5432',
+              '-U',
+              decodeURIComponent(url.username),
+              '-d',
+              url.pathname.slice(1),
+              '--no-password',
+              '-v',
+              'ON_ERROR_STOP=1',
+            ],
         {
           encoding: 'utf8',
           windowsHide: true,
@@ -105,7 +139,7 @@ describeDatabase(
       );
       if (result.status !== 0)
         throw new Error(
-          `Temporary-schema migration failed: ${result.stderr?.slice(0, 1000)}`,
+          `Temporary-schema migration failed: ${result.error?.message ?? result.stderr?.slice(0, 1000) ?? result.stdout?.slice(0, 1000) ?? `psql exited ${result.status}`}`,
         );
     }
     beforeAll(async () => {
