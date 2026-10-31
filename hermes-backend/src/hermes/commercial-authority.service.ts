@@ -10,6 +10,7 @@ import { requestedSolutionKinds } from './commercial-catalog';
 import {
   BLACK_FRIDAY_LANDING_POLICY_VERSION,
   recognizesBlackFridayLanding,
+  requestsAnotherService,
 } from './black-friday-landing';
 import type { CommercialProfile } from './dto/hermes-request.dto';
 
@@ -140,6 +141,10 @@ export class CommercialAuthorityService {
     productOfInterest?: string;
     recentCustomerMessages?: string[];
     priceRequested: boolean;
+    /** Verified, time-bound ad mapping. Never populated from customer text. */
+    verifiedAdPolicyVersion?: typeof BLACK_FRIDAY_LANDING_POLICY_VERSION;
+    /** A newer verified referral supersedes older promotional text. */
+    ignoreHistoricalPromotion?: boolean;
     now?: Date;
   }): Promise<CommercialSnapshot> {
     const resolution = resolveCommercialMarket(input);
@@ -151,10 +156,16 @@ export class CommercialAuthorityService {
     ]
       .filter(Boolean)
       .join(' ');
-    const blackFridayRequested = recognizesBlackFridayLanding(
+    const explicitDifferentService = requestsAnotherService(
       input.customerMessage,
-      input.recentCustomerMessages,
     );
+    const blackFridayRequested =
+      !explicitDifferentService &&
+      (recognizesBlackFridayLanding(
+        input.customerMessage,
+        input.ignoreHistoricalPromotion ? [] : input.recentCustomerMessages,
+      ) ||
+        input.verifiedAdPolicyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION);
     const currentServiceCodes: string[] = blackFridayRequested
       ? ['LANDING_PAGE']
       : requestedSolutionKinds(input.customerMessage, false);
@@ -501,17 +512,34 @@ export function commercialSnapshotKnowledge(
       ...offer,
     }),
   );
-  if (
-    snapshot.offers.some(
-      (offer) =>
-        offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION &&
-        offer.promotion,
-    )
-  ) {
+  const campaignOffer = snapshot.offers.find(
+    (offer) =>
+      offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+      offer.promotion,
+  );
+  if (campaignOffer) {
     offerKnowledge.push(
-      'Black Friday — Landing Page USD $80: es una página de una sola sección para presentar un negocio, producto o servicio y facilitar la captación de prospectos. Si preguntan qué incluye, enumera las diez características confirmadas en scope. Si preguntan solo por una característica, responde solo esa. Adapta la explicación al negocio conocido y pregunta por su actividad cuando sea útil. No es una tienda online. No afirmes impuestos, plazo de entrega, revisiones, pago, fecha de cierre, renovaciones ni resultados garantizados; un asesor puede confirmar condiciones no documentadas.',
-      'Formulaciones oficiales equivalentes de las prestaciones: incluye cinco correos corporativos; incluye dominio .com durante un año; incluye hosting básico durante un año; incluye configuración SEO técnica básica; incluye un mes de soporte posterior a la entrega.',
+      'La oferta Black Friday seleccionada en CRM es una landing de una sola sección para presentar un negocio, producto o servicio y captar prospectos. El precio y la moneda autorizados constan exclusivamente en el objeto CRM_APPROVED_PRICE_LIST anterior. Si preguntan qué incluye, enumera las diez características confirmadas en scope. Si preguntan solo por una característica, responde solo esa. Adapta la explicación al negocio conocido y pregunta por su actividad cuando sea útil. No es una tienda online. No afirmes impuestos, plazo de entrega, revisiones, pago, fecha de cierre, renovaciones ni resultados garantizados; un asesor puede confirmar condiciones no documentadas.',
     );
+    const scope = normalize(campaignOffer.scope);
+    const equivalentTerms = [
+      /\b5 correos corporativos\b/u.test(scope)
+        ? 'incluye cinco correos corporativos'
+        : undefined,
+      /\bdominio \.com y hosting basico por 1 ano\b/u.test(scope)
+        ? 'incluye dominio .com durante un año; incluye hosting básico durante un año'
+        : undefined,
+      /\bseo tecnico base\b/u.test(scope)
+        ? 'incluye configuración SEO técnica básica'
+        : undefined,
+      /\b1 mes de soporte posterior a la entrega\b/u.test(scope)
+        ? 'incluye un mes de soporte posterior a la entrega'
+        : undefined,
+    ].filter(Boolean);
+    if (equivalentTerms.length)
+      offerKnowledge.push(
+        `Formulaciones equivalentes respaldadas por el scope vigente: ${equivalentTerms.join('; ')}.`,
+      );
   }
   const recommended = snapshot.offers.find(
     (offer) => offer.id === snapshot.recommendedOfferId,

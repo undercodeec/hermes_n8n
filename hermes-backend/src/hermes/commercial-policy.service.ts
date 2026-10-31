@@ -49,13 +49,22 @@ export function requestsCommercialContact(content: string): boolean {
       .replace(/\s+/g, ' ')
       .trim(),
   );
-  if (
-    /\b(?:no quiero|no necesito|no deseo|sin)\b.{0,50}\b(?:hablar|conversar|comunicarme|contactar|llamar)\b.{0,40}\b(?:persona|humano|asesor|agente|ventas)\b/.test(
-      normalized,
+  const clauses = normalized
+    .split(/[.,;!?]|\bpero\b/u)
+    .map((clause) => clause.trim())
+    .filter(
+      (clause) =>
+        !/\b(?:no quiero|no necesito|no deseo|sin)\b.{0,50}\b(?:hablar|conversar|comunicarme|contactar|llamar)\b.{0,40}\b(?:persona|humano|asesor|agente|ventas)\b/u.test(
+          clause,
+        ),
     )
-  )
-    return false;
-  return [
+    .map((clause) =>
+      clause.replace(
+        /\b(?:no|ya no)\s+(?:quiero|deseo|necesito)\s+(?:contratar|avanzar)\b/gu,
+        '',
+      ),
+    );
+  const requests = [
     /\b(hablar|conversar|comunicarme) con (una persona|alguien|un humano|un asesor|un comercial)\b/,
     /\b(asesor|agente|persona) (real|humano)\b/,
     /\b(?:hablar|conversar|comunicarme|pasarme|pasame)\s+(?:con|a)\s+(?:un |una |al? )?(?:asesor|asesora|agente|persona|ventas|comercial)\b/,
@@ -64,7 +73,10 @@ export function requestsCommercialContact(content: string): boolean {
     /\b(?:cotizacion|presupuesto)\b.{0,35}\b(?:con alguien|con un asesor|con una asesora|con ventas)\b/,
     /\b(?:quiero|necesito|podrian|pueden|puede)\s+(?:que\s+)?(?:me\s+)?(?:contacten|contactar|llamen|llamar|asesoren)\b/,
     /\b(?:con quien puedo cerrar|quiero avanzar|quiero contratar|como podemos empezar)\b/,
-  ].some((pattern) => pattern.test(normalized));
+  ];
+  return clauses.some((clause) =>
+    requests.some((pattern) => pattern.test(clause)),
+  );
 }
 
 /** Escalation requests about our service, rather than general negative sentiment. */

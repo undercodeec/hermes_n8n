@@ -123,6 +123,7 @@ describe('NousHermesTransport', () => {
       /Black Friday.*diez caracter[ií]sticas/i,
     );
     expect(request.messages[0].content).toMatch(/consulta general.*precio/i);
+    expect(request.messages[0].content).not.toContain('USD $80');
     await configuredTransport().execute(baseInput());
     const ordinary = post.mock.calls[1][1] as {
       messages: Array<{ role: string; content: string }>;

@@ -1,5 +1,6 @@
 import type { HermesDiagnostic } from '../hermes-diagnostics';
 import type { CommercialSnapshot } from '../commercial-authority.service';
+import type { VerifiedBlackFridayAd } from '../verified-ad-campaign';
 import type { ApprovedLearning } from '../../learning/learning-retrieval.service';
 import type { F3CallTrace, F3GeminiBudget } from '../f3-gemini-budget';
 
@@ -84,6 +85,7 @@ export class HermesRequestDto {
   /** Ficha persistida de mensajes anteriores; no depende del historial completo. */
   commercialProfile?: CommercialProfile;
   commercialSnapshot?: CommercialSnapshot;
+  advertisingCampaign?: VerifiedBlackFridayAd & { initialInquiry: boolean };
   approvedLearning?: ApprovedLearning[];
   contact?: {
     id: string;

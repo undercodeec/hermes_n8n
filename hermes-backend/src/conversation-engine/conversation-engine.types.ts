@@ -4,6 +4,7 @@ import type {
 } from '../hermes/dto/hermes-request.dto';
 import type { HermesDiagnostic } from '../hermes/hermes-diagnostics';
 import type { CommercialSnapshot } from '../hermes/commercial-authority.service';
+import type { VerifiedBlackFridayAd } from '../hermes/verified-ad-campaign';
 import type { ApprovedLearning } from '../learning/learning-retrieval.service';
 import type { F3CallTrace, F3GeminiBudget } from '../hermes/f3-gemini-budget';
 
@@ -45,6 +46,7 @@ export interface ConversationTurnInput {
     approvedKnowledge: string[];
     approvedLearning?: ApprovedLearning[];
     commercialSnapshot?: CommercialSnapshot;
+    advertisingCampaign?: VerifiedBlackFridayAd & { initialInquiry: boolean };
     handoffActive: boolean;
     contactName: string;
     leadStage?: string;

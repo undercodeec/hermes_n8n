@@ -25,6 +25,7 @@ export class DirectGeminiEngine implements ConversationEngine {
       conversationSummary: input.approvedContext.conversationSummary,
       commercialProfile: input.approvedContext.commercialProfile,
       commercialSnapshot: input.approvedContext.commercialSnapshot,
+      advertisingCampaign: input.approvedContext.advertisingCampaign,
       ...(input.approvedContext.approvedLearning?.length
         ? { approvedLearning: input.approvedContext.approvedLearning }
         : {}),

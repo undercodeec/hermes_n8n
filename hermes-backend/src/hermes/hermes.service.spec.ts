@@ -45,6 +45,11 @@ describe('HermesService commercial contract', () => {
       messageContent: 'Consulta',
       conversationHistory: [],
       commercialSnapshot: snapshot([offer('Plan A', '360.00', 'WEBSITE')]),
+      advertisingCampaign: {
+        policyVersion: 'black-friday-landing-80-v1',
+        source: 'SOURCE_ID',
+        initialInquiry: true,
+      },
       approvedLearning: [
         {
           id: 'safe',
@@ -62,6 +67,8 @@ describe('HermesService commercial contract', () => {
       'Product, PriceList, commercialSnapshot, approvedKnowledge',
     );
     expect(prompt).toContain('Plan A');
+    expect(prompt).toContain('Campaña publicitaria verificada por el backend');
+    expect(prompt).toContain('initialInquiry');
     expect(prompt).toContain('Responder con brevedad');
     expect(result.learningExposed).toEqual([{ id: 'safe', version: 1 }]);
   });
