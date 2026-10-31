@@ -108,6 +108,7 @@ describe('TasksService callback requests', () => {
       },
     };
     const { conversation: _conversation, ...listed } = stored;
+    void _conversation;
     const prisma = {
       task: {
         findMany: jest.fn().mockResolvedValue([listed]),
@@ -132,15 +133,13 @@ describe('TasksService callback requests', () => {
         },
       });
     }
-    expect(detail.conversation).toEqual(
-      expect.objectContaining({
-        metadata: expect.objectContaining({
-          lastHermesIncident: expect.objectContaining({
-            summary: 'No se pudo completar la respuesta del proveedor.',
-          }),
-        }),
-      }),
-    );
+    expect(detail.conversation).toMatchObject({
+      metadata: {
+        lastHermesIncident: {
+          summary: 'No se pudo completar la respuesta del proveedor.',
+        },
+      },
+    });
   });
 
   it('keeps a user task description outside the provider review flow', async () => {
