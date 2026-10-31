@@ -1,9 +1,18 @@
-import { CommercialPriceType, CommercialTaxMode, Prisma } from '@prisma/client';
+import {
+  CommercialMarket,
+  CommercialPriceType,
+  CommercialTaxMode,
+  Prisma,
+} from '@prisma/client';
 import {
   CommercialAuthorityService,
   commercialSnapshotKnowledge,
 } from './commercial-authority.service';
 import { BLACK_FRIDAY_LANDING_POLICY_VERSION } from './black-friday-landing';
+import {
+  answerExplicitPriceIfMissing,
+  reviewCommercialClaims,
+} from './commercial-claims';
 import { PrismaService } from '../prisma/prisma.service';
 
 const now = new Date('2026-10-30T12:00:00Z');
@@ -36,8 +45,19 @@ const promotion = {
   scope:
     'Captación de leads; una sección; móvil; WhatsApp y llamada; formulario; beneficios; dominio .com y hosting básico por un año; cinco correos corporativos; SEO técnico base; un mes de soporte',
 };
+const ecuadorPromotion = {
+  ...promotion,
+  market: CommercialMarket.EC,
+};
+const spanishPromotion = {
+  ...promotion,
+  id: 'commercial-price-landing-black-friday-80-es-v1',
+  price: new Prisma.Decimal('80'),
+  currency: 'EUR',
+  market: CommercialMarket.ES,
+};
 
-function authority(active: boolean) {
+function authority(active: boolean, dualMarket = false, spanishOnly = false) {
   let promotionActive = active;
   const findMany = jest.fn(
     (input: { where: { serviceCode: { in: string[] } } }) => {
@@ -49,7 +69,15 @@ function authority(active: boolean) {
             name: 'Landing Page',
             serviceCode: 'LANDING_PAGE',
             metadata: {},
-            priceLists: promotionActive ? [base, promotion] : [base],
+            priceLists: promotionActive
+              ? [
+                  base,
+                  ...(spanishOnly
+                    ? []
+                    : [dualMarket ? ecuadorPromotion : promotion]),
+                  ...(dualMarket || spanishOnly ? [spanishPromotion] : []),
+                ]
+              : [base],
           },
         ];
       return [];
@@ -107,6 +135,119 @@ describe('Commercial Authority with verified ad context', () => {
       }),
     ]);
     expect(snapshot.recommendedOfferId).toBe(promotion.id);
+  });
+
+  it.each([
+    [
+      'Quiero información sobre la promoción de €80',
+      'EUR',
+      spanishPromotion.id,
+    ],
+    ['Quiero información sobre la promoción de $80', 'USD', promotion.id],
+    ['Vi Black Friday para España', 'EUR', spanishPromotion.id],
+    ['Vi Black Friday para Ecuador', 'USD', promotion.id],
+  ])(
+    'selects the authorized %s offer by current currency or market',
+    async (customerMessage, currency, id) => {
+      const { service } = authority(true, true);
+      const snapshot = await service.snapshot({
+        customerMessage,
+        verifiedAdPolicyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+        priceRequested: true,
+        now,
+      });
+      expect(snapshot.offers).toEqual([
+        expect.objectContaining({ id, currency, amount: '80.00' }),
+      ]);
+    },
+  );
+
+  it('keeps the euro offer on a follow-up without repeating the currency', async () => {
+    const { service } = authority(true, true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Tengo una barbería',
+      recentCustomerMessages: ['Vi su promoción de €80'],
+      verifiedAdPolicyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+      priceRequested: false,
+      now,
+    });
+    expect(snapshot.offers[0]).toMatchObject({
+      id: spanishPromotion.id,
+      currency: 'EUR',
+    });
+  });
+
+  it('lets the customer currency override a stale profile market', async () => {
+    const { service } = authority(true, true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Quiero la promoción de €80',
+      profile: { market: CommercialMarket.EC },
+      verifiedAdPolicyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.offers[0]).toMatchObject({
+      id: spanishPromotion.id,
+      currency: 'EUR',
+    });
+  });
+
+  it('does not substitute USD or claim inactivity when EUR has no active tariff', async () => {
+    const { service } = authority(true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Vi la promoción de €80',
+      verifiedAdPolicyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.offers).toEqual([]);
+    expect(snapshot.needsCampaignTariffConfirmation).toBe(true);
+    const knowledge = commercialSnapshotKnowledge(snapshot).join(' ');
+    expect(knowledge).toMatch(/verificar la tarifa aplicable/iu);
+    expect(knowledge).not.toMatch(/no está activa|USD \$80/iu);
+    expect(
+      answerExplicitPriceIfMissing(
+        'Quiero confirmar el importe.',
+        snapshot,
+        true,
+      ),
+    ).toMatch(/verificar la tarifa de Black Friday/iu);
+  });
+
+  it('shows both approved campaign currencies when neither currency nor market is known', async () => {
+    const { service } = authority(true, true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Hola, quiero información de Black Friday',
+      verifiedAdPolicyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+      priceRequested: false,
+      now,
+    });
+    expect(snapshot.offers).toEqual([
+      expect.objectContaining({ id: promotion.id, currency: 'USD' }),
+      expect.objectContaining({ id: spanishPromotion.id, currency: 'EUR' }),
+    ]);
+    expect(snapshot.needsMarketClarification).toBe(false);
+    const answer = answerExplicitPriceIfMissing('', snapshot, true);
+    expect(answer).toMatch(/€80\.00.*USD \$80\.00/iu);
+    expect(answer).not.toMatch(/¿El proyecto sería para Ecuador o España/iu);
+    expect(reviewCommercialClaims(answer, snapshot).reasons).toEqual([]);
+    expect(commercialSnapshotKnowledge(snapshot).join(' ')).not.toMatch(
+      /no está activa/iu,
+    );
+  });
+
+  it('labels the market when only one specific campaign offer is active', async () => {
+    const { service } = authority(true, false, true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Hola, quiero información de Black Friday',
+      verifiedAdPolicyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+      priceRequested: false,
+      now,
+    });
+    expect(snapshot.offers).toEqual([
+      expect.objectContaining({ id: spanishPromotion.id, currency: 'EUR' }),
+    ]);
+    expect(snapshot.needsMarketClarification).toBe(false);
   });
 
   it('does not substitute the landing for an explicit online store', async () => {

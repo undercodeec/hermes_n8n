@@ -7,6 +7,12 @@ describe('splitWhatsAppMessage', () => {
     ]);
   });
 
+  it('keeps a short numbered answer readable in one WhatsApp message', () => {
+    const answer =
+      'La promoción incluye:\n1. Captación de leads\n2. Dominio .com';
+    expect(splitWhatsAppMessage(answer)).toEqual([answer]);
+  });
+
   it('splits a long explanation at sentence boundaries', () => {
     const parts = splitWhatsAppMessage(
       'Primero le explicamos la opción recomendada con claridad. '.repeat(6) +

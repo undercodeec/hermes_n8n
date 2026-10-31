@@ -193,6 +193,7 @@ describe('AutoReplyService', () => {
     realShadow?: boolean;
     engineId?: 'gemini_direct' | 'nous_hermes';
     conversationMetadata?: Record<string, unknown>;
+    contactName?: string | null;
     learningRows?: Array<Record<string, unknown>>;
     commercialSnapshot?: CommercialSnapshot;
     inboundTurns?: InboundTurnService;
@@ -290,7 +291,12 @@ describe('AutoReplyService', () => {
           createdAt:
             options.conversationCreatedAt ??
             new Date('2026-09-20T18:00:00.000Z'),
-          contact: { name: 'Ana', waId: '593991234567', email: null },
+          contact: {
+            name:
+              options.contactName === undefined ? 'Ana' : options.contactName,
+            waId: '593991234567',
+            email: null,
+          },
         }),
         update: conversationUpdate,
       },
@@ -3002,6 +3008,45 @@ describe('AutoReplyService', () => {
     );
   });
 
+  it('greets a first mixed greeting and service enquiry with the CRM name once', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Hola, quiero información sobre una página web.',
+      contactName: 'Yaupi Gómez',
+      hermesResponse: {
+        response:
+          'Una página web puede presentar su negocio. ¿Qué desea mostrar?',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].content).toMatch(/^Hola, Yaupi\. Una página web/u);
+    expect(parts[0].content.match(/\bYaupi\b/gu) ?? []).toHaveLength(1);
+  });
+
+  it('does not duplicate an inverted greeting when naming the contact', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: '¡Hola! Quiero información sobre una página web.',
+      hermesResponse: {
+        response:
+          '¡Hola! Podemos presentar su negocio en una página web. ¿Qué desea mostrar?',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const answer = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
+      .content as string;
+    expect(answer).toMatch(/^Hola, Ana\. Podemos/u);
+    expect(answer).not.toMatch(/Hola.*¡Hola/iu);
+  });
+
   it('keeps a service answer while removing the corporate welcome', async () => {
     const harness = setupProcessHarness({
       inboundContent: 'Necesito una página web',
@@ -3157,6 +3202,198 @@ describe('AutoReplyService', () => {
     ).toContain('USD $80.00');
   });
 
+  it('joins short Nous replyParts for a general Black Friday enquiry without Meta attribution', async () => {
+    const promotion = approvedCampaignOffer();
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [promotion],
+      recommendedOfferId: promotion.id,
+      needsMarketClarification: false,
+    });
+    const first =
+      'Hola. La promoción Black Friday — Landing Page cuesta USD 80.';
+    const second =
+      'Es una página de una sección para presentar su negocio. ¿A qué se dedica?';
+    const harness = setupProcessHarness({
+      engineId: 'nous_hermes',
+      conversationMetadata: { pilotEngine: 'nous_hermes' },
+      inboundContent: 'Vi su promoción de Black Friday. Quiero información.',
+      hermesResponse: { response: `${first} ${second}` },
+    });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({ response: `${first} ${second}` }),
+      engine: 'nous_hermes',
+      replyParts: [first, second],
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].content).toMatch(/Black Friday.*USD 80/iu);
+  });
+
+  it.each(['gemini_direct', 'nous_hermes'] as const)(
+    '%s sends one concise, named reply for the observed EUR 80 Meta enquiry',
+    async (engineId) => {
+      const promotion = {
+        ...approvedCampaignOffer(),
+        id: 'commercial-price-landing-black-friday-80-es-v1',
+        market: CommercialMarket.ES,
+        marketScope: 'MARKET' as const,
+        currency: 'EUR' as const,
+      };
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        market: CommercialMarket.ES,
+        marketSource: 'CURRENT',
+        relevantServiceCodes: ['LANDING_PAGE'],
+        offers: [promotion],
+        recommendedOfferId: promotion.id,
+        needsMarketClarification: false,
+      });
+      const source =
+        '¡Hola! Quiero más información sobre la promoción de € 80.00';
+      const greeting = 'Hola, con gusto le comparto los detalles.';
+      const detail =
+        'Nuestra promoción de Black Friday para Landing Page cuesta €80.00. Es una página de una sola sección para presentar su negocio y captar prospectos. ¿A qué actividad se dedica?';
+      const harness = setupProcessHarness({
+        engineId,
+        contactName: 'Yaupi',
+        conversationMetadata: { pilotEngine: engineId },
+        inboundContent: source,
+        inboundCreatedAt: campaignTime(-3),
+        inboundMetadata: {
+          pilotOrigin: 'meta_ad',
+          pilotOriginEvidence: 'meta_referral_ad',
+          pilotAd: { sourceId: '52583085497631' },
+        },
+        campaignConfig: {
+          HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+        },
+        hermesResponse: { response: `${greeting} ${detail}` },
+      });
+      if (engineId === 'nous_hermes') {
+        harness.engine.respond.mockResolvedValue({
+          ...toEngineResult({ response: `${greeting} ${detail}` }),
+          engine: engineId,
+          replyParts: [greeting, detail],
+        });
+      }
+
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+
+      const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+      expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+      expect(parts).toHaveLength(1);
+      expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(1);
+      const answer = parts[0].content as string;
+      expect(answer).toMatch(/^Hola, Yaupi\./u);
+      expect(answer).toMatch(/€\s*80(?:\.00)?/iu);
+      expect(answer).not.toMatch(/USD|d[oó]lares|diferencia/i);
+      expect(answer).toMatch(/\b(?:landing|página)\b/iu);
+      expect(answer).toMatch(/¿[^?]+\?/u);
+      expect(answer).toMatch(/¿[^?]+\?$/u);
+      expect(answer).not.toMatch(
+        /Por lo que me comenta|puede cubrir la parte/iu,
+      );
+      expect(answer).not.toContain('5 correos corporativos');
+      expect(answer.length).toBeLessThanOrEqual(420);
+      expect(answer.match(/\bYaupi\b/gu) ?? []).toHaveLength(1);
+    },
+  );
+
+  it('shows both approved currencies without asking the country for a generic dual-market ad enquiry', async () => {
+    const usd = {
+      ...approvedCampaignOffer(),
+      market: CommercialMarket.EC,
+      marketScope: 'MARKET' as const,
+    };
+    const eur = {
+      ...approvedCampaignOffer(),
+      id: 'commercial-price-landing-black-friday-80-es-v1',
+      market: CommercialMarket.ES,
+      marketScope: 'MARKET' as const,
+      currency: 'EUR' as const,
+    };
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [usd, eur],
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      engineId: 'nous_hermes',
+      inboundContent: 'Hola, quiero más información de Black Friday',
+      inboundCreatedAt: campaignTime(-3),
+      inboundMetadata: {
+        pilotOrigin: 'meta_ad',
+        pilotOriginEvidence: 'meta_referral_ad',
+        pilotAd: { sourceId: '52583085497631' },
+      },
+      campaignConfig: {
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+      },
+      hermesResponse: { response: 'La landing cuesta USD $80.' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].content).toMatch(/€80\.00.*USD \$80\.00/iu);
+    expect(parts[0].content).not.toMatch(/¿El proyecto sería/iu);
+  });
+
+  it.each([null, 'Cliente', '593991234567'])(
+    'greets a first campaign enquiry naturally when contact name is %s',
+    async (contactName) => {
+      const promotion = approvedCampaignOffer();
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        marketSource: 'UNKNOWN',
+        relevantServiceCodes: ['LANDING_PAGE'],
+        offers: [promotion],
+        recommendedOfferId: promotion.id,
+        needsMarketClarification: false,
+      });
+      const harness = setupProcessHarness({
+        contactName,
+        inboundContent: 'Buenos días, me interesa la promoción.',
+        inboundCreatedAt: campaignTime(-3),
+        inboundMetadata: {
+          pilotOrigin: 'meta_ad',
+          pilotOriginEvidence: 'meta_referral_ad',
+          pilotAd: { sourceId: '52583085497631' },
+        },
+        campaignConfig: {
+          HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+        },
+        hermesResponse: {
+          response:
+            'La landing cuesta USD 80 y facilita consultas por WhatsApp. ¿A qué se dedica su negocio?',
+        },
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+      expect(parts).toHaveLength(1);
+      expect(parts[0].content).toMatch(/^Hola[,.!]/u);
+      expect(parts[0].content).not.toMatch(/Hola, (?:Cliente|593991234567)/iu);
+    },
+  );
+
   it.each(
     (['gemini_direct', 'nous_hermes'] as const).flatMap((engineId) => [
       { engineId, message: '¡Hola! Quiero más información' },
@@ -3307,6 +3544,58 @@ describe('AutoReplyService', () => {
     expect(delivered).not.toMatch(/80|^Hola/iu);
   });
 
+  it('follows a campaign lead who changes the request to an online store', async () => {
+    const promotion = approvedCampaignOffer();
+    const store = {
+      ...testOffer('Tienda online', '420.00', 'ONLINE_STORE'),
+      scope: 'Catálogo y compra online',
+    };
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'PROFILE',
+      relevantServiceCodes: ['ONLINE_STORE'],
+      offers: [promotion, store],
+      recommendedOfferId: store.id,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent:
+        'Ahora necesito una tienda online para vender mis productos.',
+      inboundCreatedAt: campaignTime(),
+      conversationCreatedAt: campaignTime(-3),
+      conversationMetadata: {
+        pilotOrigin: 'meta_ad',
+        pilotOriginEvidence: 'meta_referral_ad',
+        pilotAd: { sourceId: '52583085497631' },
+      },
+      campaignConfig: {
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+      },
+      historyMessages: [
+        {
+          id: 'prior-assistant',
+          direction: MessageDirection.OUTBOUND,
+          content: 'La landing Black Friday cuesta USD 80.',
+          createdAt: campaignTime(-2),
+          rawPayload: null,
+          metadata: {},
+        },
+      ],
+      hermesResponse: {
+        response:
+          'Para vender sus productos, una tienda online permite mostrar un catálogo y recibir compras. ¿Cuántos productos ofrecerá?',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].content).toMatch(/tienda online.*catálogo/iu);
+    expect(parts[0].content).not.toMatch(/Black Friday|USD\s*80|^Hola/iu);
+  });
+
   it('lists all ten authorized scope items when a campaign lead asks what is included', async () => {
     const scope =
       'Captación de leads; landing page de una sola sección; diseño responsive para celulares; botón flotante de WhatsApp y llamada directa; formulario de contacto o captura de prospectos; apartado de beneficios del servicio o producto; dominio .com y hosting básico por 1 año; 5 correos corporativos; SEO técnico base; 1 mes de soporte posterior a la entrega.';
@@ -3351,6 +3640,10 @@ describe('AutoReplyService', () => {
       .content as string;
     for (const item of scope.split(';'))
       expect(delivered).toContain(item.trim().replace(/\.$/u, ''));
+    expect(delivered).toMatch(
+      /La promoción incluye:\n1\. Captación de leads\n2\./u,
+    );
+    expect(delivered).toMatch(/\n10\. 1 mes de soporte/u);
     expect(delivered).not.toMatch(/carrito|ecommerce|pago en línea/iu);
   });
 
@@ -3420,6 +3713,9 @@ describe('AutoReplyService', () => {
     const delivered = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
       .content as string;
     expect(delivered).toMatch(/dominio \.com/iu);
+    expect(delivered).not.toMatch(
+      /captaci[oó]n de leads|SEO técnico|correos corporativos/iu,
+    );
     expect(delivered).not.toMatch(/¿A qué se dedica su negocio\?/iu);
   });
 

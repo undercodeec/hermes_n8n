@@ -726,7 +726,9 @@ export class AutoReplyService {
     if (
       (isGeneralBlackFridayInquiry(customerMessage) ||
         initialCampaignInquiry) &&
-      activeCampaignOffer
+      (activeCampaignOffer ||
+        commercialSnapshot.needsMarketClarification ||
+        commercialSnapshot.needsCampaignTariffConfirmation)
     ) {
       policy.guidance.priceAnswerRequired = true;
     }
@@ -1221,7 +1223,7 @@ export class AutoReplyService {
         (offer) => offer.id === commercialSnapshot.recommendedOfferId,
       );
       response.response = recommended
-        ? `Por lo que me comenta, ${recommended.name} puede encajar para la parte incluida en el plan: ${recommended.scope} ${commercialSnapshot.additionalScope?.length ? `La parte de ${commercialSnapshot.additionalScope.join(' y ')} requiere valoración aparte.` : ''}`.trim()
+        ? `${recommended.name} puede encajar con lo que necesita. ${commercialSnapshot.additionalScope?.length ? `La parte de ${commercialSnapshot.additionalScope.join(' y ')} requiere valoración aparte.` : ''}`.trim()
         : 'Puedo orientarle sobre la opción que mejor cubra su necesidad. ¿Qué función es la más importante para usted?';
       reviewedProposal?.rejections.push('UNREQUESTED_PRICE');
     }
@@ -1240,11 +1242,22 @@ export class AutoReplyService {
       !response.diagnostic &&
       policy.guidance.allowPlanRecommendation &&
       recommended &&
+      !(
+        recommended.promotion &&
+        recommended.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION
+      ) &&
       !response.response
         .toLocaleLowerCase('es')
         .includes(recommended.name.toLocaleLowerCase('es'))
     ) {
-      const recommendation = `Por lo que me comenta, ${recommended.name} puede cubrir la parte de presencia web y captación: ${recommended.scope}`;
+      const pertinentScope = recommended.scope
+        .split(';')[0]
+        .trim()
+        .replace(/\.$/u, '');
+      const recommendation =
+        pertinentScope && pertinentScope.length <= 180
+          ? `${recommended.name}: ${pertinentScope}.`
+          : `Le recomiendo ${recommended.name}.`;
       const additional = commercialSnapshot.additionalScope?.length
         ? ` ${commercialSnapshot.additionalScope.join(' y ')} requiere valoración por separado.`
         : '';
@@ -1312,16 +1325,6 @@ export class AutoReplyService {
         response.response = `${response.response} ${terms}`.trim();
       }
     }
-    response.response = this.polishInitialGreeting({
-      reply: response.response,
-      customerMessage:
-        turnMessages?.length === 1
-          ? turnMessages[0].content || ''
-          : turnMessages
-            ? ''
-            : inbound.content || '',
-      contactName: conversation.contact.name || '',
-    });
     // Recheck after commercial substitutions, then repair any still-required price.
     const finalCommercialReview = reviewCommercialClaims(
       response.response,
@@ -1355,31 +1358,56 @@ export class AutoReplyService {
       policy.guidance.priceAnswerRequired,
     );
     if (initialCampaignInquiry && !response.diagnostic) {
-      const campaignOffer = commercialSnapshot.offers.find(
+      const campaignOffers = commercialSnapshot.offers.filter(
         (offer) =>
           offer.promotion &&
           offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION &&
           offer.priceType !== 'QUOTE_REQUIRED' &&
           Boolean(offer.amount),
       );
+      const campaignOffer = campaignOffers[0];
+      const dualCurrencyCampaign =
+        campaignOffers.length === 2 &&
+        campaignOffers.some(
+          (offer) => offer.currency === 'EUR' && offer.market === 'ES',
+        ) &&
+        campaignOffers.some(
+          (offer) => offer.currency === 'USD' && offer.market === 'EC',
+        );
+      const scopeItems =
+        campaignOffer?.scope
+          .split(';')
+          .map((item) => item.trim().replace(/[.;\s]+$/u, ''))
+          .filter(Boolean) ?? [];
+      const repeatedScopeItems = scopeItems.filter((item) =>
+        response.response
+          .toLocaleLowerCase('es')
+          .includes(item.toLocaleLowerCase('es')),
+      ).length;
       const usefulAnswer =
         /\b(?:landing|p[aá]gina)\b/iu.test(response.response) &&
         /\b(?:captar|captaci[oó]n|prospectos?|contacto|formulario|whatsapp|presentar)\b/iu.test(
           response.response,
         ) &&
         /¿[^?]+\?/u.test(response.response) &&
-        !/¿(?:en qu[eé]|qu[eé] servicio)\b[^?]*\?/iu.test(response.response);
-      if (campaignOffer && !usefulAnswer) {
+        !/¿(?:en qu[eé]|qu[eé] servicio)\b[^?]*\?/iu.test(response.response) &&
+        repeatedScopeItems < 4;
+      if (campaignOffer && !usefulAnswer && !dualCurrencyCampaign) {
         const name = /black friday/iu.test(campaignOffer.name)
           ? campaignOffer.name
           : `Black Friday ${campaignOffer.name}`;
-        const benefits = campaignOffer.scope
-          .split(';')
-          .map((item) => item.trim().replace(/[.;\s]+$/u, ''))
-          .filter(Boolean)
-          .slice(0, 5)
-          .join('; ');
-        response.response = `Hola. La promoción ${name} cuesta ${campaignOffer.currency} ${campaignOffer.amount}. Incluye ${benefits}. ¿A qué se dedica su negocio?`;
+        const benefit = scopeItems.some((item) => /whatsapp/iu.test(item))
+          ? ' y facilitar consultas por WhatsApp'
+          : scopeItems.some((item) =>
+                /captaci[oó]n|leads|prospectos/iu.test(item),
+              )
+            ? ' y captar prospectos'
+            : '';
+        const amount =
+          campaignOffer.currency === 'EUR'
+            ? `€${campaignOffer.amount}`
+            : `USD $${campaignOffer.amount}`;
+        response.response = `Hola. La promoción ${name} cuesta ${amount}. Es una página de una sola sección para presentar su negocio${benefit}. ¿A qué se dedica su negocio?`;
         const reviewed = reviewCommercialClaims(
           response.response,
           commercialSnapshot,
@@ -1403,6 +1431,19 @@ export class AutoReplyService {
     ) {
       response.response = `${response.response} El plazo requiere valoración del alcance antes de confirmar una fecha.`;
     }
+    response.response = this.polishInitialGreeting({
+      reply: response.response,
+      customerMessage:
+        turnMessages?.length === 1
+          ? turnMessages[0].content || ''
+          : turnMessages
+            ? ''
+            : inbound.content || '',
+      contactName: conversation.contact.name || '',
+      firstReply: !context.recentMessages.some(
+        (message) => message.role === 'assistant',
+      ),
+    });
     reviewedProposal?.rejections.push(...commercialReview.reasons);
     reviewedProposal?.rejections.push(...finalCommercialReview.reasons);
 
@@ -1679,6 +1720,10 @@ export class AutoReplyService {
     );
     const conversationalParts =
       isNous &&
+      !(
+        activeCampaignOffer &&
+        (initialCampaignInquiry || isGeneralBlackFridayInquiry(customerMessage))
+      ) &&
       !response.diagnostic &&
       engineResult.replyParts?.length &&
       response.response === engineResult.replyText
@@ -2479,6 +2524,7 @@ export class AutoReplyService {
     reply: string;
     customerMessage: string;
     contactName: string;
+    firstReply: boolean;
   }): string {
     let reply = input.reply
       .replace(
@@ -2493,16 +2539,30 @@ export class AutoReplyService {
       )
       .trim();
     if (!reply) reply = '¿En qué podemos ayudarle?';
-    if (
-      !/^(?:hola|buenas(?:\s+(?:tardes|noches))?|buenos\s+d[ií]as|buen\s+d[ií]a)[\s.!¡¿?]*$/iu.test(
+    const greeting =
+      /^(?:¡\s*)?(?:hola|buenas(?:\s+(?:tardes|noches))?|buenos\s+d[ií]as|buen\s+d[ií]a)\b/iu;
+    const pureGreeting =
+      /^(?:¡\s*)?(?:hola|buenas(?:\s+(?:tardes|noches))?|buenos\s+d[ií]as|buen\s+d[ií]a)[\s.!¡¿?]*$/iu.test(
         input.customerMessage.trim(),
-      )
+      );
+    if (
+      !greeting.test(input.customerMessage.trim()) ||
+      (!pureGreeting && !input.firstReply)
     )
       return reply;
-    const firstName = input.contactName.trim().match(/[\p{L}\p{M}'-]+/u)?.[0];
-    if (
+    const firstName = input.contactName
+      .trim()
+      .match(/^([\p{L}\p{M}][\p{L}\p{M}'-]{0,39})(?:\s|$)/u)?.[1];
+    const validFirstName =
       firstName &&
-      !/^(?:cliente|contacto|undercodeec)$/iu.test(firstName) &&
+      !/^(?:cliente|contacto|undercodeec|desconocido|unknown|usuario)$/iu.test(
+        firstName,
+      );
+    const greetingAtStart = reply.match(
+      /^(?:¡\s*)?(Buenas (?:tardes|noches)|Buenos d[ií]as|Buen d[ií]a|Hola)[.,!¡]?\s+/iu,
+    );
+    if (
+      validFirstName &&
       !reply
         .match(/[\p{L}\p{M}'-]+/gu)
         ?.some(
@@ -2510,10 +2570,16 @@ export class AutoReplyService {
             word.toLocaleLowerCase('es') === firstName.toLocaleLowerCase('es'),
         )
     ) {
-      reply = reply.replace(
-        /^(Buenas (?:tardes|noches)|Buenos d[ií]as|Buen d[ií]a|Hola)[.,!¡]?\s+/iu,
-        (_match, greeting: string) => `${greeting}, ${firstName}. `,
-      );
+      if (greetingAtStart) {
+        const rest = reply
+          .slice(greetingAtStart[0].length)
+          .replace(/^\p{L}/u, (letter) => letter.toLocaleUpperCase('es'));
+        reply = `${greetingAtStart[1]}, ${firstName}. ${rest}`;
+      } else {
+        reply = `Hola, ${firstName}. ${reply}`;
+      }
+    } else if (!greetingAtStart) {
+      reply = `Hola. ${reply}`;
     }
     return reply;
   }

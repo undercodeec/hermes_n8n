@@ -42,6 +42,7 @@ export type CommercialSnapshot = {
   relevantServiceCodes: string[];
   offers: AuthorizedOffer[];
   needsMarketClarification: boolean;
+  needsCampaignTariffConfirmation?: boolean;
   recommendedOfferId?: string;
   additionalScope?: string[];
   policies?: string[];
@@ -64,6 +65,15 @@ function mentionedMarket(text: string): CommercialMarket | undefined {
     /\bespana\b/.test(normalized) &&
     !/\bno\s+(?:en|para|soy de)\s+espana\b/.test(normalized);
   return ec === es ? undefined : ec ? CommercialMarket.EC : CommercialMarket.ES;
+}
+
+function mentionedCurrency(
+  text: string,
+): 'USD' | 'EUR' | 'AMBIGUOUS' | undefined {
+  const euros = /€|\b(?:EUR|euros?)\b/iu.test(text);
+  const dollars = /\$|\b(?:USD|d[oó]lares?)\b/iu.test(text);
+  if (euros && dollars) return 'AMBIGUOUS';
+  return euros ? 'EUR' : dollars ? 'USD' : undefined;
 }
 
 export function resolveCommercialMarket(input: {
@@ -166,6 +176,17 @@ export class CommercialAuthorityService {
         input.ignoreHistoricalPromotion ? [] : input.recentCustomerMessages,
       ) ||
         input.verifiedAdPolicyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION);
+    const currentCurrency = mentionedCurrency(input.customerMessage);
+    const historicalCurrency =
+      currentCurrency ||
+      resolution.source === 'CURRENT' ||
+      input.ignoreHistoricalPromotion
+        ? undefined
+        : [...(input.recentCustomerMessages ?? [])]
+            .reverse()
+            .map(mentionedCurrency)
+            .find(Boolean);
+    const requestedCurrency = currentCurrency ?? historicalCurrency;
     const currentServiceCodes: string[] = blackFridayRequested
       ? ['LANDING_PAGE']
       : requestedSolutionKinds(input.customerMessage, false);
@@ -278,7 +299,12 @@ export class CommercialAuthorityService {
       });
       result.offers = products
         .flatMap((product) =>
-          this.currentOffer(product, resolution.market, blackFridayRequested),
+          this.currentOffer(
+            product,
+            resolution.market,
+            blackFridayRequested,
+            requestedCurrency,
+          ),
         )
         .filter(
           (offer) =>
@@ -286,7 +312,23 @@ export class CommercialAuthorityService {
             (offer.promotion &&
               offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION),
         );
-      if (blackFridayRequested && !result.offers.length) {
+      const activeCampaignPrices = products.flatMap((product) =>
+        product.priceLists.filter(
+          (price) =>
+            price.isPromotion &&
+            price.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+            this.isEligible(price),
+        ),
+      );
+      result.needsCampaignTariffConfirmation =
+        blackFridayRequested &&
+        !result.offers.length &&
+        activeCampaignPrices.length > 0;
+      if (
+        blackFridayRequested &&
+        !result.offers.length &&
+        !activeCampaignPrices.length
+      ) {
         result.policies = [
           ...(result.policies ?? []),
           'La promoción Black Friday de Landing Page no está activa. No confirmes el precio promocional; un asesor puede verificar su vigencia.',
@@ -319,9 +361,10 @@ export class CommercialAuthorityService {
       const named = ordered.find((offer) =>
         normalize(scopeText).includes(normalize(offer.name)),
       );
-      result.recommendedOfferId = (
-        named ?? ordered[advanced ? 2 : growth ? 1 : 0]
-      )?.id;
+      result.recommendedOfferId =
+        blackFridayRequested && ordered.length > 1
+          ? undefined
+          : (named ?? ordered[advanced ? 2 : growth ? 1 : 0])?.id;
       const collectionRequest =
         /\b(?:agendar|agendamiento de|programar|coordinar|reservar|solicitar)\s+(?:(?:un|una|el|la|los|las)\s+)?(?:retiros?|recogidas?|recoleccion(?:es)?)\b(?!\s+de\s+efectivo)/;
       const scopeClauses = scopeText.split(
@@ -365,15 +408,17 @@ export class CommercialAuthorityService {
             ? 'Pedidos automatizados si necesita gestión interna o pagos en línea'
             : '',
       ].filter(Boolean);
-      result.needsMarketClarification =
-        input.priceRequested &&
-        !resolution.market &&
-        !result.offers.length &&
-        products.some((product) =>
-          product.priceLists.some(
-            (price) => price.market !== null && this.isEligible(price),
-          ),
-        );
+      if (!blackFridayRequested) {
+        result.needsMarketClarification =
+          input.priceRequested &&
+          !resolution.market &&
+          !result.offers.length &&
+          products.some((product) =>
+            product.priceLists.some(
+              (price) => price.market !== null && this.isEligible(price),
+            ),
+          );
+      }
       return result;
     } catch (error) {
       this.logger.warn(
@@ -387,8 +432,10 @@ export class CommercialAuthorityService {
     product: ProductWithPrices,
     market?: CommercialMarket,
     blackFridayRequested = false,
+    requestedCurrency?: 'USD' | 'EUR' | 'AMBIGUOUS',
   ): AuthorizedOffer[] {
-    if (!product.serviceCode) return [];
+    const serviceCode = product.serviceCode;
+    if (!serviceCode) return [];
     const eligible = product.priceLists.filter(
       (price) =>
         this.isEligible(price) &&
@@ -398,27 +445,65 @@ export class CommercialAuthorityService {
           !price.isPromotion ||
           price.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION),
     );
+    const campaignPromotions = eligible.filter(
+      (price) =>
+        price.isPromotion &&
+        price.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+        eligible.some(
+          (base) =>
+            !base.isPromotion && base.id === price.supersedesPriceListId,
+        ),
+    );
+    const matchedCampaign =
+      requestedCurrency && requestedCurrency !== 'AMBIGUOUS'
+        ? campaignPromotions.filter(
+            (price) => price.currency === requestedCurrency,
+          )
+        : market && requestedCurrency !== 'AMBIGUOUS'
+          ? campaignPromotions.filter(
+              (price) =>
+                price.market === market ||
+                (market === CommercialMarket.EC &&
+                  price.market === null &&
+                  price.currency === 'USD'),
+            )
+          : campaignPromotions;
+    const selectedCampaign =
+      matchedCampaign.length === 1 ||
+      (matchedCampaign.length === 2 &&
+        new Set(matchedCampaign.map((price) => price.currency)).size === 2 &&
+        (!market || requestedCurrency === 'AMBIGUOUS'))
+        ? matchedCampaign
+        : [];
     const marketSpecific = market
       ? eligible.filter((price) => price.market === market)
       : [];
-    const applicable = blackFridayRequested
-      ? eligible.filter((price) => price.market === null)
-      : marketSpecific.length
-        ? marketSpecific
-        : eligible.filter((price) => price.market === null);
+    const applicable = marketSpecific.length
+      ? marketSpecific
+      : eligible.filter((price) => price.market === null);
     const base = applicable.filter((price) => !price.isPromotion);
     const promotion = applicable.filter((price) => price.isPromotion);
     let selected: (typeof eligible)[number] | undefined;
     if (
+      !blackFridayRequested &&
       promotion.length === 1 &&
       base.length === 1 &&
       promotion[0].supersedesPriceListId === base[0].id
     ) {
       selected = promotion[0];
-    } else if (promotion.length === 0 && base.length === 1) {
+    } else if (
+      !blackFridayRequested &&
+      promotion.length === 0 &&
+      base.length === 1
+    ) {
       selected = base[0];
     }
-    if (!selected) return [];
+    const selectedPrices = blackFridayRequested
+      ? selectedCampaign
+      : selected
+        ? [selected]
+        : [];
+    if (!selectedPrices.length) return [];
     const metadata =
       product.metadata &&
       typeof product.metadata === 'object' &&
@@ -431,44 +516,39 @@ export class CommercialAuthorityService {
       !Array.isArray(metadata.commercialTerms)
         ? (metadata.commercialTerms as Record<string, unknown>)
         : {};
-    return [
-      {
-        id: selected.id,
-        name:
-          selected.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION
-            ? selected.name
-            : product.name,
-        serviceCode: product.serviceCode,
-        ...(selected.market ? { market: selected.market } : {}),
-        marketScope: selected.market ? 'MARKET' : 'GLOBAL',
-        priceType: selected.priceType!,
-        ...(selected.price ? { amount: selected.price.toFixed(2) } : {}),
-        currency: selected.currency as 'USD' | 'EUR',
-        ...(selected.taxMode ? { taxMode: selected.taxMode } : {}),
-        ...(selected.taxLabel ? { taxLabel: selected.taxLabel } : {}),
-        ...(selected.taxRatePercent
-          ? { taxRatePercent: selected.taxRatePercent.toFixed(2) }
-          : {}),
-        scope: selected.scope!.trim(),
-        ...(selected.restrictions
-          ? { restrictions: selected.restrictions }
-          : {}),
-        policyVersion: selected.policyVersion!.trim(),
-        promotion: selected.isPromotion,
-        ...(selected.policyVersion !== BLACK_FRIDAY_LANDING_POLICY_VERSION &&
-        (terms.renewalUsdPerYear === 40 || terms.renewalUsdPerYear === 80)
-          ? { renewalUsdPerYear: terms.renewalUsdPerYear }
-          : {}),
-        ...(selected.policyVersion !== BLACK_FRIDAY_LANDING_POLICY_VERSION &&
-        (terms.estimatedBusinessDays === 10 ||
-          terms.estimatedBusinessDays === 20)
-          ? { estimatedBusinessDays: terms.estimatedBusinessDays }
-          : {}),
-        ...(selected.validUntil
-          ? { validUntil: selected.validUntil.toISOString() }
-          : {}),
-      },
-    ];
+    return selectedPrices.map((selected) => ({
+      id: selected.id,
+      name:
+        selected.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION
+          ? selected.name
+          : product.name,
+      serviceCode,
+      ...(selected.market ? { market: selected.market } : {}),
+      marketScope: selected.market ? 'MARKET' : 'GLOBAL',
+      priceType: selected.priceType!,
+      ...(selected.price ? { amount: selected.price.toFixed(2) } : {}),
+      currency: selected.currency as 'USD' | 'EUR',
+      ...(selected.taxMode ? { taxMode: selected.taxMode } : {}),
+      ...(selected.taxLabel ? { taxLabel: selected.taxLabel } : {}),
+      ...(selected.taxRatePercent
+        ? { taxRatePercent: selected.taxRatePercent.toFixed(2) }
+        : {}),
+      scope: selected.scope!.trim(),
+      ...(selected.restrictions ? { restrictions: selected.restrictions } : {}),
+      policyVersion: selected.policyVersion!.trim(),
+      promotion: selected.isPromotion,
+      ...(selected.policyVersion !== BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+      (terms.renewalUsdPerYear === 40 || terms.renewalUsdPerYear === 80)
+        ? { renewalUsdPerYear: terms.renewalUsdPerYear }
+        : {}),
+      ...(selected.policyVersion !== BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+      (terms.estimatedBusinessDays === 10 || terms.estimatedBusinessDays === 20)
+        ? { estimatedBusinessDays: terms.estimatedBusinessDays }
+        : {}),
+      ...(selected.validUntil
+        ? { validUntil: selected.validUntil.toISOString() }
+        : {}),
+    }));
   }
 
   private isEligible(price: ProductWithPrices['priceLists'][number]): boolean {
@@ -498,6 +578,11 @@ export function commercialSnapshotKnowledge(
       'El precio depende del mercado y aún no se conoce el país aplicable. Si el cliente pregunta el precio, pida una sola aclaración breve: ¿El proyecto sería para Ecuador o España?',
     ];
   }
+  if (snapshot.needsCampaignTariffConfirmation) {
+    return [
+      'No hay una tarifa Black Friday aprobada y vigente para la moneda o el país indicado. No cites el precio de otra moneda ni conviertas importes; un asesor debe verificar la tarifa aplicable.',
+    ];
+  }
   if (!snapshot.offers.length) {
     return [
       ...(snapshot.policies ?? []),
@@ -518,6 +603,21 @@ export function commercialSnapshotKnowledge(
       offer.promotion,
   );
   if (campaignOffer) {
+    if (
+      snapshot.offers.length === 2 &&
+      snapshot.offers.some(
+        (offer) =>
+          offer.currency === 'EUR' && offer.market === CommercialMarket.ES,
+      ) &&
+      snapshot.offers.some(
+        (offer) =>
+          offer.currency === 'USD' && offer.market === CommercialMarket.EC,
+      )
+    ) {
+      offerKnowledge.push(
+        'Se seleccionaron las dos tarifas Black Friday aprobadas. Preséntalas en un solo mensaje breve: EUR para España y USD para Ecuador. No preguntes al cliente en qué país será el proyecto.',
+      );
+    }
     offerKnowledge.push(
       'La oferta Black Friday seleccionada en CRM es una landing de una sola sección para presentar un negocio, producto o servicio y captar prospectos. El precio y la moneda autorizados constan exclusivamente en el objeto CRM_APPROVED_PRICE_LIST anterior. Si preguntan qué incluye, enumera las diez características confirmadas en scope. Si preguntan solo por una característica, responde solo esa. Adapta la explicación al negocio conocido y pregunta por su actividad cuando sea útil. No es una tienda online. No afirmes impuestos, plazo de entrega, revisiones, pago, fecha de cierre, renovaciones ni resultados garantizados; un asesor puede confirmar condiciones no documentadas.',
     );
