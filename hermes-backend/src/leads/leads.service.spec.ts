@@ -49,7 +49,7 @@ describe('LeadsService', () => {
   });
 
   it('does not expose Meta click IDs or private metadata from the latest lead message', async () => {
-    prisma.lead.findMany.mockResolvedValue([
+    (prisma.lead.findMany as jest.Mock).mockResolvedValue([
       {
         id: 'lead-1',
         conversationId: 'conversation-1',
@@ -72,7 +72,7 @@ describe('LeadsService', () => {
         },
       },
     ]);
-    prisma.lead.count.mockResolvedValue(1);
+    (prisma.lead.count as jest.Mock).mockResolvedValue(1);
     const result = await service.findAll({ page: 1, limit: 20 });
     expect(JSON.stringify(result)).not.toContain('private-click-id');
     expect(JSON.stringify(result)).not.toContain('pilotEngine');

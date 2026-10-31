@@ -146,9 +146,9 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
     'sanitizes the real retry and final catch for $name',
     async ({ status, code, category }) => {
       let posts = 0;
-      const { service, calls } = harness(async (cfg) => {
+      const { service, calls } = harness((cfg) => {
         posts++;
-        throw syntheticError(cfg, status, code);
+        return Promise.reject(syntheticError(cfg, status, code));
       });
       const result = await service.generateResponse(request());
       expect(posts).toBe(2);
@@ -186,34 +186,38 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
   );
 
   it('does not print an arbitrary finish reason or malformed provider response', async () => {
-    const { service, calls } = harness(async (cfg) => ({
-      data: {
-        choices: [
-          {
-            finish_reason: marker.finish,
-            message: { content: marker.message },
-          },
-        ],
-      },
-      status: 200,
-      statusText: 'OK',
-      headers: {},
-      config: cfg,
-    }));
+    const { service, calls } = harness((cfg) =>
+      Promise.resolve({
+        data: {
+          choices: [
+            {
+              finish_reason: marker.finish,
+              message: { content: marker.message },
+            },
+          ],
+        },
+        status: 200,
+        statusText: 'OK',
+        headers: {},
+        config: cfg,
+      }),
+    );
     const result = await service.generateResponse(request());
     expect(result.diagnostic?.category).toBe('INVALID_PROVIDER_RESPONSE');
-    expect(result.diagnostic?.summary).toBe('El proveedor devolvió una respuesta inválida.');
+    expect(result.diagnostic?.summary).toBe(
+      'El proveedor devolvió una respuesta inválida.',
+    );
     expect(calls.map((call) => call[0])).toEqual(['warn', 'error']);
     assertNoMarkers(calls);
     assertNoMarkers([[result.diagnostic]]);
   });
 
   it('keeps generic exception messages, stack and cause out of both logs', async () => {
-    const { service, calls } = harness(async () => {
+    const { service, calls } = harness(() => {
       const error = new Error(marker.message);
       error.stack = marker.stack;
       error.cause = { nested: marker.cause };
-      throw error;
+      return Promise.reject(error);
     });
     const result = await service.generateResponse(request());
     expect(fields(calls).map((entry) => entry.payload.category)).toEqual([
@@ -226,9 +230,9 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
 
   it('keeps a synthetic single-generation turn at one POST and one safe error log', async () => {
     let posts = 0;
-    const { service, calls } = harness(async (cfg) => {
+    const { service, calls } = harness((cfg) => {
       posts++;
-      throw syntheticError(cfg, 429);
+      return Promise.reject(syntheticError(cfg, 429));
     });
     const result = await service.generateResponse({
       ...request(),
@@ -240,7 +244,9 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
     });
     expect(posts).toBe(1);
     expect(result.diagnostic?.attempts).toBe(1);
-    expect(result.diagnostic?.summary).toBe('No se pudo completar la respuesta del proveedor.');
+    expect(result.diagnostic?.summary).toBe(
+      'No se pudo completar la respuesta del proveedor.',
+    );
     expect(calls.map((call) => call[0])).toEqual(['error']);
     expect(fields(calls)[0].payload).toEqual({
       event: 'hermes_completion_failed',
@@ -253,9 +259,9 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
 
   it('preserves the successful response and its existing log event', async () => {
     let posts = 0;
-    const { service, calls } = harness(async (cfg) => {
+    const { service, calls } = harness((cfg) => {
       posts++;
-      return {
+      return Promise.resolve({
         data: {
           choices: [
             {
@@ -269,7 +275,7 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
         statusText: 'OK',
         headers: {},
         config: cfg,
-      };
+      });
     });
     const result = await service.generateResponse({
       ...request(),
@@ -296,7 +302,9 @@ describe('Gate D-R synthetic Gemini logger regression', () => {
     const service = new HermesService(config, prisma);
     const context = await (
       service as unknown as {
-        loadBusinessContext: (input: ReturnType<typeof request>) => Promise<string>;
+        loadBusinessContext: (
+          input: ReturnType<typeof request>,
+        ) => Promise<string>;
       }
     ).loadBusinessContext(request());
 

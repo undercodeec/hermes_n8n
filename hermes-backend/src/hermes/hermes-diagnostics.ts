@@ -43,7 +43,9 @@ const NOUS_PROVIDER_CODES = new Set([
 
 type DiagnosticFields = Pick<HermesDiagnostic, 'category' | 'code' | 'summary'>;
 
-export function safeDiagnosticFields(fields: DiagnosticFields): DiagnosticFields {
+export function safeDiagnosticFields(
+  fields: DiagnosticFields,
+): DiagnosticFields {
   if (
     fields.category === 'INVALID_PROVIDER_RESPONSE' ||
     fields.code === INVALID_PROVIDER_RESPONSE.code ||
@@ -136,7 +138,9 @@ const DIAGNOSTIC_CATEGORIES = new Set<HermesDiagnosticCategory>([
   'CONTEXT_ERROR',
 ]);
 
-export function safeStoredIncident(value: unknown): HermesIncidentMetadata | null {
+export function safeStoredIncident(
+  value: unknown,
+): HermesIncidentMetadata | null {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     return null;
   }

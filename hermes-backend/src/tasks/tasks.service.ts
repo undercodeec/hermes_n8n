@@ -294,12 +294,18 @@ export class TasksService {
             )
           : [],
       },
-    } as T;
+    };
   }
 
-  private safeConversationOnTask<T extends { conversation?: unknown }>(task: T): T {
-    const conversation = this.objectMetadata(task.conversation as Prisma.JsonValue);
-    const metadata = this.objectMetadata(conversation.metadata as Prisma.JsonValue);
+  private safeConversationOnTask<T extends { conversation?: unknown }>(
+    task: T,
+  ): T {
+    const conversation = this.objectMetadata(
+      task.conversation as Prisma.JsonValue,
+    );
+    const metadata = this.objectMetadata(
+      conversation.metadata as Prisma.JsonValue,
+    );
     if (!Object.prototype.hasOwnProperty.call(metadata, 'lastHermesIncident')) {
       return task;
     }
@@ -312,7 +318,7 @@ export class TasksService {
           lastHermesIncident: safeStoredIncident(metadata.lastHermesIncident),
         },
       },
-    } as T;
+    };
   }
 
   async findAll(
