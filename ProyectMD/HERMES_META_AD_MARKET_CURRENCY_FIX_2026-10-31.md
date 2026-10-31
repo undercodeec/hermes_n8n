@@ -3,6 +3,7 @@
 ## Estado
 
 - Rama: `fix/meta-ad-market-currency-20261031`, basada en `fix/nous-conversational-quality-20261031` (`0a0bb53975085abc5a02b7b9af005bc06eec2bbc`).
+- PR: https://github.com/undercodeec/hermes_n8n/pull/3 (base PR #2).
 - Commit de código: `5f7aa7b7f4675b3dfb4ceaf2ec2ab345b5f3ea4d`; Tree SHA: `eb56c334175c8dc03b50d481003cec5b9913aba6`.
 - Sin despliegue, cambios en PostgreSQL productivo ni envíos de WhatsApp reales.
 
