@@ -68,6 +68,7 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
   const integrationIds: string[] = [];
   const enqueue = jest.fn().mockResolvedValue(undefined);
   const secret = 'synthetic-app-secret-for-phase-d';
+  const phoneId = 'synthetic-phone-id-for-phase-d';
   const pepper = 'synthetic-reference-pepper-for-phase-d-123456';
 
   beforeAll(async () => {
@@ -78,11 +79,13 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
       get: (key: string) =>
         key === 'META_APP_SECRET'
           ? secret
-          : key === 'META_WEBHOOK_VERIFY_TOKEN'
-            ? 'synthetic-verify-token'
-            : key === 'AD_ATTRIBUTION_REFERENCE_PEPPER'
-              ? pepper
-              : undefined,
+          : key === 'META_PHONE_NUMBER_ID'
+            ? phoneId
+            : key === 'META_WEBHOOK_VERIFY_TOKEN'
+              ? 'synthetic-verify-token'
+              : key === 'AD_ATTRIBUTION_REFERENCE_PEPPER'
+                ? pepper
+                : undefined,
     } as ConfigService;
     advertising = new AdvertisingService(
       prisma,
@@ -175,7 +178,10 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
               field: 'messages',
               value: {
                 messaging_product: 'whatsapp',
-                metadata: { display_phone_number: '', phone_number_id: '' },
+                metadata: {
+                  display_phone_number: '',
+                  phone_number_id: phoneId,
+                },
                 contacts: [{ wa_id: waId, profile: { name: 'Fixture' } }],
                 messages: [
                   {

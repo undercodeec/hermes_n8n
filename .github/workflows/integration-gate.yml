@@ -1,0 +1,53 @@
+name: Hermes integration gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        working-directory: hermes-backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: hermes-backend/package-lock.json
+      - name: Install and generate Prisma client
+        run: |
+          npm ci --ignore-scripts
+          npx prisma generate
+      - name: Unit suite
+        run: npm test -- --runInBand --silent
+      - name: Full isolated integration suite
+        run: npm run test:integration:all
+      - name: A7-D16 official isolated E2E
+        run: npm run test:a7-d16:e2e
+      - name: Commercial ES/EUR and EC/USD cases
+        run: npx jest --runInBand --silent --runTestsByPath src/hermes/commercial-authority.ad-campaign.spec.ts
+      - name: Build, schema, secrets, lint, and diff
+        env:
+          DATABASE_URL: postgresql://learning_test:fixture-learning-local@127.0.0.1:55432/hermes_learning_test?schema=public
+        run: |
+          npm run build
+          npx prisma validate
+          npm run security:secrets
+          npx eslint "{src,apps,libs,test}/**/*.ts"
+          git diff --check
+      - name: Upload integration evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: hermes-integration-gate
+          path: |
+            hermes-backend/artifacts/integration-*.json
+            hermes-backend/artifacts/a7-d16-e2e/
+          if-no-files-found: warn

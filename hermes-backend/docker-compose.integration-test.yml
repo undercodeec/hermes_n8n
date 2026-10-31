@@ -1,0 +1,67 @@
+name: hermes-integration-gate
+
+services:
+  learning-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: learning_test
+      POSTGRES_PASSWORD: fixture-learning-local
+      POSTGRES_DB: hermes_learning_test
+    ports:
+      - '127.0.0.1:55432:5432'
+      - '127.0.0.1:55888:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U learning_test -d hermes_learning_test']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  a3-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: a3_gate
+      POSTGRES_PASSWORD: fixture-a3-local
+      POSTGRES_DB: hermes_a3_temp
+    ports:
+      - '127.0.0.1:55439:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U a3_gate -d hermes_a3_temp']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  a7-postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: a7_d16_test
+      POSTGRES_PASSWORD: fixture-a7-d16-local
+      POSTGRES_DB: hermes_a7_d16_test
+    ports:
+      - '127.0.0.1:55433:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U a7_d16_test -d hermes_a7_d16_test']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  learning-redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    ports:
+      - '127.0.0.1:56379:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 2s
+      retries: 30
+
+  a7-redis:
+    image: redis:7-alpine
+    command: ['redis-server', '--save', '', '--appendonly', 'no']
+    ports:
+      - '127.0.0.1:56380:6379'
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 2s
+      timeout: 2s
+      retries: 30

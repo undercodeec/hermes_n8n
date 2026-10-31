@@ -105,7 +105,7 @@ describeDatabase(
       );
       if (result.status !== 0)
         throw new Error(
-          `Temporary-schema migration failed: ${result.stderr?.slice(0, 1000)}`,
+          `Temporary-schema migration failed (${result.error?.message ?? `exit ${result.status}`}): ${result.stderr?.slice(0, 1000) ?? ''}`,
         );
     }
     beforeAll(async () => {
