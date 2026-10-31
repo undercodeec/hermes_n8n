@@ -13,6 +13,7 @@ import {
   requestsAnotherService,
 } from './black-friday-landing';
 import type { CommercialProfile } from './dto/hermes-request.dto';
+import type { VerifiedBlackFridayAd } from './verified-ad-campaign';
 
 export type AuthorizedOffer = {
   id: string;
@@ -38,11 +39,12 @@ export type AuthorizedOffer = {
 
 export type CommercialSnapshot = {
   market?: CommercialMarket;
-  marketSource: 'CURRENT' | 'PROFILE' | 'HISTORY' | 'UNKNOWN';
+  marketSource: 'CURRENT' | 'VERIFIED_AD' | 'PROFILE' | 'HISTORY' | 'UNKNOWN';
   relevantServiceCodes: string[];
   offers: AuthorizedOffer[];
   needsMarketClarification: boolean;
   needsCampaignTariffConfirmation?: boolean;
+  needsAdMarketConflictClarification?: boolean;
   recommendedOfferId?: string;
   additionalScope?: string[];
   policies?: string[];
@@ -67,6 +69,17 @@ function mentionedMarket(text: string): CommercialMarket | undefined {
   return ec === es ? undefined : ec ? CommercialMarket.EC : CommercialMarket.ES;
 }
 
+function explicitProjectMarket(text: string): CommercialMarket | undefined {
+  const match = normalize(text).match(
+    /\b(?:proyecto|sitio web|pagina web|tienda online|servicio|landing|pagina de aterrizaje)\b.{0,40}\bpara\s+(ecuador|espana)\b/,
+  )?.[1];
+  return match === 'ecuador'
+    ? CommercialMarket.EC
+    : match === 'espana'
+      ? CommercialMarket.ES
+      : undefined;
+}
+
 function mentionedCurrency(
   text: string,
 ): 'USD' | 'EUR' | 'AMBIGUOUS' | undefined {
@@ -80,20 +93,13 @@ export function resolveCommercialMarket(input: {
   customerMessage: string;
   profile?: CommercialProfile;
   recentCustomerMessages?: string[];
+  verifiedAdMarket?: CommercialMarket;
 }): { market?: CommercialMarket; source: CommercialSnapshot['marketSource'] } {
   const normalizedCurrent = normalize(input.customerMessage);
-  const explicitProjectMarket = normalizedCurrent.match(
-    /\b(?:proyecto|sitio web|pagina web|tienda online|servicio)\b.{0,40}\bpara\s+(ecuador|espana)\b/,
-  )?.[1];
-  if (explicitProjectMarket) {
-    return {
-      market:
-        explicitProjectMarket === 'ecuador'
-          ? CommercialMarket.EC
-          : CommercialMarket.ES,
-      source: 'CURRENT',
-    };
-  }
+  const projectMarket = explicitProjectMarket(input.customerMessage);
+  if (projectMarket) return { market: projectMarket, source: 'CURRENT' };
+  if (input.verifiedAdMarket)
+    return { market: input.verifiedAdMarket, source: 'VERIFIED_AD' };
   const current = mentionedMarket(input.customerMessage);
   if (current) return { market: current, source: 'CURRENT' };
   if (
@@ -153,11 +159,16 @@ export class CommercialAuthorityService {
     priceRequested: boolean;
     /** Verified, time-bound ad mapping. Never populated from customer text. */
     verifiedAdPolicyVersion?: typeof BLACK_FRIDAY_LANDING_POLICY_VERSION;
+    verifiedAd?: VerifiedBlackFridayAd;
     /** A newer verified referral supersedes older promotional text. */
     ignoreHistoricalPromotion?: boolean;
     now?: Date;
   }): Promise<CommercialSnapshot> {
-    const resolution = resolveCommercialMarket(input);
+    const resolution = resolveCommercialMarket({
+      ...input,
+      verifiedAdMarket: input.verifiedAd?.market,
+    });
+    const projectMarket = explicitProjectMarket(input.customerMessage);
     const priorContext = [
       input.productOfInterest,
       input.profile?.service,
@@ -175,11 +186,14 @@ export class CommercialAuthorityService {
         input.customerMessage,
         input.ignoreHistoricalPromotion ? [] : input.recentCustomerMessages,
       ) ||
-        input.verifiedAdPolicyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION);
+        input.verifiedAdPolicyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION ||
+        input.verifiedAd?.policyVersion ===
+          BLACK_FRIDAY_LANDING_POLICY_VERSION);
     const currentCurrency = mentionedCurrency(input.customerMessage);
     const historicalCurrency =
       currentCurrency ||
       resolution.source === 'CURRENT' ||
+      Boolean(input.verifiedAd?.market) ||
       input.ignoreHistoricalPromotion
         ? undefined
         : [...(input.recentCustomerMessages ?? [])]
@@ -230,11 +244,18 @@ export class CommercialAuthorityService {
       relevantServiceCodes,
       offers: [],
       needsMarketClarification: false,
+      needsAdMarketConflictClarification: Boolean(
+        blackFridayRequested &&
+        input.verifiedAd?.market &&
+        projectMarket &&
+        projectMarket !== input.verifiedAd.market,
+      ),
       renewalRequested:
         /\b(?:renovacion|renovar|hosting|dominio|gastos|costos? anuales?|segundo ano|despues del primer ano|que valores tendria que asumir|cuanto tendria que pagar)\b/.test(
           normalize(input.customerMessage),
         ),
     };
+    if (result.needsAdMarketConflictClarification) return result;
     const deliveryRequested =
       /\b(?:plazo|tiempo de entrega|cuanto tarda|cuanto demora|dias laborables|para cuando|fecha de entrega)\b/.test(
         normalize(input.customerMessage),
@@ -304,6 +325,7 @@ export class CommercialAuthorityService {
             resolution.market,
             blackFridayRequested,
             requestedCurrency,
+            input.verifiedAd,
           ),
         )
         .filter(
@@ -323,11 +345,12 @@ export class CommercialAuthorityService {
       result.needsCampaignTariffConfirmation =
         blackFridayRequested &&
         !result.offers.length &&
-        activeCampaignPrices.length > 0;
+        (activeCampaignPrices.length > 0 || Boolean(input.verifiedAd?.market));
       if (
         blackFridayRequested &&
         !result.offers.length &&
-        !activeCampaignPrices.length
+        !activeCampaignPrices.length &&
+        !input.verifiedAd?.market
       ) {
         result.policies = [
           ...(result.policies ?? []),
@@ -433,6 +456,7 @@ export class CommercialAuthorityService {
     market?: CommercialMarket,
     blackFridayRequested = false,
     requestedCurrency?: 'USD' | 'EUR' | 'AMBIGUOUS',
+    verifiedAd?: VerifiedBlackFridayAd,
   ): AuthorizedOffer[] {
     const serviceCode = product.serviceCode;
     if (!serviceCode) return [];
@@ -454,20 +478,39 @@ export class CommercialAuthorityService {
             !base.isPromotion && base.id === price.supersedesPriceListId,
         ),
     );
-    const matchedCampaign =
-      requestedCurrency && requestedCurrency !== 'AMBIGUOUS'
+    const marketCampaign =
+      verifiedAd?.market && verifiedAd.currency
         ? campaignPromotions.filter(
-            (price) => price.currency === requestedCurrency,
+            (price) =>
+              price.market === verifiedAd.market &&
+              price.currency === verifiedAd.currency,
           )
-        : market && requestedCurrency !== 'AMBIGUOUS'
+        : [];
+    const verifiedCampaign = marketCampaign.length
+      ? marketCampaign
+      : verifiedAd?.market === CommercialMarket.EC
+        ? campaignPromotions.filter(
+            (price) => price.market === null && price.currency === 'USD',
+          )
+        : [];
+    const matchedCampaign =
+      verifiedAd?.market && verifiedAd.currency
+        ? requestedCurrency && requestedCurrency !== verifiedAd.currency
+          ? []
+          : verifiedCampaign
+        : requestedCurrency && requestedCurrency !== 'AMBIGUOUS'
           ? campaignPromotions.filter(
-              (price) =>
-                price.market === market ||
-                (market === CommercialMarket.EC &&
-                  price.market === null &&
-                  price.currency === 'USD'),
+              (price) => price.currency === requestedCurrency,
             )
-          : campaignPromotions;
+          : market && requestedCurrency !== 'AMBIGUOUS'
+            ? campaignPromotions.filter(
+                (price) =>
+                  price.market === market ||
+                  (market === CommercialMarket.EC &&
+                    price.market === null &&
+                    price.currency === 'USD'),
+              )
+            : campaignPromotions;
     const selectedCampaign =
       matchedCampaign.length === 1 ||
       (matchedCampaign.length === 2 &&
@@ -573,6 +616,11 @@ export class CommercialAuthorityService {
 export function commercialSnapshotKnowledge(
   snapshot: CommercialSnapshot,
 ): string[] {
+  if (snapshot.needsAdMarketConflictClarification) {
+    return [
+      'El país del proyecto indicado por el cliente difiere del mercado del anuncio verificado. No cites ninguna tarifa hasta aclararlo. Pregunta brevemente si desea orientación para el país que indicó.',
+    ];
+  }
   if (snapshot.needsMarketClarification) {
     return [
       'El precio depende del mercado y aún no se conoce el país aplicable. Si el cliente pregunta el precio, pida una sola aclaración breve: ¿El proyecto sería para Ecuador o España?',

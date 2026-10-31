@@ -1,9 +1,20 @@
+import { CommercialMarket } from '@prisma/client';
 import { BLACK_FRIDAY_LANDING_POLICY_VERSION } from './black-friday-landing';
 import { projectAttribution } from '../attribution-crm/attribution-crm';
+
+const verifiedAdMarkets: Record<
+  string,
+  { market: CommercialMarket; currency: 'EUR' | 'USD' }
+> = {
+  '52583085497631': { market: CommercialMarket.ES, currency: 'EUR' },
+  '52581450998031': { market: CommercialMarket.EC, currency: 'USD' },
+};
 
 export type VerifiedBlackFridayAd = {
   policyVersion: typeof BLACK_FRIDAY_LANDING_POLICY_VERSION;
   source: 'SOURCE_ID' | 'VERIFIED_META_AD_FALLBACK';
+  market?: CommercialMarket;
+  currency?: 'EUR' | 'USD';
 };
 
 export function resolveVerifiedBlackFridayAd(input: {
@@ -74,10 +85,12 @@ export function resolveVerifiedBlackFridayAd(input: {
     .map((id) => id.trim())
     .filter(Boolean);
   if (attribution.initialAdSourceId) {
-    return ids.includes(attribution.initialAdSourceId)
+    const mapped = verifiedAdMarkets[attribution.initialAdSourceId];
+    return ids.includes(attribution.initialAdSourceId) && mapped
       ? {
           policyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
           source: 'SOURCE_ID',
+          ...mapped,
         }
       : undefined;
   }

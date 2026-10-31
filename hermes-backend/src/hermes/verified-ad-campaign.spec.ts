@@ -1,7 +1,7 @@
 import { resolveVerifiedBlackFridayAd } from './verified-ad-campaign';
 
 const config = {
-  sourceIds: '52583085497631',
+  sourceIds: '52583085497631,52581450998031',
   fallbackEnabled: false,
   startsAt: '2026-10-30T00:00:00.000Z',
   endsAt: '2026-11-02T00:00:00.000Z',
@@ -25,6 +25,8 @@ describe('verified Black Friday ad campaign', () => {
     ).toEqual({
       policyVersion: 'black-friday-landing-80-v1',
       source: 'SOURCE_ID',
+      market: 'ES',
+      currency: 'EUR',
     });
     expect(
       resolveVerifiedBlackFridayAd({
@@ -122,6 +124,8 @@ describe('verified Black Friday ad campaign', () => {
     ).toEqual({
       policyVersion: 'black-friday-landing-80-v1',
       source: 'SOURCE_ID',
+      market: 'ES',
+      currency: 'EUR',
     });
     expect(
       resolveVerifiedBlackFridayAd({
@@ -130,6 +134,22 @@ describe('verified Black Friday ad campaign', () => {
         config,
       }),
     ).toBeUndefined();
+  });
+
+  it('maps the verified Ecuador Ad ID to EC and USD', () => {
+    expect(
+      resolveVerifiedBlackFridayAd({
+        currentMetadata: verified('52581450998031'),
+        currentOccurredAt: now,
+        now,
+        config,
+      }),
+    ).toEqual({
+      policyVersion: 'black-friday-landing-80-v1',
+      source: 'SOURCE_ID',
+      market: 'EC',
+      currency: 'USD',
+    });
   });
 
   it('allows a time-bound fallback only for a verified ad without a source ID', () => {
@@ -226,5 +246,23 @@ describe('verified Black Friday ad campaign', () => {
         config,
       })?.source,
     ).toBe('SOURCE_ID');
+  });
+
+  it('uses a newer Ecuador ad instead of an earlier Spain ad', () => {
+    expect(
+      resolveVerifiedBlackFridayAd({
+        conversationMetadata: verified('52583085497631'),
+        conversationCreatedAt: new Date('2026-10-29T12:00:00Z'),
+        currentMetadata: verified('52581450998031'),
+        currentOccurredAt: now,
+        now,
+        config,
+      }),
+    ).toEqual({
+      policyVersion: 'black-friday-landing-80-v1',
+      source: 'SOURCE_ID',
+      market: 'EC',
+      currency: 'USD',
+    });
   });
 });

@@ -638,6 +638,7 @@ export class AutoReplyService {
               .map((message) => message.content),
             priceRequested: false,
             verifiedAdPolicyVersion: verifiedAdCampaign.policyVersion,
+            verifiedAd: verifiedAdCampaign,
             ignoreHistoricalPromotion,
           })
           .catch(() => undefined);
@@ -714,7 +715,10 @@ export class AutoReplyService {
         .map((message) => message.content),
       priceRequested: policy.guidance.priceAnswerRequired,
       ...(verifiedAdCampaign
-        ? { verifiedAdPolicyVersion: verifiedAdCampaign.policyVersion }
+        ? {
+            verifiedAdPolicyVersion: verifiedAdCampaign.policyVersion,
+            verifiedAd: verifiedAdCampaign,
+          }
         : {}),
       ...(ignoreHistoricalPromotion ? { ignoreHistoricalPromotion: true } : {}),
     });
@@ -728,7 +732,8 @@ export class AutoReplyService {
         initialCampaignInquiry) &&
       (activeCampaignOffer ||
         commercialSnapshot.needsMarketClarification ||
-        commercialSnapshot.needsCampaignTariffConfirmation)
+        commercialSnapshot.needsCampaignTariffConfirmation ||
+        commercialSnapshot.needsAdMarketConflictClarification)
     ) {
       policy.guidance.priceAnswerRequired = true;
     }

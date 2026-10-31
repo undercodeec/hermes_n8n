@@ -3294,6 +3294,14 @@ describe('AutoReplyService', () => {
       expect(harness.engine.respond).toHaveBeenCalledTimes(1);
       expect(parts).toHaveLength(1);
       expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(1);
+      expect(authority.snapshot).toHaveBeenCalledWith(
+        expect.objectContaining({
+          verifiedAd: expect.objectContaining({
+            market: CommercialMarket.ES,
+            currency: 'EUR',
+          }),
+        }),
+      );
       const answer = parts[0].content as string;
       expect(answer).toMatch(/^Hola, Yaupi\./u);
       expect(answer).toMatch(/€\s*80(?:\.00)?/iu);
@@ -3310,12 +3318,7 @@ describe('AutoReplyService', () => {
     },
   );
 
-  it('shows both approved currencies without asking the country for a generic dual-market ad enquiry', async () => {
-    const usd = {
-      ...approvedCampaignOffer(),
-      market: CommercialMarket.EC,
-      marketScope: 'MARKET' as const,
-    };
+  it('quotes only EUR for a generic verified Spain ad enquiry', async () => {
     const eur = {
       ...approvedCampaignOffer(),
       id: 'commercial-price-landing-black-friday-80-es-v1',
@@ -3324,9 +3327,11 @@ describe('AutoReplyService', () => {
       currency: 'EUR' as const,
     };
     (authority.snapshot as jest.Mock).mockResolvedValueOnce({
-      marketSource: 'UNKNOWN',
+      market: CommercialMarket.ES,
+      marketSource: 'VERIFIED_AD',
       relevantServiceCodes: ['LANDING_PAGE'],
-      offers: [usd, eur],
+      offers: [eur],
+      recommendedOfferId: eur.id,
       needsMarketClarification: false,
     });
     const harness = setupProcessHarness({
@@ -3350,7 +3355,8 @@ describe('AutoReplyService', () => {
     });
     const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
     expect(parts).toHaveLength(1);
-    expect(parts[0].content).toMatch(/€80\.00.*USD \$80\.00/iu);
+    expect(parts[0].content).toMatch(/€80\.00/iu);
+    expect(parts[0].content).not.toMatch(/USD|d[oó]lares/iu);
     expect(parts[0].content).not.toMatch(/¿El proyecto sería/iu);
   });
 
@@ -3372,10 +3378,10 @@ describe('AutoReplyService', () => {
         inboundMetadata: {
           pilotOrigin: 'meta_ad',
           pilotOriginEvidence: 'meta_referral_ad',
-          pilotAd: { sourceId: '52583085497631' },
+          pilotAd: { sourceId: '52581450998031' },
         },
         campaignConfig: {
-          HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+          HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52581450998031',
         },
         hermesResponse: {
           response:
@@ -3431,10 +3437,10 @@ describe('AutoReplyService', () => {
         inboundMetadata: {
           pilotOrigin: 'meta_ad',
           pilotOriginEvidence: 'meta_referral_ad',
-          pilotAd: { sourceId: '52583085497631' },
+          pilotAd: { sourceId: '52581450998031' },
         },
         campaignConfig: {
-          HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+          HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52581450998031',
           HERMES_BLACK_FRIDAY_CAMPAIGN_STARTS_AT: '',
           HERMES_BLACK_FRIDAY_CAMPAIGN_ENDS_AT: '',
         },
@@ -3449,6 +3455,10 @@ describe('AutoReplyService', () => {
         expect.objectContaining({
           customerMessage: message,
           verifiedAdPolicyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+          verifiedAd: expect.objectContaining({
+            market: CommercialMarket.EC,
+            currency: 'USD',
+          }),
         }),
       );
       const turn = harness.engine.respond.mock
@@ -3491,11 +3501,11 @@ describe('AutoReplyService', () => {
       conversationMetadata: {
         pilotOrigin: 'meta_ad',
         pilotOriginEvidence: 'meta_referral_ad',
-        pilotAd: { sourceId: '52583085497631' },
+        pilotAd: { sourceId: '52581450998031' },
         pilotEngine: 'gemini_direct',
       },
       campaignConfig: {
-        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52581450998031',
         HERMES_BLACK_FRIDAY_CAMPAIGN_STARTS_AT: '',
         HERMES_BLACK_FRIDAY_CAMPAIGN_ENDS_AT: '',
       },
@@ -3565,10 +3575,10 @@ describe('AutoReplyService', () => {
       conversationMetadata: {
         pilotOrigin: 'meta_ad',
         pilotOriginEvidence: 'meta_referral_ad',
-        pilotAd: { sourceId: '52583085497631' },
+        pilotAd: { sourceId: '52581450998031' },
       },
       campaignConfig: {
-        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52581450998031',
       },
       historyMessages: [
         {
@@ -3622,10 +3632,10 @@ describe('AutoReplyService', () => {
       inboundMetadata: {
         pilotOrigin: 'meta_ad',
         pilotOriginEvidence: 'meta_referral_ad',
-        pilotAd: { sourceId: '52583085497631' },
+        pilotAd: { sourceId: '52581450998031' },
       },
       campaignConfig: {
-        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52581450998031',
         HERMES_BLACK_FRIDAY_CAMPAIGN_STARTS_AT: '',
         HERMES_BLACK_FRIDAY_CAMPAIGN_ENDS_AT: '',
       },
@@ -3662,10 +3672,10 @@ describe('AutoReplyService', () => {
       inboundMetadata: {
         pilotOrigin: 'meta_ad',
         pilotOriginEvidence: 'meta_referral_ad',
-        pilotAd: { sourceId: '52583085497631' },
+        pilotAd: { sourceId: '52581450998031' },
       },
       campaignConfig: {
-        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52581450998031',
       },
       hermesResponse: { response: 'Incluye hosting y cuesta USD $80.' },
     });
@@ -3696,10 +3706,10 @@ describe('AutoReplyService', () => {
       inboundMetadata: {
         pilotOrigin: 'meta_ad',
         pilotOriginEvidence: 'meta_referral_ad',
-        pilotAd: { sourceId: '52583085497631' },
+        pilotAd: { sourceId: '52581450998031' },
       },
       campaignConfig: {
-        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52581450998031',
       },
       hermesResponse: {
         response: 'Sí, la landing incluye dominio .com y hosting por 1 año.',
@@ -3743,10 +3753,10 @@ describe('AutoReplyService', () => {
       inboundMetadata: {
         pilotOrigin: 'meta_ad',
         pilotOriginEvidence: 'meta_referral_ad',
-        pilotAd: { sourceId: '52583085497631' },
+        pilotAd: { sourceId: '52581450998031' },
       },
       campaignConfig: {
-        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52581450998031',
         HERMES_BLACK_FRIDAY_CAMPAIGN_STARTS_AT: '',
         HERMES_BLACK_FRIDAY_CAMPAIGN_ENDS_AT: '',
       },
@@ -3794,10 +3804,10 @@ describe('AutoReplyService', () => {
       inboundMetadata: {
         pilotOrigin: 'meta_ad',
         pilotOriginEvidence: 'meta_referral_ad',
-        pilotAd: { sourceId: '52583085497631' },
+        pilotAd: { sourceId: '52581450998031' },
       },
       campaignConfig: {
-        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52581450998031',
         HERMES_BLACK_FRIDAY_CAMPAIGN_STARTS_AT: '',
         HERMES_BLACK_FRIDAY_CAMPAIGN_ENDS_AT: '',
       },
@@ -3840,10 +3850,10 @@ describe('AutoReplyService', () => {
       inboundMetadata: {
         pilotOrigin: 'meta_ad',
         pilotOriginEvidence: 'meta_referral_ad',
-        pilotAd: { sourceId: '52583085497631' },
+        pilotAd: { sourceId: '52581450998031' },
       },
       campaignConfig: {
-        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52581450998031',
         HERMES_BLACK_FRIDAY_CAMPAIGN_STARTS_AT: '',
         HERMES_BLACK_FRIDAY_CAMPAIGN_ENDS_AT: '',
       },
