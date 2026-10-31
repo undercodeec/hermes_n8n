@@ -62,7 +62,9 @@ Compose publica únicamente en `127.0.0.1:55432`, `55433`, `55439`, `55888`, `56
 
 - Commit candidato previo: `4eff536094c619e8a5818e707d7193f940ba86c4`; Tree `4f53663b0e26023c2ea4b42735b6a44f71ce4063`.
 - Commit de corrección del harness: `e9389975fe5820fb1ac1903c3d560e10a16a0419`; Tree `86c47649226ef8a485e8b86ec4ed0d602abf6d3b`.
+- Commit del código validado con control de omisiones: `2b3146453f5f70dbe98f1472d7a323b294ece607`; Tree `64d03ac0eac136f596f6b2edb8501464ce1a95fd`.
+- PR: https://github.com/undercodeec/hermes_n8n/pull/5, sobre `pilot/a7-d12-monitor-only-20261026`.
 - Digest GHCR anterior: `ghcr.io/undercodeec/hermes-backend@sha256:283bd5b99cdcdffea2506e85c4cc208eafa3cce570201569734f57dd2582c0ec`. **No representa el árbol corregido**.
-- PR y HEAD/Tree definitivos: pendientes de integrar el cambio versionado. Digest GHCR nuevo: pendiente del workflow oficial tras la integración autorizada.
+- HEAD/Tree definitivos de la rama piloto: pendientes de integrar el cambio versionado. Digest GHCR nuevo: pendiente del workflow oficial tras la integración autorizada.
 
 Para continuar: revisar el PR de este harness, resolver el lint global sin reducir el control, integrar conforme a las protecciones del repositorio y la autorización del propietario, repetir el gate en el commit integrado, ejecutar el workflow manual GHCR y registrar el digest nuevo. Solo entonces preparar el handoff a Codex VPS. **No se realizó despliegue desde Codex Local.**
