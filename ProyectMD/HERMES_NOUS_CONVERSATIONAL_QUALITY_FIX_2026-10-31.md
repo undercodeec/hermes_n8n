@@ -4,6 +4,7 @@
 
 - Base productiva: `871d332ada0eb2dae22e9c39be367734090c3e76`.
 - Rama aislada: `fix/nous-conversational-quality-20261031`.
+- PR: https://github.com/undercodeec/hermes_n8n/pull/2 (base `pilot/a7-d12-monitor-only-20261026`).
 - Commit de implementación: `f24a915046493fd93685034afc8e32fb86ffcf62`.
 - Tree SHA de implementación: `24f8792fb1d59f70021b84dbb237de2c47bec4d4`.
 - Sin integración ni despliegue. Ningún ensayo usó WhatsApp real.
