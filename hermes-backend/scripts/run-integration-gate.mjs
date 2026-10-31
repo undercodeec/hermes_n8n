@@ -165,6 +165,11 @@ try {
       } catch {
         // A setup failure may precede Jest's JSON output.
       }
+      const pendingTitles = (jest.testResults ?? []).flatMap((testSuite) =>
+        (testSuite.assertionResults ?? [])
+          .filter((assertion) => assertion.status === 'pending')
+          .map((assertion) => assertion.title),
+      );
       const result = {
         suite,
         database: group.database,
@@ -172,6 +177,7 @@ try {
         passed: jest.numPassedTests ?? 0,
         failed: jest.numFailedTests ?? 0,
         skipped: jest.numPendingTests ?? 0,
+        pendingTitles,
         testSuitesFailed: jest.numFailedTestSuites ?? 1,
       };
       results.push(result);
@@ -184,7 +190,10 @@ try {
         result.exitCode !== 0 ||
         result.testSuitesFailed ||
         result.passed === 0 ||
-        result.skipped > (allowedSkippedTests[result.suite] ?? 0),
+        result.skipped !== result.pendingTitles.length ||
+        result.pendingTitles.some(
+          (title) => !(allowedSkippedTests[result.suite] ?? []).includes(title),
+        ),
     )
   )
     throw new Error('One or more integration suites failed');

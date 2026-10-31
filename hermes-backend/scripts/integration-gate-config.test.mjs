@@ -53,6 +53,8 @@ test('assigns every general integration suite exactly once to its required isola
   assert.equal(new URL(databaseUrls.a3).port, '55439');
   assert.equal(new URL(databaseUrls.a6).port, '55888');
   assert.deepEqual(allowedSkippedTests, {
-    'advertising-flow.integration-spec.ts': 1,
+    'advertising-flow.integration-spec.ts': [
+      'registers a web BFF v2 intent through Nest and resolves its signed reference',
+    ],
   });
 });

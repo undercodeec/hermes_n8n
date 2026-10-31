@@ -16,7 +16,9 @@ export const redisUrls = {
 
 // The Phase H web BFF case requires a separately built Next fixture.
 export const allowedSkippedTests = {
-  'advertising-flow.integration-spec.ts': 1,
+  'advertising-flow.integration-spec.ts': [
+    'registers a web BFF v2 intent through Nest and resolves its signed reference',
+  ],
 };
 
 export const suiteGroups = [
