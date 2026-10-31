@@ -3240,9 +3240,16 @@ describe('AutoReplyService', () => {
   it.each(['gemini_direct', 'nous_hermes'] as const)(
     '%s sends one concise, named reply for the observed EUR 80 Meta enquiry',
     async (engineId) => {
-      const promotion = approvedCampaignOffer();
+      const promotion = {
+        ...approvedCampaignOffer(),
+        id: 'commercial-price-landing-black-friday-80-es-v1',
+        market: CommercialMarket.ES,
+        marketScope: 'MARKET' as const,
+        currency: 'EUR' as const,
+      };
       (authority.snapshot as jest.Mock).mockResolvedValueOnce({
-        marketSource: 'UNKNOWN',
+        market: CommercialMarket.ES,
+        marketSource: 'CURRENT',
         relevantServiceCodes: ['LANDING_PAGE'],
         offers: [promotion],
         recommendedOfferId: promotion.id,
@@ -3252,7 +3259,7 @@ describe('AutoReplyService', () => {
         '¡Hola! Quiero más información sobre la promoción de € 80.00';
       const greeting = 'Hola, con gusto le comparto los detalles.';
       const detail =
-        'Nuestra promoción de Black Friday para Landing Page tiene un precio de 80.00 USD. Es una página de una sola sección para presentar su negocio y captar prospectos. ¿A qué actividad se dedica?';
+        'Nuestra promoción de Black Friday para Landing Page cuesta €80.00. Es una página de una sola sección para presentar su negocio y captar prospectos. ¿A qué actividad se dedica?';
       const harness = setupProcessHarness({
         engineId,
         contactName: 'Yaupi',
@@ -3289,9 +3296,8 @@ describe('AutoReplyService', () => {
       expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(1);
       const answer = parts[0].content as string;
       expect(answer).toMatch(/^Hola, Yaupi\./u);
-      expect(answer).toMatch(/(?:USD\s*80|80(?:\.00)?\s*USD)/iu);
-      expect(answer).toMatch(/EUR|€|euros/iu);
-      expect(answer).toMatch(/confirm/iu);
+      expect(answer).toMatch(/€\s*80(?:\.00)?/iu);
+      expect(answer).not.toMatch(/USD|d[oó]lares|diferencia/i);
       expect(answer).toMatch(/\b(?:landing|página)\b/iu);
       expect(answer).toMatch(/¿[^?]+\?/u);
       expect(answer).toMatch(/¿[^?]+\?$/u);
@@ -3303,6 +3309,39 @@ describe('AutoReplyService', () => {
       expect(answer.match(/\bYaupi\b/gu) ?? []).toHaveLength(1);
     },
   );
+
+  it('asks for the country instead of quoting a currency for a generic dual-market ad enquiry', async () => {
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [],
+      needsMarketClarification: true,
+    });
+    const harness = setupProcessHarness({
+      engineId: 'nous_hermes',
+      inboundContent: 'Hola, quiero más información de Black Friday',
+      inboundCreatedAt: campaignTime(-3),
+      inboundMetadata: {
+        pilotOrigin: 'meta_ad',
+        pilotOriginEvidence: 'meta_referral_ad',
+        pilotAd: { sourceId: '52583085497631' },
+      },
+      campaignConfig: {
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+      },
+      hermesResponse: { response: 'La landing cuesta USD $80.' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].content).toMatch(
+      /^Hola, Ana\. ¿El proyecto sería para Ecuador o España\?$/u,
+    );
+  });
 
   it.each([null, 'Cliente', '593991234567'])(
     'greets a first campaign enquiry naturally when contact name is %s',

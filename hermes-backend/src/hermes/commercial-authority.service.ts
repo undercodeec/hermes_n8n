@@ -42,6 +42,7 @@ export type CommercialSnapshot = {
   relevantServiceCodes: string[];
   offers: AuthorizedOffer[];
   needsMarketClarification: boolean;
+  needsCampaignTariffConfirmation?: boolean;
   recommendedOfferId?: string;
   additionalScope?: string[];
   policies?: string[];
@@ -64,6 +65,15 @@ function mentionedMarket(text: string): CommercialMarket | undefined {
     /\bespana\b/.test(normalized) &&
     !/\bno\s+(?:en|para|soy de)\s+espana\b/.test(normalized);
   return ec === es ? undefined : ec ? CommercialMarket.EC : CommercialMarket.ES;
+}
+
+function mentionedCurrency(
+  text: string,
+): 'USD' | 'EUR' | 'AMBIGUOUS' | undefined {
+  const euros = /€|\b(?:EUR|euros?)\b/iu.test(text);
+  const dollars = /\$|\b(?:USD|d[oó]lares?)\b/iu.test(text);
+  if (euros && dollars) return 'AMBIGUOUS';
+  return euros ? 'EUR' : dollars ? 'USD' : undefined;
 }
 
 export function resolveCommercialMarket(input: {
@@ -166,6 +176,17 @@ export class CommercialAuthorityService {
         input.ignoreHistoricalPromotion ? [] : input.recentCustomerMessages,
       ) ||
         input.verifiedAdPolicyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION);
+    const currentCurrency = mentionedCurrency(input.customerMessage);
+    const historicalCurrency =
+      currentCurrency ||
+      resolution.source === 'CURRENT' ||
+      input.ignoreHistoricalPromotion
+        ? undefined
+        : [...(input.recentCustomerMessages ?? [])]
+            .reverse()
+            .map(mentionedCurrency)
+            .find(Boolean);
+    const requestedCurrency = currentCurrency ?? historicalCurrency;
     const currentServiceCodes: string[] = blackFridayRequested
       ? ['LANDING_PAGE']
       : requestedSolutionKinds(input.customerMessage, false);
@@ -278,7 +299,12 @@ export class CommercialAuthorityService {
       });
       result.offers = products
         .flatMap((product) =>
-          this.currentOffer(product, resolution.market, blackFridayRequested),
+          this.currentOffer(
+            product,
+            resolution.market,
+            blackFridayRequested,
+            requestedCurrency,
+          ),
         )
         .filter(
           (offer) =>
@@ -286,7 +312,30 @@ export class CommercialAuthorityService {
             (offer.promotion &&
               offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION),
         );
-      if (blackFridayRequested && !result.offers.length) {
+      const activeCampaignPrices = products.flatMap((product) =>
+        product.priceLists.filter(
+          (price) =>
+            price.isPromotion &&
+            price.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+            this.isEligible(price),
+        ),
+      );
+      result.needsMarketClarification =
+        blackFridayRequested &&
+        !result.offers.length &&
+        activeCampaignPrices.some((price) => price.market !== null) &&
+        (!requestedCurrency || requestedCurrency === 'AMBIGUOUS') &&
+        (!resolution.market || requestedCurrency === 'AMBIGUOUS');
+      result.needsCampaignTariffConfirmation =
+        blackFridayRequested &&
+        !result.offers.length &&
+        activeCampaignPrices.length > 0 &&
+        !result.needsMarketClarification;
+      if (
+        blackFridayRequested &&
+        !result.offers.length &&
+        !activeCampaignPrices.length
+      ) {
         result.policies = [
           ...(result.policies ?? []),
           'La promoción Black Friday de Landing Page no está activa. No confirmes el precio promocional; un asesor puede verificar su vigencia.',
@@ -365,15 +414,17 @@ export class CommercialAuthorityService {
             ? 'Pedidos automatizados si necesita gestión interna o pagos en línea'
             : '',
       ].filter(Boolean);
-      result.needsMarketClarification =
-        input.priceRequested &&
-        !resolution.market &&
-        !result.offers.length &&
-        products.some((product) =>
-          product.priceLists.some(
-            (price) => price.market !== null && this.isEligible(price),
-          ),
-        );
+      if (!blackFridayRequested) {
+        result.needsMarketClarification =
+          input.priceRequested &&
+          !resolution.market &&
+          !result.offers.length &&
+          products.some((product) =>
+            product.priceLists.some(
+              (price) => price.market !== null && this.isEligible(price),
+            ),
+          );
+      }
       return result;
     } catch (error) {
       this.logger.warn(
@@ -387,6 +438,7 @@ export class CommercialAuthorityService {
     product: ProductWithPrices,
     market?: CommercialMarket,
     blackFridayRequested = false,
+    requestedCurrency?: 'USD' | 'EUR' | 'AMBIGUOUS',
   ): AuthorizedOffer[] {
     if (!product.serviceCode) return [];
     const eligible = product.priceLists.filter(
@@ -398,18 +450,47 @@ export class CommercialAuthorityService {
           !price.isPromotion ||
           price.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION),
     );
+    const campaignPromotions = eligible.filter(
+      (price) =>
+        price.isPromotion &&
+        price.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+        eligible.some(
+          (base) =>
+            !base.isPromotion && base.id === price.supersedesPriceListId,
+        ),
+    );
+    const matchedCampaign = requestedCurrency
+      ? requestedCurrency === 'AMBIGUOUS'
+        ? []
+        : campaignPromotions.filter(
+            (price) => price.currency === requestedCurrency,
+          )
+      : market
+        ? campaignPromotions.filter(
+            (price) =>
+              price.market === market ||
+              (market === CommercialMarket.EC &&
+                price.market === null &&
+                price.currency === 'USD'),
+          )
+        : campaignPromotions;
+    const selectedCampaign =
+      matchedCampaign.length === 1 &&
+      (requestedCurrency || market || matchedCampaign[0].market === null)
+        ? matchedCampaign[0]
+        : undefined;
     const marketSpecific = market
       ? eligible.filter((price) => price.market === market)
       : [];
-    const applicable = blackFridayRequested
-      ? eligible.filter((price) => price.market === null)
-      : marketSpecific.length
-        ? marketSpecific
-        : eligible.filter((price) => price.market === null);
+    const applicable = marketSpecific.length
+      ? marketSpecific
+      : eligible.filter((price) => price.market === null);
     const base = applicable.filter((price) => !price.isPromotion);
     const promotion = applicable.filter((price) => price.isPromotion);
     let selected: (typeof eligible)[number] | undefined;
-    if (
+    if (blackFridayRequested) {
+      selected = selectedCampaign;
+    } else if (
       promotion.length === 1 &&
       base.length === 1 &&
       promotion[0].supersedesPriceListId === base[0].id
@@ -496,6 +577,11 @@ export function commercialSnapshotKnowledge(
   if (snapshot.needsMarketClarification) {
     return [
       'El precio depende del mercado y aún no se conoce el país aplicable. Si el cliente pregunta el precio, pida una sola aclaración breve: ¿El proyecto sería para Ecuador o España?',
+    ];
+  }
+  if (snapshot.needsCampaignTariffConfirmation) {
+    return [
+      'No hay una tarifa Black Friday aprobada y vigente para la moneda o el país indicado. No cites el precio de otra moneda ni conviertas importes; un asesor debe verificar la tarifa aplicable.',
     ];
   }
   if (!snapshot.offers.length) {

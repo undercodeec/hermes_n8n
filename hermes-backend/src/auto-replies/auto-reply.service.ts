@@ -726,7 +726,9 @@ export class AutoReplyService {
     if (
       (isGeneralBlackFridayInquiry(customerMessage) ||
         initialCampaignInquiry) &&
-      activeCampaignOffer
+      (activeCampaignOffer ||
+        commercialSnapshot.needsMarketClarification ||
+        commercialSnapshot.needsCampaignTariffConfirmation)
     ) {
       policy.guidance.priceAnswerRequired = true;
     }
@@ -1392,7 +1394,11 @@ export class AutoReplyService {
               )
             ? ' y captar prospectos'
             : '';
-        response.response = `Hola. La promoción ${name} cuesta ${campaignOffer.currency} ${campaignOffer.amount}. Es una página de una sola sección para presentar su negocio${benefit}. ¿A qué se dedica su negocio?`;
+        const amount =
+          campaignOffer.currency === 'EUR'
+            ? `€${campaignOffer.amount}`
+            : `USD $${campaignOffer.amount}`;
+        response.response = `Hola. La promoción ${name} cuesta ${amount}. Es una página de una sola sección para presentar su negocio${benefit}. ¿A qué se dedica su negocio?`;
         const reviewed = reviewCommercialClaims(
           response.response,
           commercialSnapshot,
@@ -1403,26 +1409,6 @@ export class AutoReplyService {
           ...reviewed.reasons,
         );
       }
-    }
-    const campaignCurrency = commercialSnapshot.offers.find(
-      (offer) =>
-        offer.promotion &&
-        offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION &&
-        offer.priceType !== 'QUOTE_REQUIRED' &&
-        Boolean(offer.amount),
-    )?.currency;
-    if (
-      campaignCurrency &&
-      campaignCurrency !== 'EUR' &&
-      /€|\b(?:EUR|euros?)\b/iu.test(customerMessage) &&
-      !/\b(?:euro|EUR)\b[^.!?]{0,100}\b(?:confirmar|confirmación|diferencia)\b/iu.test(
-        response.response,
-      )
-    ) {
-      const clarification = `Su mensaje menciona euros; la tarifa autorizada está en ${campaignCurrency} y conviene confirmar la diferencia con el equipo comercial.`;
-      response.response = /¿[^?]+\?$/u.test(response.response)
-        ? response.response.replace(/(¿[^?]+\?)$/u, `${clarification} $1`)
-        : `${response.response} ${clarification}`;
     }
     if (
       policy.pendingQuestions.includes('timeline') &&

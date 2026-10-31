@@ -248,6 +248,8 @@ export function answerExplicitPriceIfMissing(
   if (!explicitPriceQuestion) return response;
   if (snapshot.needsMarketClarification)
     return '¿El proyecto sería para Ecuador o España?';
+  if (snapshot.needsCampaignTariffConfirmation)
+    return 'Necesito verificar la tarifa de Black Friday para la moneda o el país indicado con el equipo comercial.';
   if (hasAuthorizedMonetaryValue(response, snapshot)) return response;
   const offer =
     snapshot.offers.find((item) => item.id === snapshot.recommendedOfferId) ??
