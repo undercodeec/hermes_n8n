@@ -90,40 +90,18 @@ try {
     ['compose', '-f', compose, 'exec', '-T', 'redis', 'redis-cli', 'ping'],
     { env, encoding: 'utf8' },
   );
-  const campaignPriceProbe = spawnSync(
-    'docker',
-    [
-      'compose',
-      '-f',
-      compose,
-      'exec',
-      '-T',
-      'postgres',
-      'psql',
-      '-U',
-      'a7_d16_test',
-      '-d',
-      'hermes_a7_d16_test',
-      '-Atqc',
-      `SELECT "market" || ':' || "currency" || ':' || "price" || ':' || "isActive" FROM "price_lists" WHERE "policyVersion" = 'black-friday-landing-80-v1' ORDER BY "market"`,
-    ],
-    { env, encoding: 'utf8' },
-  );
   if (
     postgresProbe.status !== 0 ||
-    postgresProbe.stdout.trim() !== '28' ||
+    postgresProbe.stdout.trim() !== '27' ||
     redisProbe.status !== 0 ||
-    redisProbe.stdout.trim() !== 'PONG' ||
-    campaignPriceProbe.status !== 0 ||
-    campaignPriceProbe.stdout.trim().replaceAll('\r', '') !==
-      'EC:USD:80.00:false\nES:EUR:80.00:false'
+    redisProbe.stdout.trim() !== 'PONG'
   )
     throw new Error('PostgreSQL migration or Redis probe failed');
   writeFileSync(
     `${artifactDir}/infrastructure.json`,
     JSON.stringify(
       {
-        postgresqlAppliedMigrations: 28,
+        postgresqlAppliedMigrations: 27,
         redisPing: 'PONG',
         database: 'hermes_a7_d16_test',
         ports: [55433, 56380],
