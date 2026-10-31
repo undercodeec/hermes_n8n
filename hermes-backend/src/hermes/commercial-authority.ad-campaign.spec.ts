@@ -56,6 +56,18 @@ const spanishPromotion = {
   currency: 'EUR',
   market: CommercialMarket.ES,
 };
+const verifiedSpainAd = {
+  policyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+  source: 'SOURCE_ID' as const,
+  market: CommercialMarket.ES,
+  currency: 'EUR' as const,
+};
+const verifiedEcuadorAd = {
+  policyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+  source: 'SOURCE_ID' as const,
+  market: CommercialMarket.EC,
+  currency: 'USD' as const,
+};
 
 function authority(active: boolean, dualMarket = false, spanishOnly = false) {
   let promotionActive = active;
@@ -136,6 +148,110 @@ describe('Commercial Authority with verified ad context', () => {
     ]);
     expect(snapshot.recommendedOfferId).toBe(promotion.id);
   });
+
+  it.each([
+    [verifiedSpainAd, spanishPromotion.id, 'EUR', CommercialMarket.ES],
+    [verifiedEcuadorAd, ecuadorPromotion.id, 'USD', CommercialMarket.EC],
+  ])(
+    'selects the market-specific CRM tariff for verified %p traffic',
+    async (verifiedAd, id, currency, market) => {
+      const { service } = authority(true, true);
+      const snapshot = await service.snapshot({
+        customerMessage: 'Hola, quiero más información sobre la promoción',
+        verifiedAd,
+        priceRequested: false,
+        now,
+      });
+      expect(snapshot.market).toBe(market);
+      expect(snapshot.marketSource).toBe('VERIFIED_AD');
+      expect(snapshot.offers).toEqual([
+        expect.objectContaining({ id, currency, market }),
+      ]);
+    },
+  );
+
+  it('does not present the global USD tariff for the verified Spain ad without an ES tariff', async () => {
+    const { service } = authority(true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Hola, quiero más información sobre la promoción',
+      verifiedAd: verifiedSpainAd,
+      priceRequested: false,
+      now,
+    });
+    expect(snapshot.offers).toEqual([]);
+    expect(snapshot.needsCampaignTariffConfirmation).toBe(true);
+    expect(commercialSnapshotKnowledge(snapshot).join(' ')).not.toMatch(
+      /USD \$80|no está activa/iu,
+    );
+  });
+
+  it('uses the existing global USD promotion for verified Ecuador traffic when no EC tariff exists', async () => {
+    const { service } = authority(true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Hola, quiero información sobre la promoción',
+      verifiedAd: verifiedEcuadorAd,
+      priceRequested: false,
+      now,
+    });
+    expect(snapshot.offers).toEqual([
+      expect.objectContaining({ id: promotion.id, currency: 'USD' }),
+    ]);
+    expect(snapshot.needsMarketClarification).toBe(false);
+  });
+
+  it('does not quote an inactive Ecuador promotion', async () => {
+    const { service } = authority(false, true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Hola, quiero información sobre la promoción',
+      verifiedAd: verifiedEcuadorAd,
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.market).toBe(CommercialMarket.EC);
+    expect(snapshot.offers).toEqual([]);
+    expect(snapshot.needsCampaignTariffConfirmation).toBe(true);
+    expect(answerExplicitPriceIfMissing('', snapshot, true)).not.toMatch(
+      /USD\s*\$?80|€\s*80/iu,
+    );
+  });
+
+  it('keeps the explicit project country and asks for clarification when it conflicts with the ad', async () => {
+    const { service } = authority(true, true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Necesito una landing para Ecuador',
+      verifiedAd: verifiedSpainAd,
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.market).toBe(CommercialMarket.EC);
+    expect(snapshot.marketSource).toBe('CURRENT');
+    expect(snapshot.offers).toEqual([]);
+    expect(snapshot.needsAdMarketConflictClarification).toBe(true);
+    expect(answerExplicitPriceIfMissing('Cuesta €80.', snapshot, true)).toMatch(
+      /país que indicó/iu,
+    );
+    expect(
+      answerExplicitPriceIfMissing('Cuesta €80.', snapshot, true),
+    ).not.toMatch(/€80|USD|Ecuador o España/iu);
+  });
+
+  it.each([
+    [verifiedSpainAd, 'Quiero la promoción de USD 80'],
+    [verifiedEcuadorAd, 'Quiero la promoción de €80'],
+  ])(
+    'does not substitute another market currency for %p',
+    async (verifiedAd, customerMessage) => {
+      const { service } = authority(true, true);
+      const snapshot = await service.snapshot({
+        customerMessage,
+        verifiedAd,
+        priceRequested: true,
+        now,
+      });
+      expect(snapshot.offers).toEqual([]);
+      expect(snapshot.needsCampaignTariffConfirmation).toBe(true);
+    },
+  );
 
   it.each([
     [

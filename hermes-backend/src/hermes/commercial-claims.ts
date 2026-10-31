@@ -289,6 +289,8 @@ export function answerExplicitPriceIfMissing(
   explicitPriceQuestion: boolean,
 ): string {
   if (!explicitPriceQuestion) return response;
+  if (snapshot.needsAdMarketConflictClarification)
+    return 'El anuncio corresponde a otro mercado. ¿Desea que le orientemos para el país que indicó?';
   if (snapshot.needsMarketClarification)
     return '¿El proyecto sería para Ecuador o España?';
   if (snapshot.needsCampaignTariffConfirmation)
