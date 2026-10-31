@@ -5,7 +5,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: a7_d16_test
-      POSTGRES_PASSWORD: a7_d16_test_only
+      POSTGRES_PASSWORD: fixture-a7-d16-local
       POSTGRES_DB: hermes_a7_d16_test
     ports:
       - '127.0.0.1:55433:5432'

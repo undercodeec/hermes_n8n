@@ -33,7 +33,7 @@ const redisUrl = process.env.REDIS_INTEGRATION_URL;
 if (
   redisUrl !== 'redis://127.0.0.1:56380/0' ||
   process.env.DATABASE_URL !==
-    'postgresql://a7_d16_test:a7_d16_test_only@127.0.0.1:55433/hermes_a7_d16_test?schema=public'
+    'postgresql://a7_d16_test:fixture-a7-d16-local@127.0.0.1:55433/hermes_a7_d16_test?schema=public'
 )
   throw new Error('Critical worker requires the exact synthetic services');
 const parsed = new URL(redisUrl);

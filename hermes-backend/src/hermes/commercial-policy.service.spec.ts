@@ -5,6 +5,18 @@ import {
 import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 
 describe('CommercialPolicyService', () => {
+  it('does not turn a refusal to contract into a human handoff', () => {
+    const policy = new CommercialPolicyService();
+    expect(
+      policy.analyze('No quiero contratar por ahora', new Date()).requestsHuman,
+    ).toBe(false);
+    expect(
+      policy.analyze(
+        'No quiero contratar, pero quiero hablar con un asesor',
+        new Date(),
+      ).requestsHuman,
+    ).toBe(true);
+  });
   it.each([
     'Estoy molesto y quiero presentar un reclamo',
     'Quiero poner una queja por el servicio',

@@ -504,7 +504,7 @@ export class NousHermesTransport {
         : []),
       ...(activeBlackFridayLanding
         ? [
-            'Para la oferta activa Black Friday de Landing Page, una consulta general sobre la promoción solicita implícitamente el precio: indica USD $80, explica brevemente que es una página de una sola sección para presentar el negocio y captar prospectos, y pregunta por la actividad del cliente si aún no la conoces. Si pregunta qué incluye, enumera las diez características confirmadas en approvedKnowledge sin omitir ninguna. Si pregunta por un detalle concreto, responde a ese detalle sin repetir la lista completa. Adapta la explicación al negocio conocido. No inventes resultados, impuestos, fechas, plazo de entrega, pago ni renovaciones.',
+            'Para la oferta activa Black Friday de Landing Page, una consulta general sobre la promoción solicita implícitamente el precio: usa exclusivamente el importe y la moneda de la oferta aprobada en approvedKnowledge, explica brevemente el producto y sus beneficios, y pregunta por la actividad del cliente si aún no la conoces. Si pregunta qué incluye, enumera las diez características confirmadas en approvedKnowledge sin omitir ninguna. Si pregunta por un detalle concreto, responde a ese detalle sin repetir la lista completa. Adapta la explicación al negocio conocido. No inventes resultados, impuestos, fechas, plazo de entrega, pago ni renovaciones.',
           ]
         : []),
     ].join('\n');
@@ -513,6 +513,7 @@ export class NousHermesTransport {
       contactName: this.safeFirstName(input.approvedContext.contactName),
       commercialProfile: profile,
       commercialMarket: input.approvedContext.commercialSnapshot?.market,
+      advertisingCampaign: input.approvedContext.advertisingCampaign,
       marketClarificationNeeded:
         input.approvedContext.commercialSnapshot?.needsMarketClarification,
       recentProfileChanges: input.approvedContext.recentProfileChanges?.map(

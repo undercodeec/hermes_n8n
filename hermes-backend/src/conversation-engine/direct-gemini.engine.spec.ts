@@ -129,6 +129,11 @@ describe('DirectGeminiEngine', () => {
           offers: [],
           needsMarketClarification: false,
         },
+        advertisingCampaign: {
+          policyVersion: 'black-friday-landing-80-v1',
+          source: 'SOURCE_ID',
+          initialInquiry: true,
+        },
         handoffActive: false,
         contactName: 'Cliente',
       },
@@ -138,6 +143,11 @@ describe('DirectGeminiEngine', () => {
     )[0][0];
     expect(request.approvedLearning).toEqual(approvedLearning);
     expect(request.commercialSnapshot?.offers).toEqual([]);
+    expect(request.advertisingCampaign).toEqual({
+      policyVersion: 'black-friday-landing-80-v1',
+      source: 'SOURCE_ID',
+      initialInquiry: true,
+    });
     expect(result.learningExposed).toEqual([{ id: 'safe', version: 3 }]);
     expect(JSON.stringify(result.learningExposed)).not.toContain(
       'Responder primero',

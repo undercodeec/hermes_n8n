@@ -260,10 +260,17 @@ describe('F3 approval authority on isolated PostgreSQL', () => {
       },
     });
     try {
+      turn.normalNousClaim = {
+        turnId: 'synthetic-f3-learning-turn',
+        processingToken: 'synthetic-f3-learning-claim',
+      };
       const transport = new NousHermesTransport(
         new ConfigService({}),
         new AgentOutputValidator(),
         { read: jest.fn().mockResolvedValue('synthetic-only') },
+        {
+          reserveNousDispatch: jest.fn().mockResolvedValue(true),
+        } as unknown as ConstructorParameters<typeof NousHermesTransport>[3],
       );
       const result = await transport.execute(turn);
       return {

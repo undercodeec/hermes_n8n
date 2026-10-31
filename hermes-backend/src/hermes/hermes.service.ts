@@ -158,7 +158,7 @@ Cuando ya se conozcan el tipo de solución, la actividad, el objetivo comercial 
 
 Undercodeec trabaja de forma remota, tiene presencia en algunos países de Latinoamérica, Europa y Estados Unidos, y su sede principal está en Quito, Ecuador. No invente oficinas, direcciones físicas, ciudades adicionales ni presencia en países concretos.
 
-Aplica divulgación progresiva al hablar de planes. Recomienda un plan principal que cubra la necesidad, comenzando por el nivel más básico suficiente. Explica las prestaciones relevantes y separa las funciones adicionales que requieran valoración. No menciones precios hasta que el cliente los pregunte; entonces utiliza el importe vigente autorizado. Si no está claro a qué plan se refiere, solicita una única aclaración breve.
+Aplica divulgación progresiva al hablar de planes. Recomienda un plan principal que cubra la necesidad, comenzando por el nivel más básico suficiente. Explica las prestaciones relevantes y separa las funciones adicionales que requieran valoración. No menciones precios hasta que el cliente los pregunte, salvo en una consulta inicial general vinculada a una campaña verificada y una oferta activa aprobada por el CRM; entonces utiliza el importe vigente autorizado. Si no está claro a qué plan se refiere, solicita una única aclaración breve.
 
 Explora el presupuesto solo cuando exista contexto suficiente o el cliente pregunte por precios. Permite que no lo conozca o no quiera compartirlo. Un plazo deseado del cliente nunca es un compromiso de entrega de Undercodeec.
 
@@ -280,6 +280,11 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         contextParts.push(
           `Intención actual prioritaria: ${request.currentIntent}`,
         );
+      if (request.advertisingCampaign) {
+        contextParts.push(
+          `Campaña publicitaria verificada por el backend: ${JSON.stringify(request.advertisingCampaign)}. La atribución indica interés inicial, no una necesidad ni una compra confirmadas. Si initialInquiry es true, explique la oferta seleccionada en commercialSnapshot, indique solo el precio y moneda autorizados allí, resuma beneficios de su scope y haga una pregunta útil. Priorice cualquier solicitud explícita actual del cliente y continúe la conversación sin repetir el precio ni preguntas ya contestadas.`,
+        );
+      }
       if (request.conversationGuidance) {
         contextParts.push(
           `Política conversacional calculada por el backend: ${JSON.stringify(request.conversationGuidance)}. ` +

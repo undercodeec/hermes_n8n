@@ -1,5 +1,27 @@
 export const BLACK_FRIDAY_LANDING_POLICY_VERSION = 'black-friday-landing-80-v1';
 
+export function requestsAnotherService(message: string): boolean {
+  const normalized = message
+    .toLocaleLowerCase('es')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+  const service =
+    '(?:tienda online|ecommerce|sitio web|pagina web(?: corporativa)?|web corporativa|software a medida|aplicacion movil|landing(?: page)? normal)';
+  return (
+    new RegExp(
+      `\\b(?:quiero|necesito|busco|cotizar|contratar|crear|hacer|me gustaria|pueden hacer|cuanto cuesta|precio de)\\s+(?:(?:una?|el|la|me|que|desarrollar)\\s+){0,3}${service}\\b`,
+    ).test(normalized) ||
+    new RegExp(
+      `\\b(?:quiero|necesito|busco|me gustaria)\\s+informacion\\s+(?:sobre|de)\\s+(?:(?:una?|el|la)\\s+)?${service}\\b`,
+    ).test(normalized) ||
+    new RegExp(`\\bque incluye\\s+(?:(?:una?|el|la)\\s+)?${service}\\b`).test(
+      normalized,
+    )
+  );
+}
+
 export function recognizesBlackFridayLanding(
   message: string,
   recentCustomerMessages: string[] = [],
@@ -12,10 +34,6 @@ export function recognizesBlackFridayLanding(
       .replace(/[^a-z0-9]+/g, ' ')
       .trim();
   const current = normalize(message);
-  const switchesService = (value: string) =>
-    /\b(?:quiero|necesito|busco|cotizar|contratar|crear|hacer|me gustaria|pueden hacer)\s+(?:(?:una?|el|la|me|que|desarrollar)\s+){0,3}(?:tienda online|ecommerce|sitio web|software a medida|aplicacion movil|landing(?: page)? normal)\b/.test(
-      value,
-    );
   const explicit = (value: string) => {
     const text = normalize(value);
     if (/\bblack friday\b/.test(text)) return true;
@@ -33,12 +51,13 @@ export function recognizesBlackFridayLanding(
       )
     );
   };
-  if (switchesService(current)) return false;
+  if (requestsAnotherService(message)) return false;
   if (explicit(message)) return true;
   if (!current) return false;
   for (const previous of [...recentCustomerMessages].reverse()) {
     const previousText = normalize(previous);
-    if (switchesService(previousText) && !explicit(previous)) return false;
+    if (requestsAnotherService(previousText) && !explicit(previous))
+      return false;
     if (explicit(previous)) return true;
   }
   return false;

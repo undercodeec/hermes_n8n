@@ -47,6 +47,8 @@ import {
   BLACK_FRIDAY_LANDING_POLICY_VERSION,
   isGeneralBlackFridayInquiry,
 } from '../hermes/black-friday-landing';
+import { resolveVerifiedBlackFridayAd } from '../hermes/verified-ad-campaign';
+import { projectAttribution } from '../attribution-crm/attribution-crm';
 import {
   answerExplicitPriceIfMissing,
   hasAuthorizedMonetaryValue,
@@ -389,6 +391,7 @@ export class AutoReplyService {
         content: true,
         createdAt: true,
         rawPayload: true,
+        metadata: true,
         wamid: true,
         conversationId: true,
         contactId: true,
@@ -548,6 +551,39 @@ export class AutoReplyService {
     );
     const receivedAt =
       this.providerTimestamp(inbound.rawPayload) ?? inbound.createdAt;
+    const verifiedAdCampaign = resolveVerifiedBlackFridayAd({
+      currentMetadata: inbound.metadata,
+      currentOccurredAt: inbound.createdAt,
+      priorMetadata: context.recentAttribution?.metadata,
+      priorOccurredAt: context.recentAttribution?.occurredAt,
+      conversationMetadata: conversation.metadata,
+      conversationCreatedAt: conversation.createdAt,
+      now: new Date(),
+      config: {
+        sourceIds: this.config.get<string>(
+          'HERMES_BLACK_FRIDAY_AD_SOURCE_IDS',
+          '',
+        ),
+        fallbackEnabled:
+          this.config.get<string>(
+            'HERMES_BLACK_FRIDAY_META_AD_FALLBACK_ENABLED',
+            'false',
+          ) === 'true',
+        startsAt: this.config.get<string>(
+          'HERMES_BLACK_FRIDAY_CAMPAIGN_STARTS_AT',
+          '',
+        ),
+        endsAt: this.config.get<string>(
+          'HERMES_BLACK_FRIDAY_CAMPAIGN_ENDS_AT',
+          '',
+        ),
+      },
+    });
+    const ignoreHistoricalPromotion =
+      !verifiedAdCampaign &&
+      (projectAttribution(inbound.metadata).origin !== 'unknown' ||
+        projectAttribution(context.recentAttribution?.metadata).origin !==
+          'unknown');
     const policy = this.commercialPolicy.analyze(
       customerMessage,
       receivedAt,
@@ -576,23 +612,57 @@ export class AutoReplyService {
           reason: complaint ? HandoffReason.COMPLAINT : HandoffReason.CUSTOM,
           reasonDetail: complaint
             ? 'El cliente solicitó atención humana por un reclamo sobre el servicio.'
-            : 'El cliente solicitó expresamente hablar con una persona.',
+            : /\bquiero contratar\b/iu.test(customerMessage)
+              ? 'El cliente expresó interés en contratar; el equipo debe confirmar las condiciones.'
+              : 'El cliente solicitó expresamente hablar con una persona.',
         },
         undefined,
         complaint
           ? undefined
           : { sourceMessageId: inbound.id, callRequested: policy.requestsCall },
       );
+      let contractingAcknowledgement: string | undefined;
+      if (
+        !complaint &&
+        verifiedAdCampaign &&
+        /\bquiero contratar\b/iu.test(customerMessage) &&
+        !/\bno\s+quiero contratar\b/iu.test(customerMessage)
+      ) {
+        const contractSnapshot = await this.commercialAuthority
+          .snapshot({
+            customerMessage,
+            profile: context.commercialProfile,
+            productOfInterest: context.productOfInterest,
+            recentCustomerMessages: context.recentMessages
+              .filter((message) => message.role === 'user')
+              .map((message) => message.content),
+            priceRequested: false,
+            verifiedAdPolicyVersion: verifiedAdCampaign.policyVersion,
+            ignoreHistoricalPromotion,
+          })
+          .catch(() => undefined);
+        const offer = contractSnapshot?.offers.find(
+          (item) =>
+            item.promotion &&
+            item.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION,
+        );
+        if (offer) {
+          const summary = offer.scope.split(';').slice(0, 2).join(' y ').trim();
+          contractingAcknowledgement = `He registrado su interés en contratar ${offer.name}, que incluye ${summary}. Una persona del equipo continuará por este chat para confirmar las condiciones y el siguiente paso. La solicitud está pendiente de asignación; aún no hay contratación ni pago confirmados.`;
+        }
+      }
       const delivery = await this.sendAndPersist({
         conversationId: data.conversationId,
         contactId: data.contactId,
         sourceMessageId: inbound.id,
         inboundWamid: inbound.wamid,
-        content: complaint
-          ? 'He registrado su reclamo para que lo atienda una persona del equipo. Queda pendiente de asignación.'
-          : policy.requestsCall
-            ? 'He registrado su solicitud para que un asesor coordine una llamada usando este mismo número de WhatsApp. Está pendiente de asignación y confirmación del horario.'
-            : 'He registrado su solicitud para que continúe con una persona del equipo. La conversación queda pendiente de asignación.',
+        content:
+          contractingAcknowledgement ??
+          (complaint
+            ? 'He registrado su reclamo para que lo atienda una persona del equipo. Queda pendiente de asignación.'
+            : policy.requestsCall
+              ? 'He registrado su solicitud para que un asesor coordine una llamada usando este mismo número de WhatsApp. Está pendiente de asignación y confirmación del horario.'
+              : 'He registrado su solicitud para que continúe con una persona del equipo. La conversación queda pendiente de asignación.'),
         metadata: { action: 'HUMAN_HANDOFF_CREATED' },
         allowHandedOff: true,
       });
@@ -625,6 +695,16 @@ export class AutoReplyService {
     )
       return;
 
+    const initialCampaignInquiry = Boolean(
+      verifiedAdCampaign &&
+      !context.recentMessages.some((message) => message.role === 'assistant') &&
+      /\b(?:informaci[oó]n|interesa|saber m[aá]s|vi su anuncio)\b/iu.test(
+        customerMessage,
+      ) &&
+      !/\b(?:incluye|dominio|hosting|correos?|seo|soporte|whatsapp|formulario|cu[aá]nto|precio|cuesta|plazo|entrega|tiempo|fecha|tienda online|sitio web|p[aá]gina web|soy|tengo|mi negocio|mi empresa|me dedico)\b/iu.test(
+        customerMessage,
+      ),
+    );
     const commercialSnapshot = await this.commercialAuthority.snapshot({
       customerMessage,
       profile: context.commercialProfile,
@@ -633,16 +713,27 @@ export class AutoReplyService {
         .filter((message) => message.role === 'user')
         .map((message) => message.content),
       priceRequested: policy.guidance.priceAnswerRequired,
+      ...(verifiedAdCampaign
+        ? { verifiedAdPolicyVersion: verifiedAdCampaign.policyVersion }
+        : {}),
+      ...(ignoreHistoricalPromotion ? { ignoreHistoricalPromotion: true } : {}),
     });
+    const activeCampaignOffer = commercialSnapshot.offers.some(
+      (offer) =>
+        offer.promotion &&
+        offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION,
+    );
     if (
-      isGeneralBlackFridayInquiry(customerMessage) &&
-      commercialSnapshot.offers.some(
-        (offer) =>
-          offer.promotion &&
-          offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION,
-      )
+      (isGeneralBlackFridayInquiry(customerMessage) ||
+        initialCampaignInquiry) &&
+      activeCampaignOffer
     ) {
       policy.guidance.priceAnswerRequired = true;
+    }
+    if (initialCampaignInquiry && activeCampaignOffer) {
+      policy.guidance.allowPlanRecommendation = true;
+      policy.guidance.allowDiscoveryQuestion = true;
+      policy.guidance.interestedPlan = 'LANDING_PAGE';
     }
     policy.guidance.allowPriceAnswer =
       !commercialSnapshot.needsMarketClarification &&
@@ -888,6 +979,14 @@ export class AutoReplyService {
         approvedKnowledge,
         ...(approvedLearning.length ? { approvedLearning } : {}),
         commercialSnapshot,
+        ...(verifiedAdCampaign && activeCampaignOffer
+          ? {
+              advertisingCampaign: {
+                ...verifiedAdCampaign,
+                initialInquiry: initialCampaignInquiry,
+              },
+            }
+          : {}),
         handoffActive: false,
         leadStage: context.leadStage,
         productOfInterest: context.productOfInterest,
@@ -1233,6 +1332,65 @@ export class AutoReplyService {
       commercialSnapshot,
       policy.guidance.priceAnswerRequired,
     );
+    if (/\b(?:qu[eé]\s+incluye|qu[eé]\s+trae)\b/iu.test(customerMessage)) {
+      const campaignOffer = commercialSnapshot.offers.find(
+        (offer) =>
+          offer.promotion &&
+          offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION,
+      );
+      const items =
+        campaignOffer?.scope
+          .split(';')
+          .map((item) => item.trim().replace(/\.$/u, '')) ?? [];
+      if (items.length === 10 && items.every(Boolean)) {
+        response.response = `La promoción incluye:\n${items.map((item, index) => `${index + 1}. ${item}`).join('\n')}`;
+        reviewedProposal?.rejections.push(
+          'CAMPAIGN_SCOPE_COMPLETED_FROM_PRICE_LIST',
+        );
+      }
+    }
+    response.response = answerExplicitPriceIfMissing(
+      response.response,
+      commercialSnapshot,
+      policy.guidance.priceAnswerRequired,
+    );
+    if (initialCampaignInquiry && !response.diagnostic) {
+      const campaignOffer = commercialSnapshot.offers.find(
+        (offer) =>
+          offer.promotion &&
+          offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION &&
+          offer.priceType !== 'QUOTE_REQUIRED' &&
+          Boolean(offer.amount),
+      );
+      const usefulAnswer =
+        /\b(?:landing|p[aá]gina)\b/iu.test(response.response) &&
+        /\b(?:captar|captaci[oó]n|prospectos?|contacto|formulario|whatsapp|presentar)\b/iu.test(
+          response.response,
+        ) &&
+        /¿[^?]+\?/u.test(response.response) &&
+        !/¿(?:en qu[eé]|qu[eé] servicio)\b[^?]*\?/iu.test(response.response);
+      if (campaignOffer && !usefulAnswer) {
+        const name = /black friday/iu.test(campaignOffer.name)
+          ? campaignOffer.name
+          : `Black Friday ${campaignOffer.name}`;
+        const benefits = campaignOffer.scope
+          .split(';')
+          .map((item) => item.trim().replace(/[.;\s]+$/u, ''))
+          .filter(Boolean)
+          .slice(0, 5)
+          .join('; ');
+        response.response = `Hola. La promoción ${name} cuesta ${campaignOffer.currency} ${campaignOffer.amount}. Incluye ${benefits}. ¿A qué se dedica su negocio?`;
+        const reviewed = reviewCommercialClaims(
+          response.response,
+          commercialSnapshot,
+        );
+        response.response = reviewed.response;
+        reviewedProposal?.rejections.push(
+          'CAMPAIGN_GENERIC_REPLY_REPAIRED',
+          ...reviewed.reasons,
+        );
+      }
+    }
     if (
       policy.pendingQuestions.includes('timeline') &&
       this.commercialPolicy.remainingPendingQuestions(
@@ -1504,6 +1662,12 @@ export class AutoReplyService {
         priceAnswerRequired: policy.guidance.priceAnswerRequired,
         allowPriceAnswer: policy.guidance.allowPriceAnswer,
         recommendedOfferId: commercialSnapshot.recommendedOfferId,
+        ...(verifiedAdCampaign && activeCampaignOffer
+          ? {
+              advertisingPolicyVersion: verifiedAdCampaign.policyVersion,
+              advertisingMappingSource: verifiedAdCampaign.source,
+            }
+          : {}),
         fallback: response.diagnostic?.code,
         claimRemoved:
           policyReview.reasons.length > 0 ||
@@ -2065,6 +2229,41 @@ export class AutoReplyService {
         this.providerTimestamp(right.rawPayload) ?? right.createdAt;
       return leftTime.getTime() - rightTime.getTime();
     });
+    const recentAttribution = [...orderedMessages].reverse().find((message) => {
+      const metadata = message.metadata;
+      return (
+        message.direction === MessageDirection.INBOUND &&
+        metadata !== null &&
+        typeof metadata === 'object' &&
+        !Array.isArray(metadata) &&
+        'pilotOrigin' in metadata
+      );
+    });
+    const historicalAdAttribution = recentAttribution
+      ? undefined
+      : (
+          (await this.prisma.message.findMany({
+            where: {
+              conversationId,
+              direction: MessageDirection.INBOUND,
+              id: { notIn: excludedMessageIds },
+              createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) },
+              metadata: { path: ['pilotOrigin'], equals: 'meta_ad' },
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: { metadata: true, createdAt: true },
+          })) ?? []
+        ).find((message) => {
+          const metadata = message.metadata;
+          return (
+            metadata !== null &&
+            typeof metadata === 'object' &&
+            !Array.isArray(metadata) &&
+            'pilotOrigin' in metadata
+          );
+        });
+    const latestAttribution = recentAttribution ?? historicalAdAttribution;
     const conversationHistory = orderedMessages.reduce<
       Array<{ role: 'user' | 'assistant'; content: string }>
     >((history, message) => {
@@ -2084,6 +2283,12 @@ export class AutoReplyService {
     }, []);
     return {
       recentMessages: conversationHistory,
+      recentAttribution: latestAttribution
+        ? {
+            metadata: latestAttribution.metadata,
+            occurredAt: latestAttribution.createdAt,
+          }
+        : undefined,
       conversationSummary: state?.summary || undefined,
       leadStage: lead?.stage || state?.leadStage || undefined,
       productOfInterest: lead?.productOfInterest || undefined,

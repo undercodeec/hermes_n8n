@@ -16,7 +16,7 @@ const databaseUrl = process.env.DATABASE_INTEGRATION_URL;
 const redisUrl = process.env.REDIS_INTEGRATION_URL;
 if (
   databaseUrl !==
-    'postgresql://a7_d16_test:a7_d16_test_only@127.0.0.1:55433/hermes_a7_d16_test?schema=public' ||
+    'postgresql://a7_d16_test:fixture-a7-d16-local@127.0.0.1:55433/hermes_a7_d16_test?schema=public' ||
   redisUrl !== 'redis://127.0.0.1:56380/0'
 )
   throw new Error('Critical validation requires the exact synthetic services');
@@ -41,7 +41,7 @@ type ControlledChild = {
 };
 
 describe('A7-D16 R2 process interruption (real PostgreSQL and Redis)', () => {
-  const redisAddress = new URL(redisUrl!);
+  const redisAddress = new URL(redisUrl);
   const connection = {
     host: redisAddress.hostname,
     port: Number(redisAddress.port),
@@ -70,7 +70,7 @@ describe('A7-D16 R2 process interruption (real PostgreSQL and Redis)', () => {
     process.env.DATABASE_URL = databaseUrl;
     prisma = new PrismaService();
     await prisma.$connect();
-    redis = new IORedis(redisUrl!, { maxRetriesPerRequest: null });
+    redis = new IORedis(redisUrl, { maxRetriesPerRequest: null });
     turns = new InboundTurnService(prisma, config);
   });
 
