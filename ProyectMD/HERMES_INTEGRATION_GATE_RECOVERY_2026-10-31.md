@@ -4,7 +4,7 @@
 
 **INTEGRATION_GATE_PASSED** en el entorno local aislado: se ejecutaron las 18 suites de `jest-integration.json`, con **188 pruebas aprobadas, cero fallidas y una omisión opcional preexistente**. El backend productivo no se modificó y no hubo envíos WhatsApp reales.
 
-**READY_FOR_VPS_DEPLOY: NO.** El lint global del árbol candidato falla con 56 errores y 7 advertencias en seis archivos fuera de esta corrección; el mismo bloqueo aparece en el [workflow remoto de integración](https://github.com/undercodeec/hermes_n8n/actions/runs/41230885213). El lint de los archivos modificados sí pasó. Además, el PR de este harness debe integrarse y producir un nuevo digest GHCR antes del handoff para VPS. No se desactivó ni rebajó el lint global.
+**READY_FOR_VPS_DEPLOY: NO.** El PR debe revisarse e integrarse y el árbol integrado debe superar nuevamente el gate y producir un nuevo digest GHCR antes del handoff a VPS. El lint global ya pasa en esta rama; no se desactivó ni rebajó.
 
 El incidente original en Codex VPS comunicó 5 suites aprobadas, 12 fallidas y 1 omitida (29/81/1 pruebas). El archivo `/root/evidence/hermes-nous-es-ec-20261031/integration.log` no está disponible en Codex Local. **No se puede atribuir con certeza cada una de aquellas 12 fallas a un nombre de suite a partir de ese resumen**. La tabla inferior documenta los requisitos de las 18 suites, los fallos reproducidos localmente y su resultado final, sin inventar la lista del VPS.
 
@@ -17,6 +17,8 @@ El nuevo `run-integration-gate.mjs` comprueba primero que los seis puertos de lo
 Calendario usa `psql` del contenedor únicamente con el modo explícito `docker-integration-gate`, el proyecto efímero esperado y la URL exacta `127.0.0.1:55432/hermes_learning_test`. Conserva el modo anterior de `psql` local. La suite crea dos esquemas temporales, aplica migraciones con `ON_ERROR_STOP` y `search_path`, verifica la actualización con fixtures y elimina los esquemas al finalizar; sus siete casos pasaron. Su error ahora incluye el fallo del proceso hijo si el ejecutable no existe.
 
 Publicidad tenía una segunda causa reproducida: el fixture enviaba `phone_number_id` vacío mientras `WebhookService` requiere el ID configurado. Se añadió el mismo ID **sintético** al webhook y a su `ConfigService`; el guardia productivo no cambió. En la primera corrida del harness, Calendario falló 7/7 y Publicidad D 4/4. Las otras 16 suites pasaron (177 aprobadas, 11 fallidas, una omitida). Después de corregir ambos fixtures, las 18 suites pasaron.
+
+El lint global previo falló con 56 errores en seis archivos ajenos al harness, como en el [workflow remoto anterior](https://github.com/undercodeec/hermes_n8n/actions/runs/41230885213). Se corrigieron tipos de mocks y adaptadores de pruebas, conversiones de tipo innecesarias en `TasksService` y formato. El comportamiento observable se verificó de nuevo con las suites completas. El comando global ahora termina con código cero y sin advertencias.
 
 ## Resultado por suite
 
@@ -53,8 +55,7 @@ Las categorías son las del encargo: **A** URL incompatible, **B** puerto o base
 | A7–D16 independiente | 6/6 suites; 31/31 pruebas; resumen local `hermes-backend/artifacts/integration-gate-recovery/summary.json`. |
 | Build NestJS, `prisma validate` con URL ficticia | Aprobados. |
 | `security:secrets` con archivos versionados nuevos | Aprobado, 542 archivos examinados. |
-| ESLint de los dos archivos TS modificados; Prettier de archivos nuevos/modificados; diff check | Aprobados. |
-| Lint global | Falló por 56 errores preexistentes en `campaigns.media-security.spec.ts`, `gate-d-gemini-log.spec.ts`, `hermes-diagnostics.ts`, `leads.service.spec.ts`, `tasks.service.spec.ts` y `tasks.service.ts`. No pertenecen a este cambio. |
+| ESLint global, Prettier de archivos nuevos/modificados y diff check | Aprobados; cero errores y cero advertencias de lint. |
 
 Compose publica únicamente en `127.0.0.1:55432`, `55433`, `55439`, `55888`, `56379` y `56380`. El runner comprueba ocupación antes de levantar servicios, elimina del entorno hijo credenciales y variables Meta/Google/Nous heredadas, usa credenciales sintéticas fijas y destruye los volúmenes de su proyecto al terminar. Se verificó que esos puertos y contenedores quedaron libres tras las corridas. Ni `PriceList` productiva ni las protecciones STOP, handoff, opt-out, atribución o seguridad cambiaron.
 
@@ -63,8 +64,9 @@ Compose publica únicamente en `127.0.0.1:55432`, `55433`, `55439`, `55888`, `56
 - Commit candidato previo: `4eff536094c619e8a5818e707d7193f940ba86c4`; Tree `4f53663b0e26023c2ea4b42735b6a44f71ce4063`.
 - Commit de corrección del harness: `e9389975fe5820fb1ac1903c3d560e10a16a0419`; Tree `86c47649226ef8a485e8b86ec4ed0d602abf6d3b`.
 - Commit del código validado con control de omisiones: `2b3146453f5f70dbe98f1472d7a323b294ece607`; Tree `64d03ac0eac136f596f6b2edb8501464ce1a95fd`.
+- Commit de limpieza del lint global: `5dc9d63461f5172334b0f97277cc37552a8c1441`; Tree `8d873be1972be753749b1a856d6a36fab98b33b1`.
 - PR: https://github.com/undercodeec/hermes_n8n/pull/5, sobre `pilot/a7-d12-monitor-only-20261026`.
 - Digest GHCR anterior: `ghcr.io/undercodeec/hermes-backend@sha256:283bd5b99cdcdffea2506e85c4cc208eafa3cce570201569734f57dd2582c0ec`. **No representa el árbol corregido**.
 - HEAD/Tree definitivos de la rama piloto: pendientes de integrar el cambio versionado. Digest GHCR nuevo: pendiente del workflow oficial tras la integración autorizada.
 
-Para continuar: revisar el PR de este harness, resolver el lint global sin reducir el control, integrar conforme a las protecciones del repositorio y la autorización del propietario, repetir el gate en el commit integrado, ejecutar el workflow manual GHCR y registrar el digest nuevo. Solo entonces preparar el handoff a Codex VPS. **No se realizó despliegue desde Codex Local.**
+Para continuar: revisar el PR, integrar conforme a las protecciones del repositorio y la autorización del propietario, repetir el gate en el commit integrado, ejecutar el workflow manual GHCR y registrar el digest nuevo. Solo entonces preparar el handoff a Codex VPS. **No se realizó despliegue desde Codex Local.**
