@@ -8,7 +8,7 @@ export function requestsAnotherService(message: string): boolean {
     .replace(/[^a-z0-9]+/g, ' ')
     .trim();
   const service =
-    '(?:tienda online|ecommerce|sitio web|software a medida|aplicacion movil|landing(?: page)? normal)';
+    '(?:tienda online|ecommerce|sitio web|pagina web(?: corporativa)?|web corporativa|software a medida|aplicacion movil|landing(?: page)? normal)';
   return (
     new RegExp(
       `\\b(?:quiero|necesito|busco|cotizar|contratar|crear|hacer|me gustaria|pueden hacer|cuanto cuesta|precio de)\\s+(?:(?:una?|el|la|me|que|desarrollar)\\s+){0,3}${service}\\b`,

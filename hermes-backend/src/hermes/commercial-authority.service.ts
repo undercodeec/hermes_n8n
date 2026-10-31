@@ -170,7 +170,7 @@ export class CommercialAuthorityService {
       ? ['LANDING_PAGE']
       : requestedSolutionKinds(input.customerMessage, false);
     const explicitCurrentService =
-      /\b(?:landing|p[aá]gina de aterrizaje|sitio web|p[aá]gina web|tienda online|ecommerce|comercio electr[oó]nico|app m[oó]vil|software a medida)\b/i.test(
+      /\b(?:landing|p[aá]gina de aterrizaje|sitio web|p[aá]gina web|web corporativa|tienda online|ecommerce|comercio electr[oó]nico|app m[oó]vil|software a medida)\b/i.test(
         input.customerMessage,
       );
     const recentServiceCodes =

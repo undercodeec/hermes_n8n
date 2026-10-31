@@ -141,6 +141,21 @@ describe('Commercial Authority with verified ad context', () => {
     },
   );
 
+  it.each(['Quiero una página web corporativa', 'Busco una web corporativa'])(
+    'honors an explicit website request despite the verified ad: %s',
+    async (customerMessage) => {
+      const { service } = authority(true);
+      const snapshot = await service.snapshot({
+        customerMessage,
+        verifiedAdPolicyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+        priceRequested: false,
+        now,
+      });
+      expect(snapshot.relevantServiceCodes).toEqual(['WEBSITE']);
+      expect(snapshot.offers.some((offer) => offer.promotion)).toBe(false);
+    },
+  );
+
   it('withholds the campaign price when the promotion is inactive', async () => {
     const { service } = authority(false);
     const snapshot = await service.snapshot({

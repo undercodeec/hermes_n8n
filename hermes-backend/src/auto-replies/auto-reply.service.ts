@@ -700,6 +700,9 @@ export class AutoReplyService {
       !context.recentMessages.some((message) => message.role === 'assistant') &&
       /\b(?:informaci[oó]n|interesa|saber m[aá]s|vi su anuncio)\b/iu.test(
         customerMessage,
+      ) &&
+      !/\b(?:incluye|dominio|hosting|correos?|seo|soporte|whatsapp|formulario|cu[aá]nto|precio|cuesta|plazo|entrega|tiempo|fecha|tienda online|sitio web|p[aá]gina web|soy|tengo|mi negocio|mi empresa|me dedico)\b/iu.test(
+        customerMessage,
       ),
     );
     const commercialSnapshot = await this.commercialAuthority.snapshot({
@@ -1346,6 +1349,11 @@ export class AutoReplyService {
         );
       }
     }
+    response.response = answerExplicitPriceIfMissing(
+      response.response,
+      commercialSnapshot,
+      policy.guidance.priceAnswerRequired,
+    );
     if (initialCampaignInquiry && !response.diagnostic) {
       const campaignOffer = commercialSnapshot.offers.find(
         (offer) =>
@@ -2231,6 +2239,31 @@ export class AutoReplyService {
         'pilotOrigin' in metadata
       );
     });
+    const historicalAdAttribution = recentAttribution
+      ? undefined
+      : (
+          (await this.prisma.message.findMany({
+            where: {
+              conversationId,
+              direction: MessageDirection.INBOUND,
+              id: { notIn: excludedMessageIds },
+              createdAt: { gte: new Date(Date.now() - 7 * 86_400_000) },
+              metadata: { path: ['pilotOrigin'], equals: 'meta_ad' },
+            },
+            orderBy: { createdAt: 'desc' },
+            take: 1,
+            select: { metadata: true, createdAt: true },
+          })) ?? []
+        ).find((message) => {
+          const metadata = message.metadata;
+          return (
+            metadata !== null &&
+            typeof metadata === 'object' &&
+            !Array.isArray(metadata) &&
+            'pilotOrigin' in metadata
+          );
+        });
+    const latestAttribution = recentAttribution ?? historicalAdAttribution;
     const conversationHistory = orderedMessages.reduce<
       Array<{ role: 'user' | 'assistant'; content: string }>
     >((history, message) => {
@@ -2250,10 +2283,10 @@ export class AutoReplyService {
     }, []);
     return {
       recentMessages: conversationHistory,
-      recentAttribution: recentAttribution
+      recentAttribution: latestAttribution
         ? {
-            metadata: recentAttribution.metadata,
-            occurredAt: recentAttribution.createdAt,
+            metadata: latestAttribution.metadata,
+            occurredAt: latestAttribution.createdAt,
           }
         : undefined,
       conversationSummary: state?.summary || undefined,

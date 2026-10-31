@@ -80,6 +80,18 @@ describe('AutoReplyService', () => {
     policyVersion: 'test-only',
     promotion: false,
   });
+  const fullCampaignScope =
+    'Captación de leads; landing page de una sola sección; diseño responsive para celulares; botón flotante de WhatsApp y llamada directa; formulario de contacto o captura de prospectos; apartado de beneficios del servicio o producto; dominio .com y hosting básico por 1 año; 5 correos corporativos; SEO técnico base; 1 mes de soporte posterior a la entrega.';
+  const approvedCampaignOffer = (): AuthorizedOffer => ({
+    ...testOffer('Black Friday — Landing Page', '80.00', 'LANDING_PAGE'),
+    marketScope: 'GLOBAL',
+    market: undefined,
+    taxMode: undefined,
+    taxLabel: undefined,
+    policyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
+    promotion: true,
+    scope: fullCampaignScope,
+  });
   const authority = {
     snapshot: jest.fn().mockResolvedValue({
       marketSource: 'UNKNOWN',
@@ -170,6 +182,7 @@ describe('AutoReplyService', () => {
     conversationCreatedAt?: Date;
     campaignConfig?: Record<string, string>;
     historyMessages?: Array<Record<string, unknown>>;
+    latestAttributionMessage?: Record<string, unknown>;
     outputDecision?: GeneratedResponseDecision;
     reviewTask?: { id: string } | Error;
     persistedProfile?: CommercialProfile;
@@ -260,11 +273,13 @@ describe('AutoReplyService', () => {
       learningEvidence: { create: jest.fn() },
       message: {
         findUnique: jest.fn().mockResolvedValue(inbound),
-        findMany: jest
-          .fn()
-          .mockImplementation(async (args) =>
-            args.where?.NOT ? (options.historyMessages ?? []) : [inbound],
-          ),
+        findMany: jest.fn().mockImplementation(async (args) => {
+          if (args.where?.metadata?.path?.[0] === 'pilotOrigin')
+            return options.latestAttributionMessage
+              ? [options.latestAttributionMessage]
+              : [];
+          return args.where?.NOT ? (options.historyMessages ?? []) : [inbound];
+        }),
         create: messageCreate,
       },
       conversation: {
@@ -804,6 +819,47 @@ describe('AutoReplyService', () => {
     expect(
       (authority.snapshot as jest.Mock).mock.calls.at(-1)?.[0],
     ).toHaveProperty('ignoreHistoricalPromotion', true);
+  });
+
+  it('keeps a newer different ad authoritative after it leaves the 20-message context', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Quiero información',
+      inboundCreatedAt: campaignTime(),
+      conversationCreatedAt: campaignTime(-4),
+      conversationMetadata: {
+        pilotOrigin: 'meta_ad',
+        pilotOriginEvidence: 'meta_referral_ad',
+        pilotAd: { sourceId: '52583085497631' },
+      },
+      historyMessages: Array.from({ length: 20 }, (_, index) => ({
+        id: `followup-${index}`,
+        direction: MessageDirection.OUTBOUND,
+        content: 'Seguimiento del proyecto',
+        createdAt: campaignTime(-1),
+        rawPayload: null,
+        metadata: {},
+      })),
+      latestAttributionMessage: {
+        metadata: {
+          pilotOrigin: 'meta_ad',
+          pilotOriginEvidence: 'meta_referral_ad',
+          pilotAd: { sourceId: 'another-campaign' },
+        },
+        createdAt: campaignTime(-2),
+      },
+      campaignConfig: {
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+      },
+      hermesResponse: { response: '¿Qué información necesita?' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(
+      (authority.snapshot as jest.Mock).mock.calls.at(-1)?.[0],
+    ).not.toHaveProperty('verifiedAdPolicyVersion');
   });
 
   it('passes the stored pilot engine to the inference call', async () => {
@@ -3296,6 +3352,75 @@ describe('AutoReplyService', () => {
     for (const item of scope.split(';'))
       expect(delivered).toContain(item.trim().replace(/\.$/u, ''));
     expect(delivered).not.toMatch(/carrito|ecommerce|pago en línea/iu);
+  });
+
+  it('keeps the authorized price when scope and price are requested together', async () => {
+    const promotion = approvedCampaignOffer();
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [promotion],
+      recommendedOfferId: promotion.id,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: '¿Qué incluye Black Friday y cuánto cuesta?',
+      inboundCreatedAt: campaignTime(-3),
+      inboundMetadata: {
+        pilotOrigin: 'meta_ad',
+        pilotOriginEvidence: 'meta_referral_ad',
+        pilotAd: { sourceId: '52583085497631' },
+      },
+      campaignConfig: {
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+      },
+      hermesResponse: { response: 'Incluye hosting y cuesta USD $80.' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const delivered = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
+      .content as string;
+    expect(delivered).toMatch(/USD.*80/iu);
+    for (const item of fullCampaignScope.split(';'))
+      expect(delivered).toContain(item.trim().replace(/\.$/u, ''));
+  });
+
+  it('answers a specific domain question instead of replacing it with generic discovery', async () => {
+    const promotion = approvedCampaignOffer();
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [promotion],
+      recommendedOfferId: promotion.id,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: 'Vi su anuncio, ¿incluye dominio?',
+      inboundCreatedAt: campaignTime(-3),
+      inboundMetadata: {
+        pilotOrigin: 'meta_ad',
+        pilotOriginEvidence: 'meta_referral_ad',
+        pilotAd: { sourceId: '52583085497631' },
+      },
+      campaignConfig: {
+        HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52583085497631',
+      },
+      hermesResponse: {
+        response: 'Sí, la landing incluye dominio .com y hosting por 1 año.',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const delivered = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
+      .content as string;
+    expect(delivered).toMatch(/dominio \.com/iu);
+    expect(delivered).not.toMatch(/¿A qué se dedica su negocio\?/iu);
   });
 
   it('does not confirm a sale or payment from a campaign lead saying “Quiero contratar”', async () => {
