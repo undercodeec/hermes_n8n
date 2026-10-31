@@ -12,7 +12,7 @@ if (process.cwd().replaceAll('\\', '/').startsWith('/var/www/'))
   throw new Error('Production path is forbidden');
 
 const databaseUrl =
-  'postgresql://a7_d16_test:a7_d16_test_only@127.0.0.1:55433/hermes_a7_d16_test?schema=public';
+  'postgresql://a7_d16_test:fixture-a7-d16-local@127.0.0.1:55433/hermes_a7_d16_test?schema=public';
 const redisUrl = 'redis://127.0.0.1:56380/0';
 const compose = 'docker-compose.a7-d16-e2e.yml';
 const artifactSubdir = process.env.A7_D16_ARTIFACT_SUBDIR || 'a7-d16-e2e';

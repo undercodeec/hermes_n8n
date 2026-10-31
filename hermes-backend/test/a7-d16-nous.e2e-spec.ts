@@ -23,7 +23,7 @@ const databaseUrl = process.env.DATABASE_INTEGRATION_URL;
 const redisUrl = process.env.REDIS_INTEGRATION_URL;
 if (
   databaseUrl !==
-    'postgresql://a7_d16_test:a7_d16_test_only@127.0.0.1:55433/hermes_a7_d16_test?schema=public' ||
+    'postgresql://a7_d16_test:fixture-a7-d16-local@127.0.0.1:55433/hermes_a7_d16_test?schema=public' ||
   redisUrl !== 'redis://127.0.0.1:56380/0'
 )
   throw new Error(
@@ -45,7 +45,7 @@ describe('A7-D16 isolated Nous path (PostgreSQL + BullMQ)', () => {
         }) as Record<string, string>
       )[key] ?? fallback,
   } as ConfigService;
-  const redis = new URL(redisUrl!);
+  const redis = new URL(redisUrl);
   const connection = {
     host: redis.hostname,
     port: Number(redis.port),
@@ -163,7 +163,7 @@ describe('A7-D16 isolated Nous path (PostgreSQL + BullMQ)', () => {
     const transport = new NousHermesTransport(
       config,
       new AgentOutputValidator(),
-      { read: async () => 'synthetic-only-key' },
+      { read: () => Promise.resolve('synthetic-only-key') },
       turns,
       prisma,
     );

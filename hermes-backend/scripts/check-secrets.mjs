@@ -99,6 +99,12 @@ for (const relativePath of candidates) {
     if (/\.spec\.[cm]?[jt]sx?$|(?:^|\/)test\//i.test(relativePath)) return;
     const value = match[2].replace(/^['"]|['"]$/g, '').trim();
     if (/_FILE$/i.test(name) || placeholder.test(value)) return;
+    // Bare source identifiers refer to variables, not literal secrets.
+    if (
+      /\.[cm]?[jt]sx?$/i.test(relativePath) &&
+      /^[a-z_$][a-z0-9_$]*$/i.test(value)
+    )
+      return;
     const envStyle = name === name.toUpperCase();
     const quotedLiteral = /^\s*['"`]/.test(match[2]);
     if (!envStyle && !quotedLiteral) return;

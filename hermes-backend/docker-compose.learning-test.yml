@@ -7,7 +7,7 @@ services:
     image: postgres:16-alpine
     environment:
       POSTGRES_USER: learning_test
-      POSTGRES_PASSWORD: learning_test_only
+      POSTGRES_PASSWORD: fixture-learning-local
       POSTGRES_DB: hermes_learning_test
     ports:
       - '127.0.0.1:${LEARNING_TEST_POSTGRES_PORT:-55432}:5432'

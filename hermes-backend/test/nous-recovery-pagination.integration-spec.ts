@@ -17,8 +17,8 @@ const redisUrl = process.env.REDIS_INTEGRATION_URL;
 if (
   !databaseUrl ||
   ![
-    'postgresql://learning_test:learning_test_only@127.0.0.1:55432/hermes_learning_test?schema=public',
-    'postgresql://a7_d16_test:a7_d16_test_only@127.0.0.1:55433/hermes_a7_d16_test?schema=public',
+    'postgresql://learning_test:fixture-learning-local@127.0.0.1:55432/hermes_learning_test?schema=public',
+    'postgresql://a7_d16_test:fixture-a7-d16-local@127.0.0.1:55433/hermes_a7_d16_test?schema=public',
   ].includes(databaseUrl)
 )
   throw new Error('Refusing non-isolated PostgreSQL');

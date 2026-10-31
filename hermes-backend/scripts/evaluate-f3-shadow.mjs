@@ -20,7 +20,7 @@ const {
 
 const databaseUrl =
   process.env.DATABASE_INTEGRATION_URL ||
-  'postgresql://learning_test:learning_test_only@127.0.0.1:55432/hermes_learning_test?schema=public';
+  'postgresql://learning_test:fixture-learning-local@127.0.0.1:55432/hermes_learning_test?schema=public';
 const target = new URL(databaseUrl);
 if (
   target.hostname !== '127.0.0.1' ||
