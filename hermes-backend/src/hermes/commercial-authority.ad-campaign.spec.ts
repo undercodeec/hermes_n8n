@@ -185,6 +185,36 @@ describe('Commercial Authority with verified ad context', () => {
     );
   });
 
+  it('does not quote a global USD promotion for an explicitly Spanish project', async () => {
+    const { service } = authority(true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Quiero la promoción de $80 para un proyecto en España',
+      waId: '593991234567',
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.market).toBe(CommercialMarket.ES);
+    expect(snapshot.requestedCurrency).toBe('USD');
+    expect(snapshot.offers).toEqual([]);
+    expect(snapshot.needsCampaignTariffConfirmation).toBe(true);
+  });
+
+  it('uses the Ecuador phone market instead of an unrelated older euro request', async () => {
+    const { service } = authority(true, true);
+    const snapshot = await service.snapshot({
+      customerMessage: '¿Cuánto cuesta Black Friday?',
+      recentCustomerMessages: ['¿Cuánto en euros?'],
+      waId: '593991234567',
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.market).toBe(CommercialMarket.EC);
+    expect(snapshot.marketInferenceSource).toBe('PHONE_COUNTRY_CODE');
+    expect(snapshot.offers).toEqual([
+      expect.objectContaining({ id: ecuadorPromotion.id, currency: 'USD' }),
+    ]);
+  });
+
   it('uses the existing global USD promotion for verified Ecuador traffic when no EC tariff exists', async () => {
     const { service } = authority(true);
     const snapshot = await service.snapshot({
@@ -233,6 +263,22 @@ describe('Commercial Authority with verified ad context', () => {
     expect(
       answerExplicitPriceIfMissing('Cuesta €80.', snapshot, true),
     ).not.toMatch(/€80|USD|Ecuador o España/iu);
+  });
+
+  it('lets a newer verified ad outrank an older project mention', async () => {
+    const { service } = authority(true, true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Quiero información sobre esta promoción',
+      recentCustomerMessages: ['Antes necesitaba una web para Ecuador'],
+      waId: '593991234567',
+      verifiedAd: verifiedSpainAd,
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.market).toBe(CommercialMarket.ES);
+    expect(snapshot.needsAdMarketConflictClarification).toBe(false);
+    expect(snapshot.projectCountry).toBeUndefined();
+    expect(snapshot.offers[0]?.currency).toBe('EUR');
   });
 
   it.each([

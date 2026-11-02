@@ -14,6 +14,11 @@ import {
 } from './black-friday-landing';
 import type { CommercialProfile } from './dto/hermes-request.dto';
 import type { VerifiedBlackFridayAd } from './verified-ad-campaign';
+import {
+  CommercialMarketResolver,
+  mentionedCurrency,
+  type MarketInferenceSource,
+} from './commercial-market-resolver';
 
 export type AuthorizedOffer = {
   id: string;
@@ -39,7 +44,18 @@ export type AuthorizedOffer = {
 
 export type CommercialSnapshot = {
   market?: CommercialMarket;
-  marketSource: 'CURRENT' | 'VERIFIED_AD' | 'PROFILE' | 'HISTORY' | 'UNKNOWN';
+  marketSource:
+    | 'CURRENT'
+    | 'VERIFIED_AD'
+    | 'PROFILE'
+    | 'PHONE_COUNTRY_CODE'
+    | 'HISTORY'
+    | 'UNKNOWN';
+  marketInferenceSource?: MarketInferenceSource;
+  phoneCountry?: CommercialMarket;
+  projectCountry?: CommercialMarket;
+  requestedCurrency?: 'EUR' | 'USD' | 'AMBIGUOUS';
+  adAttributionSource?: VerifiedBlackFridayAd['source'];
   relevantServiceCodes: string[];
   offers: AuthorizedOffer[];
   needsMarketClarification: boolean;
@@ -58,63 +74,25 @@ function normalize(value: string): string {
     .replace(/[\u0300-\u036f]/g, '');
 }
 
-function mentionedMarket(text: string): CommercialMarket | undefined {
-  const normalized = normalize(text);
-  const ec =
-    /\becuador\b/.test(normalized) &&
-    !/\bno\s+(?:en|para|soy de)\s+ecuador\b/.test(normalized);
-  const es =
-    /\bespana\b/.test(normalized) &&
-    !/\bno\s+(?:en|para|soy de)\s+espana\b/.test(normalized);
-  return ec === es ? undefined : ec ? CommercialMarket.EC : CommercialMarket.ES;
-}
-
-function explicitProjectMarket(text: string): CommercialMarket | undefined {
-  const match = normalize(text).match(
-    /\b(?:proyecto|sitio web|pagina web|tienda online|servicio|landing|pagina de aterrizaje)\b.{0,40}\bpara\s+(ecuador|espana)\b/,
-  )?.[1];
-  return match === 'ecuador'
-    ? CommercialMarket.EC
-    : match === 'espana'
-      ? CommercialMarket.ES
-      : undefined;
-}
-
-function mentionedCurrency(
-  text: string,
-): 'USD' | 'EUR' | 'AMBIGUOUS' | undefined {
-  const euros = /€|\b(?:EUR|euros?)\b/iu.test(text);
-  const dollars = /\$|\b(?:USD|d[oó]lares?)\b/iu.test(text);
-  if (euros && dollars) return 'AMBIGUOUS';
-  return euros ? 'EUR' : dollars ? 'USD' : undefined;
-}
-
 export function resolveCommercialMarket(input: {
   customerMessage: string;
   profile?: CommercialProfile;
   recentCustomerMessages?: string[];
   verifiedAdMarket?: CommercialMarket;
+  waId?: string;
 }): { market?: CommercialMarket; source: CommercialSnapshot['marketSource'] } {
-  const normalizedCurrent = normalize(input.customerMessage);
-  const projectMarket = explicitProjectMarket(input.customerMessage);
-  if (projectMarket) return { market: projectMarket, source: 'CURRENT' };
-  if (input.verifiedAdMarket)
-    return { market: input.verifiedAdMarket, source: 'VERIFIED_AD' };
-  const current = mentionedMarket(input.customerMessage);
-  if (current) return { market: current, source: 'CURRENT' };
-  if (
-    /\becuador\b/.test(normalizedCurrent) &&
-    /\bespana\b/.test(normalizedCurrent)
-  )
-    return { source: 'UNKNOWN' };
-  if (input.profile?.market === 'EC' || input.profile?.market === 'ES') {
-    return { market: input.profile.market, source: 'PROFILE' };
-  }
-  for (const message of [...(input.recentCustomerMessages ?? [])].reverse()) {
-    const historical = mentionedMarket(message);
-    if (historical) return { market: historical, source: 'HISTORY' };
-  }
-  return { source: 'UNKNOWN' };
+  const resolved = new CommercialMarketResolver().resolve(input);
+  const source: CommercialSnapshot['marketSource'] =
+    resolved.source === 'EXPLICIT_PROJECT' ||
+    resolved.source === 'EXPLICIT_CUSTOMER_MARKET' ||
+    resolved.source === 'EXPLICIT_CUSTOMER_CURRENCY'
+      ? 'CURRENT'
+      : resolved.source === 'VERIFIED_META_AD'
+        ? 'VERIFIED_AD'
+        : resolved.source === 'CRM_CONFIRMED'
+          ? 'PROFILE'
+          : resolved.source;
+  return { ...(resolved.market ? { market: resolved.market } : {}), source };
 }
 
 type ProductWithPrices = Prisma.ProductGetPayload<{
@@ -148,6 +126,7 @@ type ProductWithPrices = Prisma.ProductGetPayload<{
 @Injectable()
 export class CommercialAuthorityService {
   private readonly logger = new Logger(CommercialAuthorityService.name);
+  private readonly marketResolver = new CommercialMarketResolver();
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -157,6 +136,7 @@ export class CommercialAuthorityService {
     productOfInterest?: string;
     recentCustomerMessages?: string[];
     priceRequested: boolean;
+    waId?: string;
     /** Verified, time-bound ad mapping. Never populated from customer text. */
     verifiedAdPolicyVersion?: typeof BLACK_FRIDAY_LANDING_POLICY_VERSION;
     verifiedAd?: VerifiedBlackFridayAd;
@@ -164,11 +144,15 @@ export class CommercialAuthorityService {
     ignoreHistoricalPromotion?: boolean;
     now?: Date;
   }): Promise<CommercialSnapshot> {
+    const detailedResolution = this.marketResolver.resolve({
+      ...input,
+      verifiedAdMarket: input.verifiedAd?.market,
+    });
     const resolution = resolveCommercialMarket({
       ...input,
       verifiedAdMarket: input.verifiedAd?.market,
     });
-    const projectMarket = explicitProjectMarket(input.customerMessage);
+    const projectMarket = detailedResolution.projectCountry;
     const priorContext = [
       input.productOfInterest,
       input.profile?.service,
@@ -193,6 +177,7 @@ export class CommercialAuthorityService {
     const historicalCurrency =
       currentCurrency ||
       resolution.source === 'CURRENT' ||
+      resolution.source === 'PHONE_COUNTRY_CODE' ||
       Boolean(input.verifiedAd?.market) ||
       input.ignoreHistoricalPromotion
         ? undefined
@@ -241,12 +226,22 @@ export class CommercialAuthorityService {
     const result: CommercialSnapshot = {
       market: resolution.market,
       marketSource: resolution.source,
+      marketInferenceSource: detailedResolution.source,
+      ...(detailedResolution.phoneCountry
+        ? { phoneCountry: detailedResolution.phoneCountry }
+        : {}),
+      ...(projectMarket ? { projectCountry: projectMarket } : {}),
+      ...(requestedCurrency ? { requestedCurrency } : {}),
+      ...(input.verifiedAd
+        ? { adAttributionSource: input.verifiedAd.source }
+        : {}),
       relevantServiceCodes,
       offers: [],
       needsMarketClarification: false,
       needsAdMarketConflictClarification: Boolean(
         blackFridayRequested &&
         input.verifiedAd?.market &&
+        detailedResolution.source === 'EXPLICIT_PROJECT' &&
         projectMarket &&
         projectMarket !== input.verifiedAd.market,
       ),
@@ -493,24 +488,25 @@ export class CommercialAuthorityService {
             (price) => price.market === null && price.currency === 'USD',
           )
         : [];
+    const marketCampaigns = market
+      ? campaignPromotions.filter(
+          (price) =>
+            price.market === market ||
+            (market === CommercialMarket.EC &&
+              price.market === null &&
+              price.currency === 'USD'),
+        )
+      : campaignPromotions;
     const matchedCampaign =
       verifiedAd?.market && verifiedAd.currency
         ? requestedCurrency && requestedCurrency !== verifiedAd.currency
           ? []
           : verifiedCampaign
         : requestedCurrency && requestedCurrency !== 'AMBIGUOUS'
-          ? campaignPromotions.filter(
+          ? marketCampaigns.filter(
               (price) => price.currency === requestedCurrency,
             )
-          : market && requestedCurrency !== 'AMBIGUOUS'
-            ? campaignPromotions.filter(
-                (price) =>
-                  price.market === market ||
-                  (market === CommercialMarket.EC &&
-                    price.market === null &&
-                    price.currency === 'USD'),
-              )
-            : campaignPromotions;
+          : marketCampaigns;
     const selectedCampaign =
       matchedCampaign.length === 1 ||
       (matchedCampaign.length === 2 &&

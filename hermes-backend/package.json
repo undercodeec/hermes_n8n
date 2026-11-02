@@ -55,6 +55,7 @@
     "google-auth-library": "^10.9.1",
     "googleapis": "^182.0.0",
     "ioredis": "^5.11.1",
+    "libphonenumber-js": "1.13.7",
     "multer": "2.5.0",
     "nestjs-cls": "^6.2.1",
     "passport": "^0.7.0",

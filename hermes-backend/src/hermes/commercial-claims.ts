@@ -293,8 +293,25 @@ export function answerExplicitPriceIfMissing(
     return 'El anuncio corresponde a otro mercado. ¿Desea que le orientemos para el país que indicó?';
   if (snapshot.needsMarketClarification)
     return '¿El proyecto sería para Ecuador o España?';
-  if (snapshot.needsCampaignTariffConfirmation)
-    return 'Necesito verificar la tarifa de Black Friday para la moneda o el país indicado con el equipo comercial.';
+  if (snapshot.needsCampaignTariffConfirmation) {
+    const notice =
+      snapshot.market === CommercialMarket.ES
+        ? 'Necesito verificar la tarifa de Black Friday para España en euros; requiere confirmación comercial.'
+        : snapshot.market === CommercialMarket.EC
+          ? 'Necesito verificar la tarifa de Black Friday para Ecuador en dólares; requiere confirmación comercial.'
+          : 'Necesito verificar la tarifa de Black Friday para el mercado solicitado; requiere confirmación comercial.';
+    if (response.includes(notice)) return response;
+    const reviewed = response.trim()
+      ? reviewCommercialClaims(response, snapshot).response
+      : '';
+    const useful =
+      /^(?:Gracias por confirmarlo\.?|Ese importe o condición requiere confirmación del equipo\.?|Necesito verificar la tarifa de Black Friday[^.]*\.)$/iu.test(
+        reviewed.trim(),
+      )
+        ? ''
+        : reviewed.trim();
+    return `${notice} ${useful || 'Es una página de una sola sección para presentar su negocio y facilitar consultas.'}`.trim();
+  }
   const dualCampaign = dualCampaignOffers(snapshot.offers);
   if (dualCampaign) {
     return `La promoción ${dualCampaign.eur.name} cuesta €${dualCampaign.eur.amount} en España o USD $${dualCampaign.usd.amount} en Ecuador. Es una página de una sola sección para presentar su negocio y captar prospectos.`;

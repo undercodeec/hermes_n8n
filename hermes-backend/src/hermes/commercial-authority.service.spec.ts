@@ -10,8 +10,22 @@ import {
   commercialSnapshotKnowledge,
   resolveCommercialMarket,
 } from './commercial-authority.service';
+import { phoneCountryFromWaId } from './commercial-market-resolver';
 
 describe('CommercialAuthorityService', () => {
+  it.each([
+    ['+34612345678', CommercialMarket.ES],
+    ['593991234567', CommercialMarket.EC],
+    ['+14155552671', undefined],
+    ['+34123', undefined],
+    ['34612345678abc', undefined],
+    ['0034612345678', undefined],
+  ])(
+    'validates the complete WhatsApp number %s before using its country',
+    (waId, expected) => {
+      expect(phoneCountryFromWaId(waId)).toBe(expected);
+    },
+  );
   const now = new Date('2026-09-23T12:00:00.000Z');
   type PriceFixture = {
     id: string;
@@ -240,6 +254,74 @@ describe('CommercialAuthorityService', () => {
         profile: { location: 'España' },
       }),
     ).toEqual({ source: 'UNKNOWN' });
+  });
+
+  it('uses a valid customer WhatsApp country code as a fallback without confirming the project country', async () => {
+    const input = {
+      customerMessage: 'Quiero información sobre una web',
+      waId: '34612345678',
+      priceRequested: false,
+      now,
+    };
+    const result = await service([]).authority.snapshot(input);
+    expect(result.market).toBe(CommercialMarket.ES);
+    expect(result.marketInferenceSource).toBe('PHONE_COUNTRY_CODE');
+    expect(result.phoneCountry).toBe(CommercialMarket.ES);
+    expect(result.projectCountry).toBeUndefined();
+  });
+
+  it('keeps an explicit Spanish project above an Ecuadorian phone code', async () => {
+    const input = {
+      customerMessage: 'Quiero un sitio web para España',
+      waId: '593991234567',
+      priceRequested: false,
+      now,
+    };
+    const result = await service([]).authority.snapshot(input);
+    expect(result.market).toBe(CommercialMarket.ES);
+    expect(result.marketInferenceSource).toBe('EXPLICIT_PROJECT');
+    expect(result.phoneCountry).toBe(CommercialMarket.EC);
+    expect(result.projectCountry).toBe(CommercialMarket.ES);
+  });
+
+  it('retains a previously confirmed project country above the phone code', async () => {
+    const input = {
+      customerMessage: '¿Y ahora qué?',
+      recentCustomerMessages: ['Necesito una web para España'],
+      waId: '593991234567',
+      priceRequested: false,
+      now,
+    };
+    const result = await service([]).authority.snapshot(input);
+    expect(result.market).toBe(CommercialMarket.ES);
+    expect(result.marketInferenceSource).toBe('CRM_CONFIRMED');
+    expect(result.projectCountry).toBe(CommercialMarket.ES);
+    expect(result.phoneCountry).toBe(CommercialMarket.EC);
+  });
+
+  it('does not let an older CRM market override a newer explicit project country', async () => {
+    const result = await service([]).authority.snapshot({
+      customerMessage: '¿Cuánto cuesta?',
+      recentCustomerMessages: ['Necesito una web para España'],
+      profile: { market: 'EC' },
+      waId: '593991234567',
+      priceRequested: true,
+      now,
+    });
+    expect(result.market).toBe(CommercialMarket.ES);
+    expect(result.projectCountry).toBe(CommercialMarket.ES);
+  });
+
+  it('keeps a project mentioning both countries unresolved', async () => {
+    const result = await service([]).authority.snapshot({
+      customerMessage: 'Quiero una web en España o Ecuador; ¿cuánto cuesta?',
+      waId: '34612345678',
+      priceRequested: true,
+      now,
+    });
+    expect(result.market).toBeUndefined();
+    expect(result.marketInferenceSource).toBe('UNKNOWN');
+    expect(result.projectCountry).toBeUndefined();
   });
 
   it('prioritizes the customer market over the previously confirmed profile', () => {

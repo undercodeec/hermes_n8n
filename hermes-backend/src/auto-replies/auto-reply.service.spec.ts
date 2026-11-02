@@ -3296,6 +3296,7 @@ describe('AutoReplyService', () => {
       expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(1);
       expect(authority.snapshot).toHaveBeenCalledWith(
         expect.objectContaining({
+          waId: '593991234567',
           verifiedAd: expect.objectContaining({
             market: CommercialMarket.ES,
             currency: 'EUR',
@@ -3360,7 +3361,16 @@ describe('AutoReplyService', () => {
     expect(parts[0].content).not.toMatch(/¿El proyecto sería/iu);
   });
 
-  it.each([null, 'Cliente', '593991234567'])(
+  it.each([
+    null,
+    'Cliente',
+    '593991234567',
+    'MRS',
+    'MR',
+    'SR',
+    'SRA',
+    'UNKNOWN',
+  ])(
     'greets a first campaign enquiry naturally when contact name is %s',
     async (contactName) => {
       const promotion = approvedCampaignOffer();
@@ -3396,7 +3406,155 @@ describe('AutoReplyService', () => {
       const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
       expect(parts).toHaveLength(1);
       expect(parts[0].content).toMatch(/^Hola[,.!]/u);
-      expect(parts[0].content).not.toMatch(/Hola, (?:Cliente|593991234567)/iu);
+      expect(parts[0].content).not.toMatch(
+        /Hola, (?:Cliente|593991234567|MRS|MR|SR|SRA|UNKNOWN)\b/iu,
+      );
+    },
+  );
+
+  it('removes an artificial title already present in a generated greeting', async () => {
+    const harness = setupProcessHarness({
+      contactName: 'MRS',
+      inboundContent: 'Hola, quiero información de una landing',
+      hermesResponse: {
+        response:
+          'Hola, MRS. Una landing presenta su negocio y facilita el contacto.',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const answer = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
+      .content as string;
+    expect(answer).toMatch(/^Hola\./u);
+    expect(answer).not.toMatch(/\bMRS\b/iu);
+  });
+
+  it('does not store a currency-derived market as a confirmed project market', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'Quiero la promoción en euros',
+      hermesResponse: { response: 'La tarifa requiere confirmación.' },
+      commercialSnapshot: {
+        market: CommercialMarket.ES,
+        marketSource: 'CURRENT',
+        marketInferenceSource: 'EXPLICIT_CUSTOMER_CURRENCY',
+        requestedCurrency: 'EUR',
+        relevantServiceCodes: ['LANDING_PAGE'],
+        offers: [],
+        needsMarketClarification: false,
+        needsCampaignTariffConfirmation: true,
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(
+      harness.leads.recordCommercialProfileFromConversation,
+    ).toHaveBeenCalledWith(
+      expect.objectContaining({
+        profile: expect.not.objectContaining({ market: CommercialMarket.ES }),
+      }),
+    );
+  });
+
+  it.each([
+    ['Euro y España', 'Gracias por confirmarlo.'],
+    [
+      'Ahora que',
+      'El equipo comercial debe revisar la tarifa aplicable para España. Mientras tanto, ¿podría contarme qué tipo de proyecto o sitio web tiene en mente?',
+    ],
+  ])(
+    'continues the Spanish promotion after "%s" without repeating the country question',
+    async (message, generated) => {
+      const harness = setupProcessHarness({
+        inboundContent: message,
+        hermesResponse: { response: generated },
+        commercialSnapshot: {
+          market: CommercialMarket.ES,
+          marketSource: 'CURRENT',
+          marketInferenceSource: 'EXPLICIT_CUSTOMER_MARKET',
+          relevantServiceCodes: ['LANDING_PAGE'],
+          offers: [],
+          needsMarketClarification: false,
+          needsCampaignTariffConfirmation: true,
+        },
+        persistedProfile: { service: 'LANDING_PAGE', market: 'ES' },
+        historyMessages: [
+          {
+            id: 'prior-user',
+            direction: MessageDirection.INBOUND,
+            content: 'Quiero más información sobre la promoción de €80',
+            createdAt: campaignTime(-3),
+            rawPayload: null,
+            metadata: {},
+          },
+          {
+            id: 'prior-assistant',
+            direction: MessageDirection.OUTBOUND,
+            content: '¿El proyecto sería para Ecuador o España?',
+            createdAt: campaignTime(-2),
+            rawPayload: null,
+            metadata: {},
+          },
+        ],
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      const answer = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
+        .content as string;
+      expect(answer).toMatch(/tarifa.*confirm/iu);
+      expect(answer).toMatch(/página|landing/iu);
+      expect(answer).not.toMatch(
+        /USD|€\s*80|Ecuador o España|tipo de proyecto/iu,
+      );
+      expect(answer.match(/¿/gu)?.length ?? 0).toBeLessThanOrEqual(1);
+    },
+  );
+
+  it.each([
+    [
+      '¿Incluye hosting en España?',
+      'El hosting es el espacio donde funciona su página web. Su inclusión requiere confirmar el alcance vigente.',
+      /hosting es el espacio/iu,
+    ],
+    [
+      '¿Cuánto soporte incluye en España?',
+      'La duración del soporte requiere confirmar el alcance vigente en el CRM.',
+      /duración del soporte/iu,
+    ],
+  ])(
+    'preserves the specific answer to "%s" when the Spanish tariff is absent',
+    async (message, generated, expected) => {
+      const harness = setupProcessHarness({
+        inboundContent: message,
+        hermesResponse: { response: generated },
+        commercialSnapshot: {
+          market: CommercialMarket.ES,
+          marketSource: 'CURRENT',
+          marketInferenceSource: 'EXPLICIT_CUSTOMER_MARKET',
+          relevantServiceCodes: ['LANDING_PAGE'],
+          offers: [],
+          needsMarketClarification: false,
+          needsCampaignTariffConfirmation: true,
+        },
+        persistedProfile: { service: 'LANDING_PAGE', market: 'ES' },
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      const answer = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
+        .content as string;
+      expect(answer).toMatch(expected);
+      expect(answer).not.toMatch(/tarifa.*confirm|¿A qué se dedica/iu);
     },
   );
 

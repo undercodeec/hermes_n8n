@@ -48,6 +48,8 @@ import {
   isGeneralBlackFridayInquiry,
 } from '../hermes/black-friday-landing';
 import { resolveVerifiedBlackFridayAd } from '../hermes/verified-ad-campaign';
+import { safeCustomerFirstName } from '../hermes/customer-first-name';
+import { continueUnpricedCampaign } from '../hermes/commercial-continuity';
 import { projectAttribution } from '../attribution-crm/attribution-crm';
 import {
   answerExplicitPriceIfMissing,
@@ -631,6 +633,7 @@ export class AutoReplyService {
         const contractSnapshot = await this.commercialAuthority
           .snapshot({
             customerMessage,
+            waId: conversation.contact.waId,
             profile: context.commercialProfile,
             productOfInterest: context.productOfInterest,
             recentCustomerMessages: context.recentMessages
@@ -708,6 +711,7 @@ export class AutoReplyService {
     );
     const commercialSnapshot = await this.commercialAuthority.snapshot({
       customerMessage,
+      waId: conversation.contact.waId,
       profile: context.commercialProfile,
       productOfInterest: context.productOfInterest,
       recentCustomerMessages: context.recentMessages
@@ -1189,7 +1193,11 @@ export class AutoReplyService {
       : { ...context.commercialProfile, ...response.commercialProfile };
     response.commercialProfile = {
       ...acceptedProfile,
-      ...(commercialSnapshot.marketSource === 'CURRENT' &&
+      ...((commercialSnapshot.marketInferenceSource
+        ? commercialSnapshot.marketInferenceSource === 'EXPLICIT_PROJECT' ||
+          commercialSnapshot.marketInferenceSource ===
+            'EXPLICIT_CUSTOMER_MARKET'
+        : commercialSnapshot.marketSource === 'CURRENT') &&
       commercialSnapshot.market
         ? { market: commercialSnapshot.market }
         : {}),
@@ -1435,6 +1443,16 @@ export class AutoReplyService {
       )
     ) {
       response.response = `${response.response} El plazo requiere valoración del alcance antes de confirmar una fecha.`;
+    }
+    if (!response.diagnostic) {
+      response.response = continueUnpricedCampaign({
+        response: response.response,
+        customerMessage,
+        snapshot: commercialSnapshot,
+        profile: response.commercialProfile,
+        priceRequested: policy.guidance.priceAnswerRequired,
+        allowDiscoveryQuestion: policy.guidance.allowDiscoveryQuestion,
+      });
     }
     response.response = this.polishInitialGreeting({
       reply: response.response,
@@ -2533,6 +2551,10 @@ export class AutoReplyService {
   }): string {
     let reply = input.reply
       .replace(
+        /^(Hola|Buenas(?:\s+(?:tardes|noches))?|Buenos\s+d[ií]as),\s*(?:mr|mrs|sr|sra|cliente|unknown)\s*[.!]/iu,
+        '$1.',
+      )
+      .replace(
         /\bbienvenid[oa]s?\s+a\s+under\s*code\s*ec\b\s*[,;.!]?\s*/giu,
         '',
       )
@@ -2555,19 +2577,12 @@ export class AutoReplyService {
       (!pureGreeting && !input.firstReply)
     )
       return reply;
-    const firstName = input.contactName
-      .trim()
-      .match(/^([\p{L}\p{M}][\p{L}\p{M}'-]{0,39})(?:\s|$)/u)?.[1];
-    const validFirstName =
-      firstName &&
-      !/^(?:cliente|contacto|undercodeec|desconocido|unknown|usuario)$/iu.test(
-        firstName,
-      );
+    const firstName = safeCustomerFirstName(input.contactName);
     const greetingAtStart = reply.match(
       /^(?:¡\s*)?(Buenas (?:tardes|noches)|Buenos d[ií]as|Buen d[ií]a|Hola)[.,!¡]?\s+/iu,
     );
     if (
-      validFirstName &&
+      firstName &&
       !reply
         .match(/[\p{L}\p{M}'-]+/gu)
         ?.some(
