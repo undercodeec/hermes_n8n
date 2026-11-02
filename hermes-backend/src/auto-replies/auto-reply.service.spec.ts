@@ -3804,15 +3804,61 @@ describe('AutoReplyService', () => {
       contactId: 'contact-1',
       inboundMessageId: 'inbound-recovery',
     });
-    const delivered = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
-      .content as string;
-    for (const item of scope.split(';'))
-      expect(delivered).toContain(item.trim().replace(/\.$/u, ''));
-    expect(delivered).toMatch(
-      /La promoción incluye:\n1\. Captación de leads\n2\./u,
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(3);
+    expect(parts.map((part: { partIndex: number }) => part.partIndex)).toEqual([
+      0, 1, 2,
+    ]);
+    expect(parts[0].content).toMatch(/promoción Black Friday/iu);
+    expect(parts[1].content.split('\n')).toHaveLength(10);
+    expect(parts[1].content).toContain('🎯 Captación de clientes potenciales');
+    expect(parts[1].content).toContain(
+      '🛠️ *1 mes de soporte posterior a la entrega*',
     );
-    expect(delivered).toMatch(/\n10\. 1 mes de soporte/u);
-    expect(delivered).not.toMatch(/carrito|ecommerce|pago en línea/iu);
+    expect(parts[1].content).not.toMatch(
+      /carrito|ecommerce|pago en línea|\\|\*\*/iu,
+    );
+    expect(parts[2].content).toBe('¿A qué se dedica su negocio?');
+    expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(3);
+    expect(harness.messageCreate).toHaveBeenCalledTimes(3);
+    expect(
+      harness.messageCreate.mock.calls.map(
+        (call: unknown[]) =>
+          (call[0] as { data: { content: string } }).data.content,
+      ),
+    ).toEqual(parts.map((part: { content: string }) => part.content));
+  });
+
+  it('uses the authorized visual parts once for a Nous campaign detail reply', async () => {
+    const promotion = approvedCampaignOffer();
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [promotion],
+      recommendedOfferId: promotion.id,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      engineId: 'nous_hermes',
+      conversationMetadata: { pilotEngine: 'nous_hermes' },
+      inboundContent: '¿Qué incluye Black Friday?',
+      hermesResponse: { response: 'Incluye hosting. ¿A qué se dedica?' },
+    });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({ response: 'Incluye hosting. ¿A qué se dedica?' }),
+      engine: 'nous_hermes',
+      replyParts: ['Incluye hosting.', '¿A qué se dedica?'],
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(3);
+    expect(parts[1].content.split('\n')).toHaveLength(10);
+    expect(parts[2].content).toBe('¿A qué se dedica su negocio?');
+    expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(3);
   });
 
   it('keeps the authorized price when scope and price are requested together', async () => {
@@ -3842,12 +3888,89 @@ describe('AutoReplyService', () => {
       contactId: 'contact-1',
       inboundMessageId: 'inbound-recovery',
     });
-    const delivered = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
-      .content as string;
-    expect(delivered).toMatch(/USD.*80/iu);
-    for (const item of fullCampaignScope.split(';'))
-      expect(delivered).toContain(item.trim().replace(/\.$/u, ''));
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(3);
+    expect(parts[0].content).toMatch(/USD.*80/iu);
+    expect(parts[1].content.split('\n')).toHaveLength(10);
+    expect(parts[1].content).toContain(
+      '🌍 Dominio .com y hosting básico por 1 año',
+    );
   });
+
+  it.each([1, 2])(
+    'keeps all Black Friday benefits under a %i-part F3 budget',
+    async (maxParts) => {
+      const promotion = approvedCampaignOffer();
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        marketSource: 'UNKNOWN',
+        relevantServiceCodes: ['LANDING_PAGE'],
+        offers: [promotion],
+        recommendedOfferId: promotion.id,
+        needsMarketClarification: false,
+      });
+      const harness = setupProcessHarness({
+        inboundContent: '¿Qué incluye la promoción Black Friday?',
+        hermesResponse: { response: 'Incluye hosting.' },
+      });
+      harness.engine.respond.mockResolvedValue({
+        ...toEngineResult({ response: 'Incluye hosting.' }),
+        f3CapsBudget: {
+          maxParts,
+          validUntil: new Date(Date.now() + 60_000).toISOString(),
+          serviceWindowExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+        },
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+      expect(parts).toHaveLength(maxParts);
+      const delivered = parts
+        .map((part: { content: string }) => part.content)
+        .join('\n');
+      expect(delivered).toContain(
+        '🛠️ *1 mes de soporte posterior a la entrega*',
+      );
+      expect(delivered).toContain('¿A qué se dedica su negocio?');
+      expect(
+        harness.deliveries.recordSuppressedInference,
+      ).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([
+    ['¿Incluye hosting?', /dominio \.com y hosting básico por 1 año/iu],
+    ['¿Cuánto soporte incluye?', /1 mes de soporte posterior a la entrega/iu],
+  ])(
+    'answers only the specific Black Friday feature in %s',
+    async (message, expected) => {
+      const promotion = approvedCampaignOffer();
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        marketSource: 'UNKNOWN',
+        relevantServiceCodes: ['LANDING_PAGE'],
+        offers: [promotion],
+        recommendedOfferId: promotion.id,
+        needsMarketClarification: false,
+      });
+      const harness = setupProcessHarness({
+        inboundContent: message,
+        hermesResponse: { response: 'Incluye las diez características.' },
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+      expect(parts).toHaveLength(1);
+      expect(parts[0].content).toMatch(expected);
+      expect(parts[0].content).not.toMatch(
+        /Captación de clientes|SEO técnico|¿A qué se dedica/iu,
+      );
+    },
+  );
 
   it('answers a specific domain question instead of replacing it with generic discovery', async () => {
     const promotion = approvedCampaignOffer();

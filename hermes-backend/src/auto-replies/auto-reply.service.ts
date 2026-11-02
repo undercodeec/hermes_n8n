@@ -61,6 +61,11 @@ import { monetaryValuesIn } from '../hermes/monetary-values';
 import { TasksService } from '../tasks/tasks.service';
 import { splitWhatsAppMessage } from './whatsapp-message-splitter';
 import {
+  asksForBlackFridayDetails,
+  blackFridayDetailParts,
+  blackFridaySpecificAnswer,
+} from './black-friday-visual-response';
+import {
   HermesIncidentMetadata,
   safeProviderDiagnostic,
   toIncidentMetadata,
@@ -1348,23 +1353,6 @@ export class AutoReplyService {
       commercialSnapshot,
       policy.guidance.priceAnswerRequired,
     );
-    if (/\b(?:qu[eé]\s+incluye|qu[eé]\s+trae)\b/iu.test(customerMessage)) {
-      const campaignOffer = commercialSnapshot.offers.find(
-        (offer) =>
-          offer.promotion &&
-          offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION,
-      );
-      const items =
-        campaignOffer?.scope
-          .split(';')
-          .map((item) => item.trim().replace(/\.$/u, '')) ?? [];
-      if (items.length === 10 && items.every(Boolean)) {
-        response.response = `La promoción incluye:\n${items.map((item, index) => `${index + 1}. ${item}`).join('\n')}`;
-        reviewedProposal?.rejections.push(
-          'CAMPAIGN_SCOPE_COMPLETED_FROM_PRICE_LIST',
-        );
-      }
-    }
     response.response = answerExplicitPriceIfMissing(
       response.response,
       commercialSnapshot,
@@ -1704,6 +1692,46 @@ export class AutoReplyService {
       );
       return;
     }
+    const campaignOffer = commercialSnapshot.offers.find(
+      (offer) =>
+        offer.promotion &&
+        offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION,
+    );
+    const detailParts =
+      !response.diagnostic &&
+      !shouldHandoff &&
+      !quoteCreated &&
+      campaignOffer &&
+      asksForBlackFridayDetails(customerMessage)
+        ? blackFridayDetailParts({
+            offer: campaignOffer,
+            profile: response.commercialProfile,
+            recentMessages: context.recentMessages,
+            priceAnswer: policy.guidance.priceAnswerRequired
+              ? answerExplicitPriceIfMissing('', commercialSnapshot, true)
+              : undefined,
+            maxParts: Math.min(9, engineResult.f3CapsBudget?.maxParts ?? 9),
+          })
+        : undefined;
+    const specificAnswer =
+      !detailParts &&
+      !response.diagnostic &&
+      !shouldHandoff &&
+      !policy.guidance.priceAnswerRequired &&
+      campaignOffer
+        ? blackFridaySpecificAnswer(customerMessage, campaignOffer)
+        : undefined;
+    if (detailParts) {
+      response.response = detailParts.join(' ');
+      reviewedProposal?.rejections.push(
+        'CAMPAIGN_SCOPE_COMPLETED_FROM_PRICE_LIST',
+      );
+    } else if (specificAnswer) {
+      response.response = specificAnswer;
+      reviewedProposal?.rejections.push(
+        'CAMPAIGN_SPECIFIC_ANSWER_FROM_PRICE_LIST',
+      );
+    }
     response.detectedIntent = reconcileCommercialIntent(
       response.detectedIntent,
       response.response,
@@ -1742,7 +1770,8 @@ export class AutoReplyService {
       }),
     );
     const conversationalParts =
-      isNous &&
+      detailParts ??
+      (isNous &&
       !(
         activeCampaignOffer &&
         (initialCampaignInquiry || isGeneralBlackFridayInquiry(customerMessage))
@@ -1751,11 +1780,13 @@ export class AutoReplyService {
       engineResult.replyParts?.length &&
       response.response === engineResult.replyText
         ? engineResult.replyParts
-        : [response.response];
+        : [response.response]);
     const messageParts = conversationalParts.flatMap((part) =>
       splitWhatsAppMessage(
         part,
-        this.positiveInteger('AI_MESSAGE_SPLIT_THRESHOLD', 520),
+        detailParts
+          ? 1000
+          : this.positiveInteger('AI_MESSAGE_SPLIT_THRESHOLD', 520),
       ),
     );
     if (
