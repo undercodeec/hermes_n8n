@@ -436,6 +436,77 @@ describe('NousHermesTransport', () => {
     );
   });
 
+  it.each(['MRS', 'MR', 'SR', 'SRA', 'CLIENTE', 'UNKNOWN'])(
+    'omits the artificial contact name %s from Nous context',
+    async (contactName) => {
+      post.mockResolvedValue({
+        data: {
+          model: 'hermes-agent',
+          choices: [
+            {
+              finish_reason: 'stop',
+              message: { content: JSON.stringify({ replyText: 'Respuesta.' }) },
+            },
+          ],
+        },
+      });
+      await configuredTransport().execute(
+        baseInput({
+          approvedContext: { ...baseInput().approvedContext, contactName },
+        }),
+      );
+      const request = post.mock.calls[0][1] as {
+        messages: Array<{ content: string }>;
+      };
+      const state = JSON.parse(request.messages.at(-1)!.content) as {
+        approvedState: { contactName?: string };
+      };
+      expect(state.approvedState.contactName).toBeUndefined();
+    },
+  );
+
+  it('presents a phone-based market as a fallback without treating it as project location', async () => {
+    post.mockResolvedValue({
+      data: {
+        model: 'hermes-agent',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: { content: JSON.stringify({ replyText: 'Respuesta.' }) },
+          },
+        ],
+      },
+    });
+    await configuredTransport().execute(
+      baseInput({
+        approvedContext: {
+          ...baseInput().approvedContext,
+          commercialSnapshot: {
+            market: 'ES',
+            marketSource: 'PHONE_COUNTRY_CODE',
+            marketInferenceSource: 'PHONE_COUNTRY_CODE',
+            phoneCountry: 'ES',
+            relevantServiceCodes: ['LANDING_PAGE'],
+            offers: [],
+            needsMarketClarification: false,
+          },
+        },
+      }),
+    );
+    const request = post.mock.calls[0][1] as {
+      messages: Array<{ content: string }>;
+    };
+    const state = JSON.parse(request.messages.at(-1)!.content) as {
+      approvedState: { marketInferenceSource?: string };
+    };
+    expect(state.approvedState.marketInferenceSource).toBe(
+      'PHONE_COUNTRY_CODE',
+    );
+    expect(request.messages[0].content).toMatch(
+      /código telefónico.*no demuestra/iu,
+    );
+  });
+
   it('gives identical first messages distinct gateway scope per inbound and stable scope on restart', async () => {
     post.mockResolvedValue({
       data: {

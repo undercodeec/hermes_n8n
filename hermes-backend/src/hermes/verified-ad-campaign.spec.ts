@@ -14,6 +14,19 @@ const verified = (sourceId?: string) => ({
 });
 
 describe('verified Black Friday ad campaign', () => {
+  it.each(['Facebook', 'Instagram'])(
+    'uses the same verified referral contract for a synthetic %s click',
+    () => {
+      expect(
+        resolveVerifiedBlackFridayAd({
+          currentMetadata: verified('52583085497631'),
+          currentOccurredAt: now,
+          now,
+          config,
+        }),
+      ).toEqual(expect.objectContaining({ market: 'ES', currency: 'EUR' }));
+    },
+  );
   it('recognizes the approved Ad ID with no campaign dates', () => {
     expect(
       resolveVerifiedBlackFridayAd({

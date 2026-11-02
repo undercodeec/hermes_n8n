@@ -507,6 +507,24 @@ describe('commercial claims', () => {
     ).toBe('¿El proyecto sería para Ecuador o España?');
   });
 
+  it('keeps safe service guidance and one discovery question when the Spanish promotion has no tariff', () => {
+    const missing = {
+      ...snapshot([]),
+      market: CommercialMarket.ES,
+      relevantServiceCodes: ['LANDING_PAGE'],
+      needsCampaignTariffConfirmation: true,
+    };
+    const reply = answerExplicitPriceIfMissing(
+      'Es una página de una sección para presentar su negocio. ¿A qué se dedica su empresa?',
+      missing,
+      true,
+    );
+    expect(reply).toMatch(/tarifa.*confirm/iu);
+    expect(reply).toContain('Es una página de una sección');
+    expect(reply.match(/¿/gu)).toHaveLength(1);
+    expect(reply).not.toMatch(/USD|€\s*80/iu);
+  });
+
   it('requires a visible desde marker for a FROM price before a long plan name', () => {
     const fromOffer = {
       ...offer,
