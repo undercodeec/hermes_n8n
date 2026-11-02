@@ -676,9 +676,15 @@ export function commercialSnapshotKnowledge(
       /\bseo tecnico base\b/u.test(scope)
         ? 'incluye configuración SEO técnica básica'
         : undefined,
-      /\b1 mes de soporte posterior a la entrega\b/u.test(scope)
-        ? 'incluye un mes de soporte posterior a la entrega'
-        : undefined,
+      /\b(?:12 meses|1 ano|un ano) de soporte(?: tecnico)? posterior(?:es)? a la entrega\b/u.test(
+        scope,
+      )
+        ? 'incluye 12 meses de soporte técnico posteriores a la entrega; incluye un año de soporte técnico posterior a la entrega'
+        : /\b(?:1 mes|un mes) de soporte(?: tecnico)? posterior(?:es)? a la entrega\b/u.test(
+              scope,
+            )
+          ? 'incluye un mes de soporte posterior a la entrega'
+          : undefined,
     ].filter(Boolean);
     if (equivalentTerms.length)
       offerKnowledge.push(

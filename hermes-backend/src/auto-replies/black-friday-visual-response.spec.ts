@@ -6,7 +6,7 @@ import {
 } from './black-friday-visual-response';
 
 const scope =
-  'Captación de leads; landing page de una sola sección; diseño responsive para celulares; botón flotante de WhatsApp y llamada directa; formulario de contacto o captura de prospectos; apartado de beneficios del servicio o producto; dominio .com y hosting básico por 1 año; 5 correos corporativos; SEO técnico base; 1 mes de soporte posterior a la entrega.';
+  'Captación de leads; landing page de una sola sección; diseño responsive para celulares; botón flotante de WhatsApp y llamada directa; formulario de contacto o captura de prospectos; apartado de beneficios del servicio o producto; dominio .com y hosting básico por 1 año; 5 correos corporativos; SEO técnico base; 12 meses de soporte técnico posteriores a la entrega.';
 const offer = { scope } as AuthorizedOffer;
 
 describe('Black Friday visual response', () => {
@@ -35,7 +35,7 @@ describe('Black Friday visual response', () => {
       '🌍 Dominio .com y hosting básico por 1 año',
       '📧 5 correos corporativos',
       '🔍 SEO técnico base',
-      '🛠️ *1 mes de soporte posterior a la entrega*',
+      '🛠️ *1 año de soporte técnico posterior a la entrega*',
     ]);
     expect(parts?.[2]).toBe('¿A qué se dedica su negocio?');
     expect(parts?.join(' ')).not.toContain('\\');
@@ -59,13 +59,18 @@ describe('Black Friday visual response', () => {
     },
   );
 
-  it('only presents a year of support when the current scope says so', () => {
+  it.each([
+    '12 meses de soporte técnico posterior a la entrega',
+    '12 meses de soporte técnico posteriores a la entrega',
+    '1 año de soporte técnico posterior a la entrega',
+    '1 año de soporte técnico posteriores a la entrega',
+  ])('formats the authorized annual support variant: %s', (support) => {
     const annual = {
-      scope: scope.replace('1 mes de soporte', '12 meses de soporte'),
+      scope: scope.replace(
+        '12 meses de soporte técnico posteriores a la entrega',
+        support,
+      ),
     } as AuthorizedOffer;
-    expect(
-      blackFridayDetailParts({ offer, recentMessages: [], maxParts: 3 })?.[1],
-    ).not.toContain('1 año de soporte');
     expect(
       blackFridayDetailParts({
         offer: annual,
@@ -75,13 +80,32 @@ describe('Black Friday visual response', () => {
     ).toContain('🛠️ *1 año de soporte técnico posterior a la entrega*');
   });
 
+  it('keeps a month while the selected PriceList still has the old clause', () => {
+    const oldOffer = {
+      scope: scope.replace(
+        '12 meses de soporte técnico posteriores a la entrega',
+        '1 mes de soporte posterior a la entrega',
+      ),
+    } as AuthorizedOffer;
+    expect(
+      blackFridayDetailParts({
+        offer: oldOffer,
+        recentMessages: [],
+        maxParts: 3,
+      })?.[1],
+    ).toContain('🛠️ *1 mes de soporte posterior a la entrega*');
+    expect(
+      blackFridaySpecificAnswer('¿Cuánto soporte incluye?', oldOffer),
+    ).toMatch(/1 mes de soporte/u);
+  });
+
   it('answers specific items without a catalog and avoids repeated discovery', () => {
     expect(blackFridaySpecificAnswer('¿Incluye hosting?', offer)).toMatch(
       /dominio \.com y hosting básico por 1 año/u,
     );
     expect(
       blackFridaySpecificAnswer('¿Cuánto soporte incluye?', offer),
-    ).toMatch(/1 mes de soporte/u);
+    ).toMatch(/12 meses de soporte técnico posteriores a la entrega/u);
     expect(
       blackFridayDetailParts({
         offer,

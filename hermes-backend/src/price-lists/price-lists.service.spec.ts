@@ -105,6 +105,41 @@ describe('PriceListsService commercial audit', () => {
     product: { id: 'product-1' },
   };
 
+  it('audits a scope-only Black Friday support update without touching the price or status', async () => {
+    const oldScope =
+      'SEO técnico base; 1 mes de soporte posterior a la entrega.';
+    const newScope =
+      'SEO técnico base; 12 meses de soporte técnico posteriores a la entrega.';
+    const original = { ...before, scope: oldScope, isActive: true };
+    const tx = {
+      priceList: {
+        findUnique: jest.fn().mockResolvedValue(original),
+        update: jest.fn().mockResolvedValue({ ...original, scope: newScope }),
+      },
+      auditLog: { create: jest.fn().mockResolvedValue({}) },
+    };
+    const prisma = {
+      $transaction: jest.fn((fn: (client: typeof tx) => unknown) => fn(tx)),
+    } as unknown as PrismaService;
+    await new PriceListsService(prisma).update(
+      'commercial-price-landing-black-friday-80-global-v1',
+      { scope: newScope },
+      'admin-1',
+    );
+    expect(tx.priceList.update).toHaveBeenCalledWith({
+      where: { id: 'commercial-price-landing-black-friday-80-global-v1' },
+      data: { scope: newScope },
+    });
+    const audit = firstCallArg(
+      tx.auditLog.create.mock.calls,
+    ) as StatusAuditArgs;
+    expect(audit.data.changes).toEqual({
+      before: { scope: oldScope },
+      after: { scope: newScope },
+      result: 'SUCCESS',
+    });
+  });
+
   it('stores the administrator and before/after state in the same transaction', async () => {
     const tx = {
       priceList: {

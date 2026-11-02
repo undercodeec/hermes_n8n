@@ -68,13 +68,13 @@ export function blackFridayScopeItems(
 function supportLabel(item: string): string {
   const text = normalize(item);
   if (
-    /^(?:12 meses|1 ano|un ano) de soporte(?: tecnico)? posterior a la entrega$/u.test(
+    /^(?:12 meses|1 ano|un ano) de soporte(?: tecnico)? posterior(?:es)? a la entrega$/u.test(
       text,
     )
   )
     return '*1 año de soporte técnico posterior a la entrega*';
   if (
-    /^(?:1 mes|un mes) de soporte(?: tecnico)? posterior a la entrega$/u.test(
+    /^(?:1 mes|un mes) de soporte(?: tecnico)? posterior(?:es)? a la entrega$/u.test(
       text,
     )
   )
