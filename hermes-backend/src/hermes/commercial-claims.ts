@@ -23,6 +23,25 @@ function normalized(value: string): string {
     .replace(/[\u0300-\u036f]/g, '');
 }
 
+function blackFridaySupportDuration(
+  value: string,
+): 'MONTH' | 'YEAR' | undefined {
+  const text = normalized(value);
+  if (
+    /\b(?:(?:12|doce) meses?|(?:1|un) ano) de soporte\b|\bsoporte(?: tecnico)?(?: posterior(?:es)? a la entrega)? (?:por|durante|de) (?:(?:12|doce) meses?|(?:1|un) ano)\b/u.test(
+      text,
+    )
+  )
+    return 'YEAR';
+  if (
+    /\b(?:1|un) mes de soporte\b|\bsoporte(?: tecnico)?(?: posterior(?:es)? a la entrega)? (?:por|durante|de) (?:1|un) mes\b/u.test(
+      text,
+    )
+  )
+    return 'MONTH';
+  return undefined;
+}
+
 function dualCampaignOffers(
   offers: AuthorizedOffer[],
 ): { eur: AuthorizedOffer; usd: AuthorizedOffer } | undefined {
@@ -91,11 +110,34 @@ export function reviewCommercialClaims(
 ): { response: string; reasons: string[] } {
   const reasons: string[] = [];
   const sentences = commercialClauses(response);
+  const campaignOffers = snapshot.offers.filter(
+    (offer) =>
+      offer.promotion &&
+      offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION,
+  );
   const kept = sentences.filter((sentence, sentenceIndex) => {
     const tokens = monetaryValuesIn(sentence);
     if (hasUnauthorizedPaymentTerms(normalized(sentence))) {
       reasons.push('UNAUTHORIZED_PAYMENT_TERMS');
       return false;
+    }
+    if (campaignOffers.length) {
+      const text = normalized(sentence);
+      const duration = blackFridaySupportDuration(sentence);
+      const absolutePromise =
+        /\bsoporte\b.{0,30}\b(?:24\s*\/\s*7|ilimitad\w*)\b|\b(?:24\s*\/\s*7|ilimitad\w*)\b.{0,30}\bsoporte\b/u.test(
+          text,
+        );
+      if (
+        absolutePromise ||
+        (duration &&
+          campaignOffers.some(
+            (offer) => blackFridaySupportDuration(offer.scope) !== duration,
+          ))
+      ) {
+        reasons.push('SUPPORT_TERM_NOT_AUTHORIZED');
+        return false;
+      }
     }
     for (let index = 0; index + 1 < tokens.length; index++) {
       const left = tokens[index];

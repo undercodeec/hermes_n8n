@@ -42,7 +42,7 @@ describe('Black Friday landing commercial authority', () => {
     taxMode: null,
     taxLabel: null,
     scope:
-      'Captación de leads; landing page de una sola sección; diseño responsive para celulares; botón flotante de WhatsApp y llamada directa; formulario de contacto o captura de prospectos; apartado de beneficios del servicio o producto; dominio .com y hosting básico por 1 año; 5 correos corporativos; SEO técnico base; 1 mes de soporte posterior a la entrega.',
+      'Captación de leads; landing page de una sola sección; diseño responsive para celulares; botón flotante de WhatsApp y llamada directa; formulario de contacto o captura de prospectos; apartado de beneficios del servicio o producto; dominio .com y hosting básico por 1 año; 5 correos corporativos; SEO técnico base; 12 meses de soporte técnico posteriores a la entrega.',
     restrictions:
       'No incluye tienda online. Impuestos y renovaciones posteriores requieren confirmación.',
     policyVersion: 'black-friday-landing-80-v1',
@@ -110,7 +110,7 @@ describe('Black Friday landing commercial authority', () => {
       'dominio .com y hosting básico por 1 año',
       '5 correos corporativos',
       'SEO técnico base',
-      '1 mes de soporte posterior a la entrega',
+      '12 meses de soporte técnico posteriores a la entrega',
     ]) {
       expect(knowledge).toContain(feature);
     }
@@ -214,7 +214,8 @@ describe('Black Friday landing commercial authority', () => {
     'Incluye dominio .com durante un año.',
     'Incluye hosting básico durante un año.',
     'Incluye configuración SEO técnica básica.',
-    'Incluye un mes de soporte posterior a la entrega.',
+    'Incluye 12 meses de soporte técnico posteriores a la entrega.',
+    'Incluye un año de soporte técnico posterior a la entrega.',
   ])(
     'keeps an officially confirmed inclusion through Nous claim repair: %s',
     async (answer) => {
@@ -232,4 +233,56 @@ describe('Black Friday landing commercial authority', () => {
       expect(reviewed.reasons).toEqual([]);
     },
   );
+
+  it('keeps the old month until the selected PriceList scope changes', async () => {
+    const oldPromotion = {
+      ...promotion,
+      scope: promotion.scope.replace(
+        '12 meses de soporte técnico posteriores a la entrega',
+        '1 mes de soporte posterior a la entrega',
+      ),
+    };
+    const oldSnapshot = await authority([base, oldPromotion]).snapshot({
+      customerMessage: '¿Cuánto soporte incluye Black Friday?',
+      priceRequested: false,
+      now,
+    });
+    expect(commercialSnapshotKnowledge(oldSnapshot).join(' ')).toContain(
+      'incluye un mes de soporte posterior a la entrega',
+    );
+    expect(
+      reviewCommercialClaims(
+        'Ofrecemos 12 meses de soporte técnico.',
+        oldSnapshot,
+      ).reasons,
+    ).toContain('SUPPORT_TERM_NOT_AUTHORIZED');
+    expect(
+      reviewCommercialClaims(
+        'Incluye un mes de soporte posterior a la entrega.',
+        oldSnapshot,
+      ).reasons,
+    ).not.toContain('SUPPORT_TERM_NOT_AUTHORIZED');
+  });
+
+  it('rejects stale or unlimited support terms under the updated scope', async () => {
+    const snapshot = await authority([base, promotion]).snapshot({
+      customerMessage: '¿Cuánto soporte incluye Black Friday?',
+      priceRequested: false,
+      now,
+    });
+    for (const claim of [
+      'Incluye un mes de soporte.',
+      'Ofrecemos soporte técnico 24/7.',
+      'Ofrecemos soporte ilimitado.',
+    ])
+      expect(reviewCommercialClaims(claim, snapshot).reasons).toContain(
+        'SUPPORT_TERM_NOT_AUTHORIZED',
+      );
+    expect(
+      reviewCommercialClaims(
+        'Incluye 12 meses de soporte técnico posteriores a la entrega.',
+        snapshot,
+      ).reasons,
+    ).not.toContain('SUPPORT_TERM_NOT_AUTHORIZED');
+  });
 });

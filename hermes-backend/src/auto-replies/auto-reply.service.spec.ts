@@ -81,7 +81,7 @@ describe('AutoReplyService', () => {
     promotion: false,
   });
   const fullCampaignScope =
-    'Captación de leads; landing page de una sola sección; diseño responsive para celulares; botón flotante de WhatsApp y llamada directa; formulario de contacto o captura de prospectos; apartado de beneficios del servicio o producto; dominio .com y hosting básico por 1 año; 5 correos corporativos; SEO técnico base; 1 mes de soporte posterior a la entrega.';
+    'Captación de leads; landing page de una sola sección; diseño responsive para celulares; botón flotante de WhatsApp y llamada directa; formulario de contacto o captura de prospectos; apartado de beneficios del servicio o producto; dominio .com y hosting básico por 1 año; 5 correos corporativos; SEO técnico base; 12 meses de soporte técnico posteriores a la entrega.';
   const approvedCampaignOffer = (): AuthorizedOffer => ({
     ...testOffer('Black Friday — Landing Page', '80.00', 'LANDING_PAGE'),
     marketScope: 'GLOBAL',
@@ -3766,7 +3766,7 @@ describe('AutoReplyService', () => {
 
   it('lists all ten authorized scope items when a campaign lead asks what is included', async () => {
     const scope =
-      'Captación de leads; landing page de una sola sección; diseño responsive para celulares; botón flotante de WhatsApp y llamada directa; formulario de contacto o captura de prospectos; apartado de beneficios del servicio o producto; dominio .com y hosting básico por 1 año; 5 correos corporativos; SEO técnico base; 1 mes de soporte posterior a la entrega.';
+      'Captación de leads; landing page de una sola sección; diseño responsive para celulares; botón flotante de WhatsApp y llamada directa; formulario de contacto o captura de prospectos; apartado de beneficios del servicio o producto; dominio .com y hosting básico por 1 año; 5 correos corporativos; SEO técnico base; 12 meses de soporte técnico posteriores a la entrega.';
     const promotion: AuthorizedOffer = {
       ...testOffer('Black Friday — Landing Page', '80.00', 'LANDING_PAGE'),
       marketScope: 'GLOBAL',
@@ -3813,7 +3813,7 @@ describe('AutoReplyService', () => {
     expect(parts[1].content.split('\n')).toHaveLength(10);
     expect(parts[1].content).toContain('🎯 Captación de clientes potenciales');
     expect(parts[1].content).toContain(
-      '🛠️ *1 mes de soporte posterior a la entrega*',
+      '🛠️ *1 año de soporte técnico posterior a la entrega*',
     );
     expect(parts[1].content).not.toMatch(
       /carrito|ecommerce|pago en línea|\\|\*\*/iu,
@@ -3931,7 +3931,7 @@ describe('AutoReplyService', () => {
         .map((part: { content: string }) => part.content)
         .join('\n');
       expect(delivered).toContain(
-        '🛠️ *1 mes de soporte posterior a la entrega*',
+        '🛠️ *1 año de soporte técnico posterior a la entrega*',
       );
       expect(delivered).toContain('¿A qué se dedica su negocio?');
       expect(
@@ -3942,7 +3942,10 @@ describe('AutoReplyService', () => {
 
   it.each([
     ['¿Incluye hosting?', /dominio \.com y hosting básico por 1 año/iu],
-    ['¿Cuánto soporte incluye?', /1 mes de soporte posterior a la entrega/iu],
+    [
+      '¿Cuánto soporte incluye?',
+      /12 meses de soporte técnico posteriores a la entrega/iu,
+    ],
   ])(
     'answers only the specific Black Friday feature in %s',
     async (message, expected) => {

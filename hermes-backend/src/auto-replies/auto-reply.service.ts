@@ -1692,11 +1692,16 @@ export class AutoReplyService {
       );
       return;
     }
-    const campaignOffer = commercialSnapshot.offers.find(
+    const campaignOffers = commercialSnapshot.offers.filter(
       (offer) =>
         offer.promotion &&
         offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION,
     );
+    const campaignOffer = campaignOffers.every(
+      (offer) => offer.scope === campaignOffers[0].scope,
+    )
+      ? campaignOffers[0]
+      : undefined;
     const detailParts =
       !response.diagnostic &&
       !shouldHandoff &&
