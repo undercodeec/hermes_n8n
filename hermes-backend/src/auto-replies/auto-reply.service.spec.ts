@@ -2968,11 +2968,11 @@ describe('AutoReplyService', () => {
       parts: Array<{ content: string }>;
     };
     expect(prepared.parts[0].content).toBe(
-      'Buenas tardes, Ana. ¿En qué podemos ayudarle con su proyecto hoy?',
+      'Buenas tardes, estimada Ana. ¿En qué podemos ayudarle con su proyecto hoy?',
     );
   });
 
-  it('uses the name for a new greeting even when the conversation has older messages', async () => {
+  it('corresponds to a new greeting without repeating the formal treatment', async () => {
     const harness = setupProcessHarness({
       inboundContent: 'Buenas tardes',
       hermesResponse: {
@@ -3004,7 +3004,7 @@ describe('AutoReplyService', () => {
       parts: Array<{ content: string }>;
     };
     expect(prepared.parts[0].content).toBe(
-      'Buenas tardes, Ana. ¿Cómo podemos ayudarle hoy?',
+      'Buenas tardes. ¿Cómo podemos ayudarle hoy?',
     );
   });
 
@@ -3043,8 +3043,40 @@ describe('AutoReplyService', () => {
     });
     const answer = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
       .content as string;
-    expect(answer).toMatch(/^Hola, Ana\. Podemos/u);
+    expect(answer).toMatch(/^Hola, estimada Ana\. Podemos/u);
     expect(answer).not.toMatch(/Hola.*¡Hola/iu);
+  });
+
+  it('changes only the first Nous WhatsApp part when personalizing the greeting', async () => {
+    const parts = [
+      'Hola. Con gusto le explico las opciones.',
+      'Una página web presenta sus servicios.',
+      '¿A qué se dedica su negocio?',
+    ];
+    const harness = setupProcessHarness({
+      inboundContent: 'Hola, quiero información de una página web.',
+      contactName: 'Carlos Pérez',
+      hermesResponse: { response: parts.join(' ') },
+    });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({ response: parts.join(' ') }),
+      engine: 'nous_hermes',
+      replyParts: parts,
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(
+      harness.deliveries.prepareBatch.mock.calls[0][0].parts.map(
+        (part: { content: string }) => part.content,
+      ),
+    ).toEqual([
+      'Hola, estimado Carlos. Con gusto le explico las opciones.',
+      parts[1],
+      parts[2],
+    ]);
   });
 
   it('keeps a service answer while removing the corporate welcome', async () => {

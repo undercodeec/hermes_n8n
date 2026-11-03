@@ -48,7 +48,11 @@ import {
   isGeneralBlackFridayInquiry,
 } from '../hermes/black-friday-landing';
 import { resolveVerifiedBlackFridayAd } from '../hermes/verified-ad-campaign';
-import { safeCustomerFirstName } from '../hermes/customer-first-name';
+import {
+  explicitSalutationPreference,
+  polishCustomerGreeting,
+  resolveCustomerSalutation,
+} from '../hermes/customer-salutation';
 import { continueUnpricedCampaign } from '../hermes/commercial-continuity';
 import { projectAttribution } from '../attribution-crm/attribution-crm';
 import {
@@ -1442,8 +1446,8 @@ export class AutoReplyService {
         allowDiscoveryQuestion: policy.guidance.allowDiscoveryQuestion,
       });
     }
-    response.response = this.polishInitialGreeting({
-      reply: response.response,
+    const replyBeforeGreeting = response.response;
+    const greetingInput = {
       customerMessage:
         turnMessages?.length === 1
           ? turnMessages[0].content || ''
@@ -1454,6 +1458,13 @@ export class AutoReplyService {
       firstReply: !context.recentMessages.some(
         (message) => message.role === 'assistant',
       ),
+      customerHistory: context.recentMessages
+        .filter((message) => message.role === 'user')
+        .map((message) => message.content),
+    };
+    response.response = this.polishInitialGreeting({
+      reply: response.response,
+      ...greetingInput,
     });
     reviewedProposal?.rejections.push(...commercialReview.reasons);
     reviewedProposal?.rejections.push(...finalCommercialReview.reasons);
@@ -1774,6 +1785,19 @@ export class AutoReplyService {
         quoteCreated,
       }),
     );
+    const greetedParts =
+      isNous &&
+      engineResult.replyParts?.length &&
+      replyBeforeGreeting === engineResult.replyText &&
+      !response.diagnostic
+        ? [
+            this.polishInitialGreeting({
+              reply: engineResult.replyParts[0],
+              ...greetingInput,
+            }),
+            ...engineResult.replyParts.slice(1),
+          ]
+        : undefined;
     const conversationalParts =
       detailParts ??
       (isNous &&
@@ -1782,9 +1806,13 @@ export class AutoReplyService {
         (initialCampaignInquiry || isGeneralBlackFridayInquiry(customerMessage))
       ) &&
       !response.diagnostic &&
-      engineResult.replyParts?.length &&
-      response.response === engineResult.replyText
-        ? engineResult.replyParts
+      greetedParts?.length &&
+      response.response ===
+        this.polishInitialGreeting({
+          reply: replyBeforeGreeting,
+          ...greetingInput,
+        })
+        ? greetedParts
         : [response.response]);
     const messageParts = conversationalParts.flatMap((part) =>
       splitWhatsAppMessage(
@@ -2584,6 +2612,7 @@ export class AutoReplyService {
     customerMessage: string;
     contactName: string;
     firstReply: boolean;
+    customerHistory?: string[];
   }): string {
     let reply = input.reply
       .replace(
@@ -2602,42 +2631,19 @@ export class AutoReplyService {
       )
       .trim();
     if (!reply) reply = '¿En qué podemos ayudarle?';
-    const greeting =
-      /^(?:¡\s*)?(?:hola|buenas(?:\s+(?:tardes|noches))?|buenos\s+d[ií]as|buen\s+d[ií]a)\b/iu;
-    const pureGreeting =
-      /^(?:¡\s*)?(?:hola|buenas(?:\s+(?:tardes|noches))?|buenos\s+d[ií]as|buen\s+d[ií]a)[\s.!¡¿?]*$/iu.test(
-        input.customerMessage.trim(),
-      );
-    if (
-      !greeting.test(input.customerMessage.trim()) ||
-      (!pureGreeting && !input.firstReply)
-    )
-      return reply;
-    const firstName = safeCustomerFirstName(input.contactName);
-    const greetingAtStart = reply.match(
-      /^(?:¡\s*)?(Buenas (?:tardes|noches)|Buenos d[ií]as|Buen d[ií]a|Hola)[.,!¡]?\s+/iu,
-    );
-    if (
-      firstName &&
-      !reply
-        .match(/[\p{L}\p{M}'-]+/gu)
-        ?.some(
-          (word) =>
-            word.toLocaleLowerCase('es') === firstName.toLocaleLowerCase('es'),
-        )
-    ) {
-      if (greetingAtStart) {
-        const rest = reply
-          .slice(greetingAtStart[0].length)
-          .replace(/^\p{L}/u, (letter) => letter.toLocaleUpperCase('es'));
-        reply = `${greetingAtStart[1]}, ${firstName}. ${rest}`;
-      } else {
-        reply = `Hola, ${firstName}. ${reply}`;
-      }
-    } else if (!greetingAtStart) {
-      reply = `Hola. ${reply}`;
-    }
-    return reply;
+    return polishCustomerGreeting({
+      reply,
+      customerMessage: input.customerMessage,
+      firstReply: input.firstReply,
+      contactName: input.contactName,
+      salutation: resolveCustomerSalutation(
+        input.contactName,
+        explicitSalutationPreference([
+          ...(input.customerHistory ?? []),
+          input.customerMessage,
+        ]),
+      ),
+    });
   }
 
   private async persistConversationState(
