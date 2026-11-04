@@ -110,20 +110,21 @@ export function reviewCommercialClaims(
 ): { response: string; reasons: string[] } {
   const reasons: string[] = [];
   const sentences = commercialClauses(response);
-  const campaignOffers = snapshot.offers.filter(
-    (offer) =>
-      offer.promotion &&
-      offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION,
-  );
   const kept = sentences.filter((sentence, sentenceIndex) => {
     const tokens = monetaryValuesIn(sentence);
     if (hasUnauthorizedPaymentTerms(normalized(sentence))) {
       reasons.push('UNAUTHORIZED_PAYMENT_TERMS');
       return false;
     }
-    if (campaignOffers.length) {
+    if (snapshot.offers.length) {
       const text = normalized(sentence);
       const duration = blackFridaySupportDuration(sentence);
+      const namedSupportOffers = snapshot.offers.filter((offer) =>
+        text.includes(normalized(offer.name)),
+      );
+      const supportOffers = namedSupportOffers.length
+        ? namedSupportOffers
+        : snapshot.offers;
       const absolutePromise =
         /\bsoporte\b.{0,30}\b(?:24\s*\/\s*7|ilimitad\w*)\b|\b(?:24\s*\/\s*7|ilimitad\w*)\b.{0,30}\bsoporte\b/u.test(
           text,
@@ -131,7 +132,7 @@ export function reviewCommercialClaims(
       if (
         absolutePromise ||
         (duration &&
-          campaignOffers.some(
+          supportOffers.some(
             (offer) => blackFridaySupportDuration(offer.scope) !== duration,
           ))
       ) {

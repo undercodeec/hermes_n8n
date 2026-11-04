@@ -13,6 +13,34 @@ const result = (
 });
 
 describe('reviewAgentProposal', () => {
+  it('accepts a simple yes only for the immediately preceding quote proposal', () => {
+    const proposal = result({
+      proposedActions: [
+        { type: 'propose_quote_task', summary: 'Operadora turística' },
+      ],
+      business: { decision: 'Sí' },
+    });
+    const question =
+      '¿Desea que un asesor comercial revise su proyecto y prepare una cotización?';
+    expect(
+      reviewAgentProposal(proposal, 'Sí', [], [], question).action.type,
+    ).toBe('propose_quote_task');
+    expect(
+      reviewAgentProposal(result(), 'Sí', [], [], question).action.type,
+    ).toBe('propose_quote_task');
+    expect(
+      reviewAgentProposal(
+        proposal,
+        'Sí',
+        [],
+        [],
+        '¿A qué se dedica su negocio?',
+      ).action.type,
+    ).toBe('none');
+    expect(
+      reviewAgentProposal(proposal, 'No', [], [], question).action.type,
+    ).toBe('none');
+  });
   it('accepts a literal description of two businesses without treating it as policy', () => {
     const description =
       'Reparo lavadoras para promocionar servicios y vendo zapatos por internet';

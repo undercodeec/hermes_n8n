@@ -127,6 +127,24 @@ describe('CommercialAuthorityService', () => {
       'Agendamiento personalizado de retiros o recogidas',
     );
   });
+  it('separates tourism reservations and online payments from the website plan', async () => {
+    const snapshot = await service([base]).authority.snapshot({
+      customerMessage: 'No tengo dominio, quisiera saber costos',
+      profile: { service: 'sitio web para operadora turística' },
+      recentCustomerMessages: [
+        'Tengo diez paquetes turísticos y necesito sistema de reservas y pago en línea',
+      ],
+      priceRequested: true,
+      waId: '593991234567',
+      now,
+    });
+    expect(snapshot.additionalScope).toEqual(
+      expect.arrayContaining(['Pagos en línea']),
+    );
+    expect(
+      snapshot.additionalScope?.some((item) => /Reservas/u.test(item)),
+    ).toBe(true);
+  });
   it('deduplicates collection reservations but preserves a separate calendar capability', async () => {
     const authority = service([base]).authority;
     const input = {

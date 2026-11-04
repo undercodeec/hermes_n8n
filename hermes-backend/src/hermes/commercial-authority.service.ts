@@ -65,6 +65,7 @@ export type CommercialSnapshot = {
   additionalScope?: string[];
   policies?: string[];
   renewalRequested?: boolean;
+  priorityCampaign?: boolean;
 };
 
 function normalize(value: string): string {
@@ -142,6 +143,8 @@ export class CommercialAuthorityService {
     verifiedAd?: VerifiedBlackFridayAd;
     /** A newer verified referral supersedes older promotional text. */
     ignoreHistoricalPromotion?: boolean;
+    /** New commercial conversation, after opt-out and service guards. */
+    prioritizeActiveBlackFriday?: boolean;
     now?: Date;
   }): Promise<CommercialSnapshot> {
     const detailedResolution = this.marketResolver.resolve({
@@ -161,10 +164,18 @@ export class CommercialAuthorityService {
     ]
       .filter(Boolean)
       .join(' ');
-    const explicitDifferentService = requestsAnotherService(
-      input.customerMessage,
-    );
-    const blackFridayRequested =
+    const explicitDifferentService =
+      requestsAnotherService(input.customerMessage) ||
+      (requestedSolutionKinds(input.customerMessage, false).includes(
+        'ONLINE_STORE',
+      ) &&
+        !/\b(?:incluye|trae|viene con)\b/iu.test(input.customerMessage));
+    const rejectedPromotion =
+      /\b(?:no me interesa|no quiero|rechazo|descarto)\b.{0,35}\b(?:black friday|promoci[oó]n|oferta)\b/iu.test(
+        input.customerMessage,
+      );
+    const explicitBlackFridayRequest =
+      !rejectedPromotion &&
       !explicitDifferentService &&
       (recognizesBlackFridayLanding(
         input.customerMessage,
@@ -173,6 +184,10 @@ export class CommercialAuthorityService {
         input.verifiedAdPolicyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION ||
         input.verifiedAd?.policyVersion ===
           BLACK_FRIDAY_LANDING_POLICY_VERSION);
+    const blackFridayRequested =
+      !rejectedPromotion &&
+      (explicitBlackFridayRequest ||
+        Boolean(input.prioritizeActiveBlackFriday));
     const currentCurrency = mentionedCurrency(input.customerMessage);
     const historicalCurrency =
       currentCurrency ||
@@ -186,7 +201,7 @@ export class CommercialAuthorityService {
             .map(mentionedCurrency)
             .find(Boolean);
     const requestedCurrency = currentCurrency ?? historicalCurrency;
-    const currentServiceCodes: string[] = blackFridayRequested
+    const currentServiceCodes: string[] = explicitBlackFridayRequest
       ? ['LANDING_PAGE']
       : requestedSolutionKinds(input.customerMessage, false);
     const explicitCurrentService =
@@ -198,7 +213,7 @@ export class CommercialAuthorityService {
         .reverse()
         .map((message) => requestedSolutionKinds(message, false))
         .find((codes) => codes.length > 0) ?? [];
-    const relevantServiceCodes = blackFridayRequested
+    const relevantServiceCodes = explicitBlackFridayRequest
       ? ['LANDING_PAGE']
       : currentServiceCodes.length && explicitCurrentService
         ? currentServiceCodes
@@ -207,6 +222,11 @@ export class CommercialAuthorityService {
           : currentServiceCodes.length
             ? currentServiceCodes
             : recentServiceCodes;
+    if (
+      input.prioritizeActiveBlackFriday &&
+      !relevantServiceCodes.includes('LANDING_PAGE')
+    )
+      relevantServiceCodes.push('LANDING_PAGE');
     const currentText = normalize(input.customerMessage);
     const preferredCode = /\b(?:sitio web|pagina web|web corporativa)\b/.test(
       currentText,
@@ -249,6 +269,7 @@ export class CommercialAuthorityService {
         /\b(?:renovacion|renovar|hosting|dominio|gastos|costos? anuales?|segundo ano|despues del primer ano|que valores tendria que asumir|cuanto tendria que pagar)\b/.test(
           normalize(input.customerMessage),
         ),
+      priorityCampaign: Boolean(input.prioritizeActiveBlackFriday),
     };
     if (result.needsAdMarketConflictClarification) return result;
     const deliveryRequested =
@@ -314,18 +335,33 @@ export class CommercialAuthorityService {
         take: 20,
       });
       result.offers = products
-        .flatMap((product) =>
-          this.currentOffer(
+        .flatMap((product) => [
+          ...this.currentOffer(
             product,
             resolution.market,
-            blackFridayRequested,
+            blackFridayRequested && product.serviceCode === 'LANDING_PAGE',
             requestedCurrency,
             input.verifiedAd,
           ),
-        )
+          ...(input.prioritizeActiveBlackFriday &&
+          !explicitBlackFridayRequest &&
+          product.serviceCode === 'LANDING_PAGE'
+            ? this.currentOffer(
+                product,
+                resolution.market,
+                false,
+                requestedCurrency,
+                input.verifiedAd,
+              )
+            : []),
+        ])
         .filter(
           (offer) =>
             !blackFridayRequested ||
+            offer.serviceCode !== 'LANDING_PAGE' ||
+            (input.prioritizeActiveBlackFriday &&
+              !explicitBlackFridayRequest &&
+              !offer.promotion) ||
             (offer.promotion &&
               offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION),
         );
@@ -338,11 +374,11 @@ export class CommercialAuthorityService {
         ),
       );
       result.needsCampaignTariffConfirmation =
-        blackFridayRequested &&
+        explicitBlackFridayRequest &&
         !result.offers.length &&
         (activeCampaignPrices.length > 0 || Boolean(input.verifiedAd?.market));
       if (
-        blackFridayRequested &&
+        explicitBlackFridayRequest &&
         !result.offers.length &&
         !activeCampaignPrices.length &&
         !input.verifiedAd?.market
@@ -370,7 +406,11 @@ export class CommercialAuthorityService {
           scopeText,
         );
       const offers = result.offers.filter(
-        (offer) => offer.serviceCode === relevantServiceCodes[0],
+        (offer) =>
+          offer.serviceCode ===
+          (input.prioritizeActiveBlackFriday && currentServiceCodes.length
+            ? currentServiceCodes[0]
+            : relevantServiceCodes[0]),
       );
       const ordered = [...offers].sort(
         (left, right) =>
@@ -425,8 +465,14 @@ export class CommercialAuthorityService {
               /\bpedidos?\b/.test(scopeText)
             ? 'Pedidos automatizados si necesita gestión interna o pagos en línea'
             : '',
+        relevantServiceCodes[0] !== 'ONLINE_STORE' &&
+        /\b(?:pagos? en linea|pagos? online|cobrar por internet|pasarela de pagos?)\b/.test(
+          scopeText,
+        )
+          ? 'Pagos en línea'
+          : '',
       ].filter(Boolean);
-      if (!blackFridayRequested) {
+      if (!explicitBlackFridayRequest) {
         result.needsMarketClarification =
           input.priceRequested &&
           !resolution.market &&

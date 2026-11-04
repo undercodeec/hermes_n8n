@@ -69,6 +69,7 @@ import {
   blackFridayDetailParts,
   blackFridaySpecificAnswer,
 } from './black-friday-visual-response';
+import { commercialPackageParts } from './commercial-package-response';
 import {
   HermesIncidentMetadata,
   safeProviderDiagnostic,
@@ -708,9 +709,17 @@ export class AutoReplyService {
     )
       return;
 
-    const initialCampaignInquiry = Boolean(
-      verifiedAdCampaign &&
+    const firstCommercialReply =
       !context.recentMessages.some((message) => message.role === 'assistant') &&
+      !/\b(?:soporte de mi|mi servicio contratado|mi proyecto contratado|reclamo|queja|urgente|emergencia|error|fallo|falla|no funciona|no me interesa (?:la )?(?:promoci[oó]n|oferta|black friday)|no quiero (?:la )?(?:promoci[oó]n|oferta)|rechazo (?:la )?(?:promoci[oó]n|oferta))\b/iu.test(
+        customerMessage,
+      ) &&
+      /\b(?:hola|informaci[oó]n|precio|planes?|p[aá]gina|web|landing|tienda|vender|cobrar|pagos?|negocio|servicios?|proyecto|cotizaci[oó]n|black friday)\b/iu.test(
+        customerMessage,
+      );
+    const initialCampaignInquiry = Boolean(
+      (verifiedAdCampaign || firstCommercialReply) &&
+      firstCommercialReply &&
       /\b(?:informaci[oó]n|interesa|saber m[aá]s|vi su anuncio)\b/iu.test(
         customerMessage,
       ) &&
@@ -727,6 +736,7 @@ export class AutoReplyService {
         .filter((message) => message.role === 'user')
         .map((message) => message.content),
       priceRequested: policy.guidance.priceAnswerRequired,
+      prioritizeActiveBlackFriday: firstCommercialReply,
       ...(verifiedAdCampaign
         ? {
             verifiedAdPolicyVersion: verifiedAdCampaign.policyVersion,
@@ -740,9 +750,11 @@ export class AutoReplyService {
         offer.promotion &&
         offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION,
     );
+    const priorityCampaignInquiry = firstCommercialReply && activeCampaignOffer;
     if (
       (isGeneralBlackFridayInquiry(customerMessage) ||
-        initialCampaignInquiry) &&
+        initialCampaignInquiry ||
+        priorityCampaignInquiry) &&
       (activeCampaignOffer ||
         commercialSnapshot.needsMarketClarification ||
         commercialSnapshot.needsCampaignTariffConfirmation ||
@@ -1157,6 +1169,9 @@ export class AutoReplyService {
               .filter((message) => message.role === 'user')
               .map((message) => message.content),
             this.csvConfig('HERMES_ALLOWED_TAGS', []),
+            context.recentMessages.at(-1)?.role === 'assistant'
+              ? context.recentMessages.at(-1)?.content
+              : undefined,
           )
         : undefined;
     if (reviewedProposal) {
@@ -1362,7 +1377,10 @@ export class AutoReplyService {
       commercialSnapshot,
       policy.guidance.priceAnswerRequired,
     );
-    if (initialCampaignInquiry && !response.diagnostic) {
+    if (
+      (initialCampaignInquiry || priorityCampaignInquiry) &&
+      !response.diagnostic
+    ) {
       const campaignOffers = commercialSnapshot.offers.filter(
         (offer) =>
           offer.promotion &&
@@ -1390,6 +1408,8 @@ export class AutoReplyService {
           .includes(item.toLocaleLowerCase('es')),
       ).length;
       const usefulAnswer =
+        /black friday/iu.test(response.response) &&
+        hasAuthorizedMonetaryValue(response.response, commercialSnapshot) &&
         /\b(?:landing|p[aá]gina)\b/iu.test(response.response) &&
         /\b(?:captar|captaci[oó]n|prospectos?|contacto|formulario|whatsapp|presentar)\b/iu.test(
           response.response,
@@ -1412,7 +1432,14 @@ export class AutoReplyService {
           campaignOffer.currency === 'EUR'
             ? `€${campaignOffer.amount}`
             : `USD $${campaignOffer.amount}`;
-        response.response = `Hola. La promoción ${name} cuesta ${amount}. Es una página de una sola sección para presentar su negocio${benefit}. ¿A qué se dedica su negocio?`;
+        const concreteRequest =
+          /\b(?:tienda|vender|cobrar|reservas?|pagos?|planes?|página web|sitio web|necesito)\b/iu.test(
+            customerMessage,
+          );
+        const introduction = `La promoción ${name} cuesta ${amount}. Es una página de una sola sección para presentar su negocio${benefit}.`;
+        response.response = concreteRequest
+          ? `${introduction} ${response.response}`.trim()
+          : `Hola. ${introduction} ¿A qué se dedica su negocio?`;
         const reviewed = reviewCommercialClaims(
           response.response,
           commercialSnapshot,
@@ -1663,6 +1690,13 @@ export class AutoReplyService {
       quoteCreated = true;
       response.detectedIntent = 'cotizacion';
       response.nextAction = 'solicitar_cotizacion_humana';
+      if (
+        /^(?:s[ií]|claro|de acuerdo|por favor)[.!]?$/iu.test(
+          customerMessage.trim(),
+        )
+      )
+        response.response =
+          'He registrado su solicitud de cotización con los requisitos que ya nos indicó. Está pendiente de revisión por el equipo comercial.';
     }
     if (shouldHandoff) {
       this.logger.log(
@@ -1718,17 +1752,47 @@ export class AutoReplyService {
       !shouldHandoff &&
       !quoteCreated &&
       campaignOffer &&
-      asksForBlackFridayDetails(customerMessage)
+      (asksForBlackFridayDetails(customerMessage) ||
+        (priorityCampaignInquiry &&
+          Boolean(verifiedAdCampaign) &&
+          !/\b(?:cu[aá]nto|precio|cuesta|tienda|web|reservas?|pagos?|necesito|quiero (?:una?|vender))\b/iu.test(
+            customerMessage,
+          )))
         ? blackFridayDetailParts({
             offer: campaignOffer,
             profile: response.commercialProfile,
             recentMessages: context.recentMessages,
-            priceAnswer: policy.guidance.priceAnswerRequired
-              ? answerExplicitPriceIfMissing('', commercialSnapshot, true)
-              : undefined,
+            priceAnswer: priorityCampaignInquiry
+              ? this.polishInitialGreeting({
+                  reply: `${campaignOffer.name}: ${campaignOffer.currency === 'EUR' ? 'EUR €' : 'USD $'}${campaignOffer.amount}${campaignOffer.taxMode === 'INCLUDED' && campaignOffer.taxLabel ? `, ${campaignOffer.taxLabel} incluido` : ''}.`,
+                  ...greetingInput,
+                })
+              : policy.guidance.priceAnswerRequired
+                ? answerExplicitPriceIfMissing('', commercialSnapshot, true)
+                : undefined,
             maxParts: Math.min(9, engineResult.f3CapsBudget?.maxParts ?? 9),
           })
         : undefined;
+    const packageParts =
+      !detailParts && !response.diagnostic && !shouldHandoff && !quoteCreated
+        ? commercialPackageParts({
+            message: customerMessage,
+            snapshot: commercialSnapshot,
+            priceRequested: policy.guidance.priceAnswerRequired,
+            maxParts: Math.min(9, engineResult.f3CapsBudget?.maxParts ?? 9),
+          })
+        : undefined;
+    if (packageParts && priorityCampaignInquiry && campaignOffer) {
+      const amount =
+        campaignOffer.currency === 'EUR'
+          ? `EUR €${campaignOffer.amount}`
+          : `USD $${campaignOffer.amount}`;
+      const intro = this.polishInitialGreeting({
+        reply: `La promoción ${campaignOffer.name} está disponible por ${amount} para una landing de una sección. Si necesita más alcance, estas son las opciones:`,
+        ...greetingInput,
+      });
+      packageParts[0] = `${intro}\n\n${packageParts[0]}`;
+    }
     const specificAnswer =
       !detailParts &&
       !response.diagnostic &&
@@ -1737,7 +1801,10 @@ export class AutoReplyService {
       campaignOffer
         ? blackFridaySpecificAnswer(customerMessage, campaignOffer)
         : undefined;
-    if (detailParts) {
+    if (packageParts) {
+      response.response = packageParts.join('\n\n');
+      reviewedProposal?.rejections.push('PACKAGE_CARDS_FROM_PRICE_LIST');
+    } else if (detailParts) {
       response.response = detailParts.join(' ');
       reviewedProposal?.rejections.push(
         'CAMPAIGN_SCOPE_COMPLETED_FROM_PRICE_LIST',
@@ -1748,6 +1815,12 @@ export class AutoReplyService {
         'CAMPAIGN_SPECIFIC_ANSWER_FROM_PRICE_LIST',
       );
     }
+    response.response = response.response
+      .replace(/\bComprendido[.,;:]?\s*/giu, '')
+      .replace(
+        /\bEntendido\. Para dimensionar mejor su proyecto[,:]?\s*/giu,
+        '',
+      );
     response.detectedIntent = reconcileCommercialIntent(
       response.detectedIntent,
       response.response,
@@ -1799,11 +1872,14 @@ export class AutoReplyService {
           ]
         : undefined;
     const conversationalParts =
+      packageParts ??
       detailParts ??
       (isNous &&
       !(
         activeCampaignOffer &&
-        (initialCampaignInquiry || isGeneralBlackFridayInquiry(customerMessage))
+        (initialCampaignInquiry ||
+          priorityCampaignInquiry ||
+          isGeneralBlackFridayInquiry(customerMessage))
       ) &&
       !response.diagnostic &&
       greetedParts?.length &&
@@ -1817,7 +1893,7 @@ export class AutoReplyService {
     const messageParts = conversationalParts.flatMap((part) =>
       splitWhatsAppMessage(
         part,
-        detailParts
+        detailParts || packageParts
           ? 1000
           : this.positiveInteger('AI_MESSAGE_SPLIT_THRESHOLD', 520),
       ),
