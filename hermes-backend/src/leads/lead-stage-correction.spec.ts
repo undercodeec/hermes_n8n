@@ -30,7 +30,7 @@ const request = {
 function harness(
   jobStatus: AdvertisingSyncStatus | null = AdvertisingSyncStatus.PENDING,
 ) {
-  const state = {
+  const state: { stage: LeadStage; stored: Record<string, unknown> | null } = {
     stage: LeadStage.QUALIFIED,
     stored: null as Record<string, unknown> | null,
   };

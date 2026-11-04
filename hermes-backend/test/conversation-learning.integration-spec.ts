@@ -402,7 +402,14 @@ describe('Conversation learning loop (isolated integration)', () => {
     prisma = new PrismaClient({ datasources: { db: { url: databaseUrl } } });
     redis = new IORedis(redisUrl!, { maxRetriesPerRequest: null });
     queue = new Queue(LEARNING_REVIEW_QUEUE, {
-      connection: redis,
+      connection: {
+        host: redis.options.host,
+        port: redis.options.port,
+        username: redis.options.username,
+        password: redis.options.password,
+        db: redis.options.db,
+        maxRetriesPerRequest: null,
+      },
       defaultJobOptions: {
         attempts: 3,
         removeOnComplete: true,
@@ -1704,7 +1711,7 @@ describe('Conversation learning loop (isolated integration)', () => {
     const add = async (
       fingerprint: string,
       guidance: string,
-      riskLevel = LearningRiskLevel.LOW,
+      riskLevel: LearningRiskLevel = LearningRiskLevel.LOW,
     ) =>
       prisma.learningItem.create({
         data: {

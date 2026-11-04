@@ -65,6 +65,7 @@ function gemini() {
 }
 
 const geminiRequest = (conversationId: string, source: string) => ({
+  contactName: '',
   conversationId,
   correlationId: source,
   messageContent: 'Consulta sintética',

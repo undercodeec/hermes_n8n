@@ -278,6 +278,7 @@ describe('CommercialPolicyService', () => {
     requestsHuman: false,
     requestsCall: false,
     hasRelativeCallTime: false,
+    requiresComplaintHandoff: false,
     guidance: {
       currentTopic: 'general',
       directAnswerRequired: false,

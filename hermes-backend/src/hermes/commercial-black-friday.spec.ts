@@ -51,7 +51,11 @@ describe('Black Friday landing commercial authority', () => {
   };
 
   function authority(
-    prices: Array<typeof base | typeof promotion>,
+    prices: Array<
+      | typeof base
+      | typeof promotion
+      | (Omit<typeof base, 'market'> & { market: CommercialMarket })
+    >,
     deliveryPolicy?: string,
   ) {
     const prisma = {

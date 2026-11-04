@@ -81,6 +81,7 @@ export function operationFixture() {
     },
     getAvailability: jest.fn().mockResolvedValue([]),
     getEvent: jest.fn().mockResolvedValue(null),
+    resolveEvent: jest.fn(),
     createEvent: jest.fn().mockResolvedValue({
       pending: false,
       meetUrl: 'https://meet.google.com/abc-defg-hij',

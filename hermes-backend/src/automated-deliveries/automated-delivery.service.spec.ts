@@ -9,6 +9,7 @@
 import { MetaSendError, MetaService } from '../meta/meta.service';
 import { ConfigService } from '@nestjs/config';
 import { AutomatedDeliveryService } from './automated-delivery.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { PrepareAutomatedDeliveryBatch } from './automated-delivery.types';
 
 type Row = Record<string, any>;
@@ -113,20 +114,22 @@ class DeliveryStore {
       }),
     },
     $executeRaw: jest.fn(async () => undefined),
-    $transaction: jest.fn(async (callback: (tx: Row) => unknown) => {
-      if (this.failNextClaimTransaction && this.rows.length > 0) {
-        this.failNextClaimTransaction = false;
-        throw new Error('claim transaction failed');
-      }
-      if (
-        this.failConfirmationTransaction &&
-        this.rows.some((row) => row.status === 'DISPATCHING')
-      ) {
-        this.failConfirmationTransaction = false;
-        throw new Error('confirmation transaction failed');
-      }
-      return callback(this.prisma);
-    }),
+    $transaction: jest.fn(
+      async (callback: (tx: Row) => unknown): Promise<unknown> => {
+        if (this.failNextClaimTransaction && this.rows.length > 0) {
+          this.failNextClaimTransaction = false;
+          throw new Error('claim transaction failed');
+        }
+        if (
+          this.failConfirmationTransaction &&
+          this.rows.some((row) => row.status === 'DISPATCHING')
+        ) {
+          this.failConfirmationTransaction = false;
+          throw new Error('confirmation transaction failed');
+        }
+        return callback(this.prisma);
+      },
+    ),
   };
 }
 
@@ -229,7 +232,7 @@ describe('AutomatedDeliveryService', () => {
         .mockResolvedValue(confirmedMetaResponse('wamid.voice')),
     };
     service = new AutomatedDeliveryService(
-      store.prisma,
+      store.prisma as unknown as PrismaService,
       meta as unknown as MetaService,
     );
   });
@@ -343,7 +346,7 @@ describe('AutomatedDeliveryService', () => {
     store.rows[0].status = 'CONFIRMED';
     store.rows[0].wamid = 'wamid.confirmed';
     service = new AutomatedDeliveryService(
-      store.prisma,
+      store.prisma as unknown as PrismaService,
       meta as unknown as MetaService,
       {
         get: jest.fn((key: string, fallback: unknown) =>
@@ -368,7 +371,7 @@ describe('AutomatedDeliveryService', () => {
       input.parts[0].metadata = { conversationEngine: 'nous_hermes' };
       await service.prepareBatch(input);
       service = new AutomatedDeliveryService(
-        store.prisma,
+        store.prisma as unknown as PrismaService,
         meta as unknown as MetaService,
         {
           get: jest.fn((key: string, fallback: unknown) =>
@@ -389,7 +392,7 @@ describe('AutomatedDeliveryService', () => {
     input.parts[0].metadata = { conversationEngine: 'gemini_direct' };
     await service.prepareBatch(input);
     service = new AutomatedDeliveryService(
-      store.prisma,
+      store.prisma as unknown as PrismaService,
       meta as unknown as MetaService,
       {
         get: jest.fn((key: string, fallback: unknown) =>

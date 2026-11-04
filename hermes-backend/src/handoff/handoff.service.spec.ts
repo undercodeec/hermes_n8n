@@ -265,7 +265,11 @@ describe('HandoffService', () => {
 
   it('moves a new lead to CONTACTED and creates one callback task with the handoff', async () => {
     const contact = { id: 'contact-1', name: 'Ana', waId: '593991234567' };
-    const lead = { id: 'lead-1', stage: LeadStage.NEW, metadata: null };
+    const lead: { id: string; stage: LeadStage; metadata: null } = {
+      id: 'lead-1',
+      stage: LeadStage.NEW,
+      metadata: null,
+    };
     const handoff = {
       id: 'handoff-1',
       conversationId: 'conversation-1',

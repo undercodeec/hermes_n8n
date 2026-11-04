@@ -28,6 +28,7 @@ import { AttributionRegistrationGuard } from '../src/advertising/attribution-reg
 import { GoogleDataManagerService } from '../src/advertising/google-data-manager.service';
 import { AutoReplyService } from '../src/auto-replies/auto-reply.service';
 import { AutomatedDeliveryService } from '../src/automated-deliveries/automated-delivery.service';
+import { PaymentsService } from '../src/payments/payments.service';
 import { CampaignsService } from '../src/campaigns/campaigns.service';
 import { ConversationGuardService } from '../src/conversation-guard/conversation-guard.service';
 import { ConversationEventsService } from '../src/conversations/conversation-events.service';
@@ -125,6 +126,7 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
         publishCustomerMessage: jest.fn().mockResolvedValue(undefined),
       } as unknown as ConversationEventsService,
       {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
     controller = new WebhookController(webhook);
   });

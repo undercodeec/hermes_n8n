@@ -1,6 +1,12 @@
 import { Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { AxiosAdapter, AxiosError, AxiosRequestConfig } from 'axios';
+import {
+  AxiosAdapter,
+  AxiosError,
+  AxiosHeaders,
+  AxiosRequestConfig,
+  InternalAxiosRequestConfig,
+} from 'axios';
 import { inspect } from 'util';
 import { PrismaService } from '../prisma/prisma.service';
 import { HermesService } from './hermes.service';
@@ -57,6 +63,7 @@ function harness(adapter: AxiosAdapter) {
 }
 
 const request = () => ({
+  contactName: '',
   conversationId: '00000000-0000-4000-8000-000000000001',
   correlationId: marker.correlation,
   messageContent: 'Synthetic request',
@@ -72,8 +79,11 @@ function syntheticError(
     ...cfg,
     url: `http://127.0.0.1:9/${marker.url}`,
     data: marker.message,
-    headers: { ...cfg.headers, Authorization: marker.header },
-  } as AxiosRequestConfig;
+    headers: AxiosHeaders.from({
+      ...cfg.headers,
+      Authorization: marker.header,
+    }),
+  } as InternalAxiosRequestConfig;
   const response =
     status === undefined
       ? undefined
@@ -87,7 +97,7 @@ function syntheticError(
           status: status as number,
           statusText: marker.body,
           headers: { 'X-Test': marker.header },
-          config: cfg,
+          config: poisonedConfig,
         };
   const error = new AxiosError(
     marker.message,
@@ -97,7 +107,9 @@ function syntheticError(
     response,
   );
   error.stack = marker.stack;
-  error.cause = { message: marker.cause, nested: { token: marker.header } };
+  error.cause = Object.assign(new Error(marker.cause), {
+    nested: { token: marker.header },
+  });
   error.toJSON = () => ({ hidden: marker.json });
   return error;
 }
