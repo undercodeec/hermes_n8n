@@ -16,7 +16,7 @@ type Evidence = {
   restoreVerifiedAt: string;
   restoreResult: 'PASS';
   commercialApprovalId?: string;
-  approvedMarket?: 'EC';
+  approvedMarket?: 'EC' | 'GLOBAL';
   expiresAt: string;
 };
 
@@ -44,7 +44,7 @@ export async function verifyManualMaintenanceEvidence(input: {
   backupId?: string;
   evidencePath?: string;
   commercialApprovalId?: string;
-  approvedMarket?: 'EC';
+  approvedMarket?: 'EC' | 'GLOBAL';
 }): Promise<{ evidenceSha256: string; backupSha256: string }> {
   const root = process.env.HERMES_MAINTENANCE_EVIDENCE_DIR;
   const keyPath = process.env.HERMES_MAINTENANCE_TRUSTED_PUBLIC_KEY;

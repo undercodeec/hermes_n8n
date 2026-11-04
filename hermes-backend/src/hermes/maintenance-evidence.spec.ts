@@ -73,6 +73,30 @@ describe('signed manual maintenance gate', () => {
     await expect(verifyManualMaintenanceEvidence(input)).resolves.toEqual(
       expect.objectContaining({ backupSha256 }),
     );
+    const globalProof = {
+      ...proof,
+      operation: 'COMMERCIAL_GLOBAL_LANDING_SUPPORT_12M',
+      commercialApprovalId: 'COMM-OPTIONB20261104',
+      approvedMarket: 'GLOBAL' as const,
+    };
+    await writeFile(evidencePath, document(globalProof));
+    await expect(
+      verifyManualMaintenanceEvidence({
+        ...input,
+        operation: globalProof.operation,
+        commercialApprovalId: globalProof.commercialApprovalId,
+        approvedMarket: 'GLOBAL',
+      }),
+    ).resolves.toEqual(expect.objectContaining({ backupSha256 }));
+    await expect(
+      verifyManualMaintenanceEvidence({
+        ...input,
+        operation: globalProof.operation,
+        commercialApprovalId: globalProof.commercialApprovalId,
+        approvedMarket: 'EC',
+      }),
+    ).rejects.toThrow('mismatched');
+    await writeFile(evidencePath, document(proof));
     await expect(
       verifyManualMaintenanceEvidence({
         ...input,

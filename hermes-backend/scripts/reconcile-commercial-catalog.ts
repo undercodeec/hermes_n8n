@@ -11,7 +11,7 @@ export const catalog = [
     serviceCode: 'WEBSITE',
     price: '360.00',
     scope:
-      'Hasta cinco páginas, diseño profesional adaptable, dominio .com y hosting por un año, SSL, hasta cinco correos corporativos, formulario y WhatsApp, configuración inicial en Google. 12 meses de soporte técnico posteriores a la entrega.',
+      'Hasta cinco páginas, diseño profesional adaptable, dominio .com y hosting por un año, SSL, hasta cinco correos corporativos, formulario y WhatsApp, configuración inicial en Google y 12 meses de soporte técnico posteriores a la entrega.',
   },
   {
     slug: 'website-growth',
@@ -20,7 +20,7 @@ export const catalog = [
     serviceCode: 'WEBSITE',
     price: '510.00',
     scope:
-      'Incluye el Plan de Lanzamiento, hasta ocho páginas, textos persuasivos, optimización de velocidad, posicionamiento local, Analytics, Search Console e integraciones. 12 meses de soporte técnico posteriores a la entrega.',
+      'Incluye el Plan de Lanzamiento y añade hasta ocho páginas, textos persuasivos, optimización de velocidad, posicionamiento local, Analytics y Search Console, integraciones y 12 meses de soporte técnico posteriores a la entrega.',
   },
   {
     slug: 'website-authority',
@@ -29,7 +29,7 @@ export const catalog = [
     serviceCode: 'WEBSITE',
     price: '1010.00',
     scope:
-      'Incluye el Plan de Crecimiento, diseño totalmente personalizado, automatización con IA, sistemas avanzados a medida, seguridad reforzada, campaña de Google Ads por un mes y seguimiento. 12 meses de soporte VIP prioritario posteriores a la entrega.',
+      'Incluye el Plan de Crecimiento y añade diseño totalmente personalizado, automatización con IA, sistemas avanzados a medida, seguridad reforzada, campaña de Google Ads por un mes, seguimiento y 12 meses de soporte VIP prioritario posteriores a la entrega.',
   },
   {
     slug: 'store-launch',
@@ -38,7 +38,7 @@ export const catalog = [
     serviceCode: 'ONLINE_STORE',
     price: '550.00',
     scope:
-      'Catálogo administrable, carga inicial de hasta 20 productos, carrito y pago seguro, dominio .com, hosting y SSL por un año, diseño adaptable, configuración de envíos, configuración inicial en Google, cinco correos corporativos y capacitación. 12 meses de soporte técnico posteriores a la entrega.',
+      'Catálogo administrable, carga inicial de hasta 20 productos, carrito y pago seguro, dominio .com, hosting y SSL por un año, diseño adaptable, configuración de envíos, configuración inicial en Google, cinco correos corporativos, capacitación para gestionar la tienda y 12 meses de soporte técnico posteriores a la entrega.',
   },
   {
     slug: 'store-growth',
@@ -47,7 +47,7 @@ export const catalog = [
     serviceCode: 'ONLINE_STORE',
     price: '850.00',
     scope:
-      'Incluye Tienda de Lanzamiento, filtros avanzados, SEO técnico avanzado, recuperación de carritos abandonados, inventario en tiempo real y estrategia de envíos por zonas y condiciones. 12 meses de soporte técnico posteriores a la entrega.',
+      'Incluye Tienda de Lanzamiento, filtros avanzados, SEO técnico avanzado, recuperación de carritos abandonados, inventario en tiempo real, estrategia de envíos por zonas y condiciones, y 12 meses de soporte técnico posteriores a la entrega.',
   },
   {
     slug: 'store-elite',
@@ -56,7 +56,7 @@ export const catalog = [
     serviceCode: 'ONLINE_STORE',
     price: '3490.00',
     scope:
-      'Incluye Tienda de Crecimiento, tecnología ultra rápida, conexión con sistemas empresariales, recomendador con IA, ventas internacionales, automatización de marketing, facturación electrónica, seguridad reforzada y respaldos automáticos. 12 meses de soporte VIP prioritario posteriores a la entrega.',
+      'Incluye Tienda de Crecimiento, tecnología ultra rápida, conexión con sistemas empresariales, recomendador con IA, ventas internacionales, automatización de marketing, facturación electrónica, seguridad reforzada, respaldos automáticos y 12 meses de soporte VIP prioritario posteriores a la entrega.',
   },
   {
     slug: 'landing-pro',

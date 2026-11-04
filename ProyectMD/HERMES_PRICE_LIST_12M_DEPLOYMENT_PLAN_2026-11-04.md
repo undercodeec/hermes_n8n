@@ -1,32 +1,39 @@
-# Plan operativo: soporte de 12 meses en PriceList
+# Plan operativo: opción B, doce meses de soporte
 
-## Separación
+## Autorización comercial y separación
 
-La implementación de código es local. No se ejecutó ninguna actualización de PostgreSQL productivo, despliegue, migración ni reinicio. Codex VPS debe ejecutar este mantenimiento como una operación independiente, después de aprobar el PR y contar con autorización operativa. El script actual cubre **solo las ocho tarifas EC/USD propuestas**; Landing Básica GLOBAL/USD se excluye hasta contar con justificación y aprobación independientes.
+El propietario aprobó la **opción B** el 2026-11-04 en `ProyectMD/prompt.md`: nueve planes con doce meses de soporte, mismos precios y prestaciones; Plan de Autoridad y Tienda Élite mantienen VIP prioritario. La aprobación comercial permite preparar código y procedimientos, **sin autorizar escrituras productivas ni despliegue**.
 
-## Preflight y backup
+Hay dos operaciones independientes. **A:** `reconcile-commercial-catalog.ts` crea únicamente los ocho Product/PriceList EC/USD ausentes, ya con doce meses. **B:** `update-global-landing-support-12m.ts` cambia únicamente la cláusula de soporte de la PriceList GLOBAL/USD 250 existente `commercial-price-landing-basic-global-v1`. `update-commercial-support-12m.ts` queda como comprobación y mantenimiento separado para las ocho tarifas EC; con el catálogo recién creado, su preflight debe mostrar cero cambios. Ninguna operación exige ejecutar otra en la misma transacción.
 
-1. Obtener backup PostgreSQL íntegro y verificar restaurabilidad. Registrar identificador, fecha, responsable y ubicación segura. No incluir datos de clientes en el PR.
-2. En VPS, inspeccionar las ocho combinaciones EC/USD reales `Product.sku` / `PriceList.id`, mercado, moneda, precio, impuestos, vigencia, estado, scope, `policyVersion` y promociones. No presumir presencia por migraciones históricas.
-3. Ejecutar solo preflight: `npx ts-node scripts/update-commercial-support-12m.ts`. El programa imprime antes/después y divergencias. Guardar ese reporte como evidencia privada.
-4. Bloquear si falta un plan, no hay exactamente una tarifa EC/USD activa, el importe o IVA difiere, faltan scope/version o existen condiciones de soporte inesperadas. Las promociones Black Friday y tarifas GLOBAL se excluyen.
+## Preflight de la operación B
 
-## Aplicación posterior autorizada
+Desde `hermes-backend`, ejecutar en modo de lectura: `npx ts-node scripts/update-global-landing-support-12m.ts`. Verificar y conservar el reporte. El script exige Product `commercial-product-landing-basic` activo, SKU correcto, PriceList base activa y vigente con ID original, mercado GLOBAL/null, USD 250, IVA incluido sin tasa numérica, `global-v1` y scope histórico de un mes o el scope exacto aprobado de doce meses. Rechaza otra tarifa base GLOBAL activa, una tarifa EC activa adicional y cualquier cláusula de soporte diferente o contradictoria.
 
-Con un backup verificado y autorización comercial/operativa identificable:
+La relación con `commercial-price-landing-black-friday-80-global-v1` también es obligatoria: mismo Product, referencia a la base, USD 80, GLOBAL, promoción y `policyVersion` correctas, diez cláusulas aprobadas y doce meses de soporte. La operación no escribe en esa promoción ni cambia su estado, impuestos, vigencia, restricciones o scope. Una divergencia detiene el proceso para revisión comercial.
 
-`npx ts-node scripts/update-commercial-support-12m.ts --apply --authorization-id <AUTH-ID> --backup-id <BKP-ID> --evidence-file <RUTA_ABSOLUTA>`
+## Backup, autorización y aplicación posterior
 
-El script usa Prisma en transacción SERIALIZABLE, revalida el catálogo y compara el scope y `updatedAt` originales antes de cada escritura. Cambia solo `PriceList.scope` y crea un `AuditLog` por tarifa afectada. Registra antes, después, ID de tarifa, SKU, motivo, autorización, backup y fecha del log. Repetirlo no genera cambios cuando el soporte ya es de 12 meses. No altera precio, impuestos, moneda, mercado, vigencia, promociones ni otras prestaciones. No se ejecuta en el arranque del backend ni en migraciones generales.
+Cada operación requiere su propio identificador de autorización operativa y evidencia firmada Ed25519, backup **actual** con SHA-256 y restauración aislada verificada. El archivo protegido y el backup se ubican bajo `HERMES_MAINTENANCE_EVIDENCE_DIR`; la clave pública confiable se instala fuera del repositorio en `HERMES_MAINTENANCE_TRUSTED_PUBLIC_KEY`. `HERMES_MAINTENANCE_DATABASE_ID` identifica la base aprobada. El documento firmado de B incluye `operation = COMMERCIAL_GLOBAL_LANDING_SUPPORT_12M`, `approvedMarket = GLOBAL`, `commercialApprovalId` verificable y su propia expiración. Los parámetros de texto, por sí solos, no autorizan la escritura. No guardar credenciales ni clave privada en el código.
 
-## Verificación y rollback
+Solo un operador VPS, tras revisar el preflight y obtener autorización operativa, podrá ejecutar:
 
-Tras aplicar, repetir preflight y verificar las ocho respuestas CRM en EC; comprobar modalidades ordinaria/VIP y ausencia de duplicados. Si una cláusula debe revertirse, usar su audit ID:
+`npx ts-node scripts/update-global-landing-support-12m.ts --apply --commercial-approval-id <COMM-ID> --authorization-id <AUTH-ID> --backup-id <BKP-ID> --evidence-file <RUTA_ABSOLUTA>`
 
-`npx ts-node scripts/update-commercial-support-12m.ts --rollback-audit-id <AUDIT_ID> --authorization-id <AUTH-ID> --backup-id <BKP-ID> --evidence-file <RUTA_ABSOLUTA>`
+El script revalida Product, PriceList base y Black Friday dentro de una transacción SERIALIZABLE; compara el estado leído y `updatedAt`, actualiza únicamente `scope` y crea un `AuditLog` específico `COMMERCIAL_GLOBAL_LANDING_SUPPORT_12M` en la misma transacción. Un segundo preflight debe mostrar `change` ausente y una repetición del modo apply no genera escrituras ni nuevos AuditLog. Precio, moneda, mercado, impuestos, vigencia, promociones, restricciones y prestaciones no relacionadas permanecen intactos.
 
-El rollback exige que el scope actual coincida exactamente con el estado posterior auditado; registra su propia auditoría. Si hubo otra modificación comercial, detener y revisar manualmente. Conservar el backup para recuperación de base completa según el runbook VPS. Aplicación y rollback requieren evidencia firmada específica de la operación, backup reciente con SHA-256 y restauración aislada verificada. La clave pública confiable y el archivo protegido permanecen fuera del repositorio, según el plan de reconciliación del catálogo.
+## Rollback de la operación B
 
-## Dependencias y riesgos
+Con nueva evidencia firmada para `COMMERCIAL_GLOBAL_LANDING_SUPPORT_ROLLBACK`, backup reciente y revisión de cambios posteriores, usar el ID del AuditLog de la aplicación:
 
-El script no se ejecutó contra ninguna base productiva. La validación de los ocho registros productivos, el backup y la aprobación operativa siguen pendientes. Mientras tanto, las respuestas mantienen como autoridad la PriceList vigente, que podría seguir mostrando soporte antiguo. Landing Básica GLOBAL/USD conserva su estado actual hasta una decisión separada.
+`npx ts-node scripts/update-global-landing-support-12m.ts --rollback-audit-id <AUDIT-ID> --commercial-approval-id <COMM-ID> --authorization-id <AUTH-ID> --backup-id <BKP-ID> --evidence-file <RUTA_ABSOLUTA>`
+
+El rollback solo restaura el scope anterior si la fila y Black Friday todavía coinciden con el estado auditado; registra un segundo AuditLog. Si hubo un cambio concurrente o comercial independiente, detiene la operación. Conservar el backup para una restauración aislada o completa según el runbook VPS.
+
+## Ocho tarifas EC
+
+Tras la reconciliación A, ejecutar `npx ts-node scripts/update-commercial-support-12m.ts` en lectura. Debe devolver `changes: []` y `failures: []`. Si no es así, revisar cuál de las ocho tarifas EC diverge. El script EC no toca Landing Básica GLOBAL ni Black Friday. Una futura aplicación EC requeriría autorización, backup y evidencia propios; no reutilizar la evidencia de B.
+
+## Gates pendientes
+
+No se ejecutó ninguna de estas operaciones contra PostgreSQL productivo. Faltan preflight productivo, vincular la aprobación comercial a un identificador verificable, autorización operativa específica, backup productivo reciente, restauración aislada, integración A7-D16 y revisión de PR. No fusionar ni desplegar mientras estos gates sigan abiertos.

@@ -4,7 +4,7 @@
 
 - Rama de trabajo: `feat/hermes-commercial-packages-20261104`; HEAD inicial `e332c75fb5361cb2dd58eb14784be75ab44c8aec`. El commit `41b9365` de PR #9 es ancestro. No se modificó la rama piloto ni PostgreSQL productivo.
 - El informe `HERMES_PR9_PR10_PREDEPLOY_AUDIT_2026-11-04.md` citado en el encargo no está en este checkout ni en `ProyectMD` local. Se tomó el texto de `prompt.md` como evidencia de la observación productiva; no se infirió ningún estado adicional de producción.
-- Dictamen del código conversacional: `PR10_CONVERSATIONAL_BLOCKERS_RESOLVED`, sujeto a la integración aislada final. Dictamen CRM: `CRM_CATALOG_RECONCILIATION_PREPARED` y `CRM_CATALOG_COMMERCIAL_APPROVAL_PENDING`. **PR #10 no está apto para producción**: faltan la decisión comercial de mercado, el preflight/backup real, la reconciliación autorizada y A7-D16.
+- Dictamen del código conversacional: `PR10_CONVERSATIONAL_BLOCKERS_RESOLVED`, sujeto a la integración aislada final. La opción B del propietario, recibida después de este informe, aprobó comercialmente EC/USD y doce meses para los nueve planes. El informe complementario `HERMES_OPTION_B_GLOBAL_SUPPORT_12M_2026-11-04.md` registra el procedimiento GLOBAL separado. **PR #10 no está apto para producción**: faltan el preflight/backup real, la autorización operativa, la reconciliación autorizada y A7-D16.
 
 ## Bloqueante A: «paguina web»
 
