@@ -55,6 +55,83 @@ function snapshot(selected = offers): CommercialSnapshot {
 
 describe('CRM package WhatsApp cards', () => {
   it.each([
+    'Tengo diez paquetes turísticos',
+    'Vendo paquetes de viajes',
+    'Publicaré quince paquetes',
+    'Necesito un sistema de reservas para mis paquetes',
+    'Necesito una página web para una operadora turística con diez paquetes',
+    'Necesito una web con diez servicios',
+  ])('does not treat project content as catalog comparison: %s', (message) => {
+    const parts = commercialPackageParts({
+      message,
+      snapshot: snapshot(),
+      priceRequested: false,
+      maxParts: 3,
+    });
+    expect(parts).toBeUndefined();
+  });
+
+  it.each([
+    '¿Qué planes web tienen?',
+    'Muéstreme todos los paquetes para páginas web',
+    'Quiero comparar sus tres planes de desarrollo',
+    '¿Cuáles son sus opciones de sitios web?',
+    '¿Qué paquetes web ofrecen?',
+    'Muéstreme sus tres planes',
+  ])('shows three only for explicit comparison: %s', (message) => {
+    const parts = commercialPackageParts({
+      message,
+      snapshot: snapshot(),
+      priceRequested: true,
+      maxParts: 3,
+    });
+    expect(parts).toHaveLength(3);
+  });
+
+  it('shows two named plans for a focused comparison', () => {
+    const parts = commercialPackageParts({
+      message: 'Quiero comparar Plan de Lanzamiento y Crecimiento',
+      snapshot: snapshot(),
+      priceRequested: false,
+      maxParts: 3,
+    });
+    expect(parts).toHaveLength(2);
+    expect(parts?.join(' ')).not.toContain('PLAN DE AUTORIDAD');
+  });
+
+  it('keeps custom tourism scope to two base prices', () => {
+    const parts = commercialPackageParts({
+      message: 'Un aproximado para mi página web de turismo con diez paquetes',
+      snapshot: {
+        ...snapshot(),
+        additionalScope: ['Reservas automatizadas', 'Pagos en línea'],
+      },
+      priceRequested: true,
+      maxParts: 3,
+    });
+    expect(parts).toHaveLength(2);
+    expect(parts?.join(' ')).toContain('360,00');
+    expect(parts?.join(' ')).toContain('510,00');
+    expect(parts?.join(' ')).not.toContain('1.010,00');
+    expect(parts?.join(' ')).toContain('requiere valoración adicional');
+  });
+  it('uses the CRM recommendation when advanced custom scope needs two base plans', () => {
+    const parts = commercialPackageParts({
+      message: 'Un aproximado para una web con automatización avanzada',
+      snapshot: {
+        ...snapshot(),
+        recommendedOfferId: offers[2].id,
+        additionalScope: ['Integración a medida'],
+      },
+      priceRequested: true,
+      maxParts: 3,
+    });
+    expect(parts).toHaveLength(2);
+    expect(parts?.join(' ')).toContain('PLAN DE CRECIMIENTO');
+    expect(parts?.join(' ')).toContain('PLAN DE AUTORIDAD');
+    expect(parts?.join(' ')).not.toContain('PLAN DE LANZAMIENTO');
+  });
+  it.each([
     ['¿Qué planes tienen para páginas web?', 'WEBSITE'],
     ['¿Qué planes tienen para tienda online?', 'ONLINE_STORE'],
     ['¿Qué planes tienen para Landing Page?', 'LANDING_PAGE'],

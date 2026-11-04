@@ -486,6 +486,106 @@ describe('AutoReplyService', () => {
     };
   }
 
+  it('sends a CRM backed website answer for a misspelled price request', async () => {
+    const launch = {
+      ...testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+      scope:
+        'Hasta cinco páginas; 12 meses de soporte técnico posteriores a la entrega.',
+    };
+    const harness = setupProcessHarness({
+      inboundContent: 'Valor de una paguina web',
+      hermesResponse: { response: 'Podemos ayudarle con su sitio web.' },
+      commercialSnapshot: {
+        market: CommercialMarket.EC,
+        marketSource: 'PHONE_COUNTRY_CODE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers: [launch],
+        needsMarketClarification: false,
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const sent = harness.meta.sendTextMessage.mock.calls
+      .map((call) => String(call[1]))
+      .join(' ');
+    expect(sent).toContain('360');
+    expect(sent).not.toContain('510');
+  });
+
+  it('sends at most two CRM base plans for a tourism price request', async () => {
+    const offers = [
+      testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+      testOffer('Plan de Crecimiento', '510.00', 'WEBSITE'),
+      testOffer('Plan de Autoridad', '1010.00', 'WEBSITE'),
+    ].map((offer) => ({
+      ...offer,
+      scope:
+        'Diseño adaptable; 12 meses de soporte técnico posteriores a la entrega.',
+    }));
+    const harness = setupProcessHarness({
+      inboundContent:
+        'Un aproximado para mi página web de turismo con diez paquetes',
+      hermesResponse: { response: 'Le ayudo a valorar el proyecto.' },
+      commercialSnapshot: {
+        market: CommercialMarket.EC,
+        marketSource: 'PHONE_COUNTRY_CODE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers,
+        needsMarketClarification: false,
+        additionalScope: ['Reservas automatizadas', 'Pagos en línea'],
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const sent = harness.meta.sendTextMessage.mock.calls
+      .map((call) => String(call[1]))
+      .join(' ');
+    expect(sent).toContain('360');
+    expect(sent).toContain('510');
+    expect(sent).not.toContain('1010');
+    expect(sent).toContain('valoración');
+  });
+
+  it('sends three plan cards only for an explicit WhatsApp comparison', async () => {
+    const offers = [
+      testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+      testOffer('Plan de Crecimiento', '510.00', 'WEBSITE'),
+      testOffer('Plan de Autoridad', '1010.00', 'WEBSITE'),
+    ].map((offer) => ({
+      ...offer,
+      scope:
+        'Diseño adaptable; 12 meses de soporte técnico posteriores a la entrega.',
+    }));
+    const harness = setupProcessHarness({
+      inboundContent: '¿Qué planes web tienen?',
+      hermesResponse: { response: 'Le comparto las opciones.' },
+      commercialSnapshot: {
+        market: CommercialMarket.EC,
+        marketSource: 'PHONE_COUNTRY_CODE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers,
+        needsMarketClarification: false,
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const sent = harness.meta.sendTextMessage.mock.calls
+      .map((call) => String(call[1]))
+      .join(' ');
+    expect(sent).toContain('PLAN DE LANZAMIENTO');
+    expect(sent).toContain('PLAN DE CRECIMIENTO');
+    expect(sent).toContain('PLAN DE AUTORIDAD');
+  });
+
   it('passes the normal Nous claim and suppresses an ambiguous fallback with human review', async () => {
     const turns = {
       claim: jest.fn().mockResolvedValue({

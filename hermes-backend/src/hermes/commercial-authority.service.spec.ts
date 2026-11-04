@@ -75,6 +75,23 @@ describe('CommercialAuthorityService', () => {
     return { authority: new CommercialAuthorityService(prisma), findMany };
   }
 
+  it('routes a misspelled website price request to its CRM tariff', async () => {
+    const snapshot = await service([base]).authority.snapshot({
+      customerMessage: 'Valor de una paguina web',
+      priceRequested: true,
+      waId: '593991234567',
+      now,
+    });
+    expect(snapshot.relevantServiceCodes).toEqual(['WEBSITE']);
+    expect(snapshot.offers).toEqual([
+      expect.objectContaining({
+        serviceCode: 'WEBSITE',
+        amount: '360.00',
+        currency: 'USD',
+      }),
+    ]);
+  });
+
   it.each([
     'agendar retiros',
     'Necesito agendar retiros.',

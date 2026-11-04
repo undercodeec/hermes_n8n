@@ -150,6 +150,8 @@ describe('CommercialPolicyService', () => {
   });
   it.each([
     '¿Cuánto cuesta?',
+    'Valor de una paguina web',
+    'Un aproximado',
     '¿Cuánto costaría?',
     '¿Cuánto costaría esto?',
     '¿Y cuánto costaría?',

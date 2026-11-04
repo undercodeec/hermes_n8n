@@ -3,16 +3,20 @@ import type {
   AuthorizedOffer,
   CommercialSnapshot,
 } from '../hermes/commercial-authority.service';
+import { normalizeCommonSpanishTypos } from '../hermes/spanish-text-normalizer';
 
 function normalize(value: string): string {
-  return value
-    .toLocaleLowerCase('es')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/gu, '');
+  return normalizeCommonSpanishTypos(
+    value
+      .toLocaleLowerCase('es')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/gu, ''),
+  );
 }
 
 const categoryNames: Record<string, RegExp> = {
-  WEBSITE: /\b(?:sitio web|pagina web|paginas web|web corporativa)\b/u,
+  WEBSITE:
+    /\b(?:sitio web|sitios web|pagina web|paginas web|pagina de internet|web corporativa)\b/u,
   ONLINE_STORE: /\b(?:tienda online|tiendas online|ecommerce)\b/u,
   LANDING_PAGE: /\b(?:landing|pagina de aterrizaje)\b/u,
 };
@@ -105,28 +109,75 @@ export function commercialPackageParts(input: {
 }): string[] | undefined {
   const query = normalize(input.message);
   const offers = input.snapshot.offers.filter((offer) => !offer.promotion);
-  const serviceCode = Object.entries(categoryNames).find(([, pattern]) =>
+  const mentionedService = Object.entries(categoryNames).find(([, pattern]) =>
     pattern.test(query),
   )?.[0];
+  const namedOffers = offers.filter((offer) =>
+    query.includes(normalize(offer.name)),
+  );
+  if (
+    namedOffers.length === 1 &&
+    /\b(?:plan de|tienda de) lanzamiento y crecimiento\b/u.test(query)
+  ) {
+    const growth = offers.find(
+      (offer) =>
+        offer.serviceCode === namedOffers[0].serviceCode &&
+        /\bcrecimiento\b/u.test(normalize(offer.name)),
+    );
+    if (growth) namedOffers.push(growth);
+  }
+  const comparisonRequested =
+    /\b(?:que|cuales|cuantos|muestr(?:e|eme|ame)|mostrar|ver|ofrecen|tienen|comparar|comparacion)\b.{0,65}\b(?:planes?|paquetes?|opciones?)\b/u.test(
+      query,
+    ) ||
+    /\b(?:planes?|paquetes?|opciones?)\b.{0,65}\b(?:ofrecen|tienen|hay|disponibles)\b/u.test(
+      query,
+    ) ||
+    (/\b(?:sus|todos|todas|tres|3)\s+(?:planes?|paquetes?|opciones?)\b/u.test(
+      query,
+    ) &&
+      /\b(?:muestr(?:e|eme|ame)|mostrar|ver|comparar|cuales|que)\b/u.test(
+        query,
+      ));
+  const serviceCode =
+    mentionedService ??
+    (comparisonRequested ? input.snapshot.relevantServiceCodes[0] : undefined);
   const category = serviceCode
     ? offers.filter((offer) => offer.serviceCode === serviceCode)
     : [];
   const allPlans =
     Boolean(serviceCode) &&
-    /\b(?:planes|paquetes|opciones|todos|todas|comparar)\b/u.test(query);
-  const named = offers.find((offer) => query.includes(normalize(offer.name)));
+    comparisonRequested &&
+    !(namedOffers.length === 2 && /\bcomparar\b/u.test(query));
+  const named = namedOffers[0];
   const complete =
     /\b(?:que incluye|todo lo que incluye|prestaciones|caracteristicas|detalle completo)\b/u.test(
       query,
     );
   let selected: AuthorizedOffer[] = [];
-  if (allPlans && category.length === 3) selected = category;
+  if (namedOffers.length === 2 && /\bcomparar\b/u.test(query))
+    selected = namedOffers;
+  else if (allPlans && category.length === 3) selected = category;
   else if (named && complete) selected = [named];
   else if (input.priceRequested && input.snapshot.additionalScope?.length) {
-    const applicable = offers.filter(
-      (offer) => offer.serviceCode === input.snapshot.relevantServiceCodes[0],
-    );
-    if (applicable.length >= 2) selected = applicable.slice(0, 2);
+    const applicable = offers
+      .filter(
+        (offer) => offer.serviceCode === input.snapshot.relevantServiceCodes[0],
+      )
+      .sort(
+        (left, right) =>
+          Number(left.amount ?? Infinity) - Number(right.amount ?? Infinity),
+      );
+    if (applicable.length >= 2) {
+      const recommended = applicable.findIndex(
+        (offer) => offer.id === input.snapshot.recommendedOfferId,
+      );
+      const start = Math.max(
+        0,
+        Math.min(recommended - 1, applicable.length - 2),
+      );
+      selected = applicable.slice(start, start + 2);
+    }
   }
   if (!selected.length) return undefined;
   selected.sort((left, right) => Number(left.amount) - Number(right.amount));

@@ -1,4 +1,5 @@
 import { monetaryValuesIn } from './monetary-values';
+import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 
 export type CommercialSolutionKind =
   | 'LANDING_PAGE'
@@ -107,11 +108,13 @@ const WEB_OPTIONS_GUIDE = `Guía para presentar opciones de presencia web:
 - Si presentó interés en dos opciones y luego pregunta de forma ambigua «¿qué incluye?», aclara primero cuál de las dos desea conocer.`;
 
 function normalize(value: string): string {
-  return value
-    .toLocaleLowerCase('es')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-z0-9]+/g, ' ');
+  return normalizeCommonSpanishTypos(
+    value
+      .toLocaleLowerCase('es')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, ' '),
+  );
 }
 
 export function requestedSolutionKinds(
@@ -168,9 +171,10 @@ export function requestedSolutionKinds(
   }
   if (
     promotion ||
-    /\b(sitio web|pagina web|web corporativa|presencia web|portal web)\b/.test(
+    /\b(sitio web|pagina web|pagina de internet|web corporativa|presencia web|portal web)\b/.test(
       normalized,
-    )
+    ) ||
+    /\b(?:valor|precio|costo|coste)\b.{0,25}\bpagina\b/.test(normalized)
   ) {
     kinds.add('WEBSITE');
   }
@@ -326,7 +330,7 @@ export function commercialCatalogContext(query: string): string[] {
     (/\b250\b/.test(normalized) &&
       /\b(incluye|trae|viene|interesa|detalles)\b/.test(normalized));
   const website =
-    /\b(sitio web|pagina web|web corporativa|presencia web|portal web)\b/.test(
+    /\b(sitio web|pagina web|pagina de internet|web corporativa|presencia web|portal web)\b/.test(
       normalized,
     ) ||
     (/\b(360|510|1010)\b/.test(normalized) &&

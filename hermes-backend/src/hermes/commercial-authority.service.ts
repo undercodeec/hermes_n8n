@@ -7,6 +7,7 @@ import {
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { requestedSolutionKinds } from './commercial-catalog';
+import { normalizeCommonSpanishTypos } from './spanish-text-normalizer';
 import {
   BLACK_FRIDAY_LANDING_POLICY_VERSION,
   recognizesBlackFridayLanding,
@@ -69,10 +70,12 @@ export type CommercialSnapshot = {
 };
 
 function normalize(value: string): string {
-  return value
-    .toLocaleLowerCase('es')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '');
+  return normalizeCommonSpanishTypos(
+    value
+      .toLocaleLowerCase('es')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, ''),
+  );
 }
 
 export function resolveCommercialMarket(input: {
@@ -205,8 +208,11 @@ export class CommercialAuthorityService {
       ? ['LANDING_PAGE']
       : requestedSolutionKinds(input.customerMessage, false);
     const explicitCurrentService =
-      /\b(?:landing|p[aá]gina de aterrizaje|sitio web|p[aá]gina web|web corporativa|tienda online|ecommerce|comercio electr[oó]nico|app m[oó]vil|software a medida)\b/i.test(
-        input.customerMessage,
+      /\b(?:landing|pagina de aterrizaje|sitio web|pagina web|pagina de internet|web corporativa|tienda online|ecommerce|comercio electronico|app movil|software a medida)\b/.test(
+        normalize(input.customerMessage),
+      ) ||
+      /\b(?:valor|precio|costo|coste)\b.{0,25}\bpagina\b/.test(
+        normalize(input.customerMessage),
       );
     const recentServiceCodes =
       [...(input.recentCustomerMessages ?? [])]
@@ -228,15 +234,16 @@ export class CommercialAuthorityService {
     )
       relevantServiceCodes.push('LANDING_PAGE');
     const currentText = normalize(input.customerMessage);
-    const preferredCode = /\b(?:sitio web|pagina web|web corporativa)\b/.test(
-      currentText,
-    )
-      ? 'WEBSITE'
-      : /\b(?:tienda online|ecommerce)\b/.test(currentText)
-        ? 'ONLINE_STORE'
-        : /\b(?:landing|pagina de aterrizaje)\b/.test(currentText)
-          ? 'LANDING_PAGE'
-          : undefined;
+    const preferredCode =
+      /\b(?:sitio web|pagina web|pagina de internet|web corporativa)\b/.test(
+        currentText,
+      )
+        ? 'WEBSITE'
+        : /\b(?:tienda online|ecommerce)\b/.test(currentText)
+          ? 'ONLINE_STORE'
+          : /\b(?:landing|pagina de aterrizaje)\b/.test(currentText)
+            ? 'LANDING_PAGE'
+            : undefined;
     if (preferredCode && relevantServiceCodes.includes(preferredCode)) {
       relevantServiceCodes.sort(
         (left, right) =>

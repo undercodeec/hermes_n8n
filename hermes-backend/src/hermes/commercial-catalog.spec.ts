@@ -9,6 +9,17 @@ import {
 
 describe('requestedSolutionKinds', () => {
   it.each([
+    'Valor de una paguina web',
+    'Valor de una paguina',
+    'Valor de una pajina web',
+    'Valor de una pagina web',
+    'Valor de una página web',
+    'Valor de un sitio wep',
+    'Valor de una pajina de internet',
+  ])('recognizes website typo in %s', (message) => {
+    expect(requestedSolutionKinds(message, false)).toContain('WEBSITE');
+  });
+  it.each([
     'Quiero promocionar mi negocio',
     'Quiero promocionar mi tienda',
     'Quiero promocionar mis servicios',

@@ -778,6 +778,12 @@ export class CommercialPolicyService {
           /\b(?:precios?|costos?|costes?|tarifas?|cotiza\w*|presupuesto)\b/.test(
             clause,
           ) ||
+          /\bvalor\s+(?:de|del|para)\s+(?:(?:una?|la|mi)\s+)?(?:pagina|sitio|web|landing|tienda)\b/.test(
+            clause,
+          ) ||
+          /\b(?:un|una|el)\s+aproximado\b(?!\s+(?:de\s+)?(?:tiempo|plazo|dias|meses|horas|productos))/.test(
+            clause,
+          ) ||
           /\bvalor (?:monetario|en (?:dolares|euros|usd|eur))\b|\b(?:que|cual) (?:es |seria |tendria |el )?valor(?: tendria| seria)?\s*$/.test(
             clause.trim(),
           ) ||

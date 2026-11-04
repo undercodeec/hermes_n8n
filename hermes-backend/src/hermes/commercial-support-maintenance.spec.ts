@@ -34,5 +34,23 @@ describe('manual twelve-month PriceList scope patch', () => {
     ).toThrow();
     expect(() => updateSupport('soporte VIP por seis meses', false)).toThrow();
     expect(() => updateSupport('soporte no incluido', false)).toThrow();
+    expect(() =>
+      updateSupport(
+        '12 meses de soporte técnico posteriores a la entrega; un mes de soporte',
+        false,
+      ),
+    ).toThrow();
+    expect(() =>
+      updateSupport(
+        '12 meses de soporte técnico posteriores a la entrega y soporte VIP por seis meses',
+        false,
+      ),
+    ).toThrow();
+    expect(() =>
+      updateSupport(
+        '12 meses de soporte VIP prioritario posteriores a la entrega',
+        false,
+      ),
+    ).toThrow();
   });
 });
