@@ -75,6 +75,23 @@ describe('CommercialAuthorityService', () => {
     return { authority: new CommercialAuthorityService(prisma), findMany };
   }
 
+  it('routes a misspelled website price request to its CRM tariff', async () => {
+    const snapshot = await service([base]).authority.snapshot({
+      customerMessage: 'Valor de una paguina web',
+      priceRequested: true,
+      waId: '593991234567',
+      now,
+    });
+    expect(snapshot.relevantServiceCodes).toEqual(['WEBSITE']);
+    expect(snapshot.offers).toEqual([
+      expect.objectContaining({
+        serviceCode: 'WEBSITE',
+        amount: '360.00',
+        currency: 'USD',
+      }),
+    ]);
+  });
+
   it.each([
     'agendar retiros',
     'Necesito agendar retiros.',
@@ -126,6 +143,24 @@ describe('CommercialAuthorityService', () => {
     expect(snapshot.additionalScope).toContain(
       'Agendamiento personalizado de retiros o recogidas',
     );
+  });
+  it('separates tourism reservations and online payments from the website plan', async () => {
+    const snapshot = await service([base]).authority.snapshot({
+      customerMessage: 'No tengo dominio, quisiera saber costos',
+      profile: { service: 'sitio web para operadora turística' },
+      recentCustomerMessages: [
+        'Tengo diez paquetes turísticos y necesito sistema de reservas y pago en línea',
+      ],
+      priceRequested: true,
+      waId: '593991234567',
+      now,
+    });
+    expect(snapshot.additionalScope).toEqual(
+      expect.arrayContaining(['Pagos en línea']),
+    );
+    expect(
+      snapshot.additionalScope?.some((item) => /Reservas/u.test(item)),
+    ).toBe(true);
   });
   it('deduplicates collection reservations but preserves a separate calendar capability', async () => {
     const authority = service([base]).authority;

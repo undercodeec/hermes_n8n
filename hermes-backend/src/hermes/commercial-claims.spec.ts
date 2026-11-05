@@ -53,6 +53,32 @@ describe('commercial claims', () => {
     needsMarketClarification: false,
   });
 
+  it('checks ordinary package support against its own CRM scope', () => {
+    const annual = {
+      ...offer,
+      scope:
+        'Hasta cinco páginas; 12 meses de soporte técnico posteriores a la entrega',
+    };
+    expect(
+      reviewCommercialClaims(
+        'Plan de Lanzamiento incluye 12 meses de soporte técnico.',
+        snapshot([annual]),
+      ).reasons,
+    ).toEqual([]);
+    expect(
+      reviewCommercialClaims(
+        'Plan de Lanzamiento incluye 12 meses de soporte técnico.',
+        snapshot([offer]),
+      ).reasons,
+    ).toContain('SUPPORT_TERM_NOT_AUTHORIZED');
+    expect(
+      reviewCommercialClaims(
+        'Plan de Lanzamiento ofrece soporte 24/7.',
+        snapshot([annual]),
+      ).reasons,
+    ).toContain('SUPPORT_TERM_NOT_AUTHORIZED');
+  });
+
   it.each([
     'USD 360e3',
     'USD 360€',

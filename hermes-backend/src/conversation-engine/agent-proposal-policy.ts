@@ -25,6 +25,7 @@ export function reviewAgentProposal(
   customerMessage: string,
   customerHistory: string[],
   allowedTags: string[],
+  lastAssistantMessage?: string,
 ): ReviewedAgentProposal {
   // Earlier turns provide conversational context but cannot authorize a new write
   // after the customer may have corrected that information.
@@ -78,6 +79,14 @@ export function reviewAgentProposal(
   const proposed = proposal.proposedActions[0] ?? { type: 'none' };
   let action: ProposedAction = { type: 'none' };
   const current = normalize(customerMessage);
+  const previous = normalize(lastAssistantMessage ?? '');
+  const simpleConsent = /^(?:si|claro|de acuerdo|por favor)$/u.test(current);
+  const contextualQuoteConsent =
+    simpleConsent &&
+    /\b(?:desea|quiere|le gustaria|autoriz[ao])\b.{0,100}\b(?:asesor|equipo)\b.{0,100}\b(?:cotizacion|presupuesto|propuesta)\b/u.test(
+      previous,
+    ) &&
+    /\?/u.test(lastAssistantMessage ?? '');
   const affirmativeQuote =
     /\b(?:quiero|necesito|solicito|prepara|puedes|puede|podria|me gustaria)\b.{0,50}\b(?:cotizacion|presupuesto|propuesta|cotizar)\b|\bcotizame\b/.test(
       current,
@@ -102,8 +111,16 @@ export function reviewAgentProposal(
     /\b(?:no quiero|no necesito|no me|sin)\b.{0,30}\b(?:llamada|llamar|llamen|telefono)\b/.test(
       current,
     );
+  if (proposed.type === 'none' && contextualQuoteConsent)
+    action = {
+      type: 'propose_quote_task',
+      summary: 'Solicitud de cotización aceptada en el turno anterior',
+    };
   if (proposed.type !== 'none') {
-    if (!supported(proposal.business?.decision))
+    if (
+      !supported(proposal.business?.decision) &&
+      !(proposed.type === 'propose_quote_task' && contextualQuoteConsent)
+    )
       rejections.push('ACTION_EVIDENCE_MISSING');
     else if (
       proposed.type === 'request_handoff' &&
@@ -119,7 +136,7 @@ export function reviewAgentProposal(
       action = proposed;
     else if (
       proposed.type === 'propose_quote_task' &&
-      affirmativeQuote &&
+      (affirmativeQuote || contextualQuoteConsent) &&
       !refusedQuote
     )
       action = proposed;

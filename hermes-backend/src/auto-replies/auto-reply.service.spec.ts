@@ -486,6 +486,106 @@ describe('AutoReplyService', () => {
     };
   }
 
+  it('sends a CRM backed website answer for a misspelled price request', async () => {
+    const launch = {
+      ...testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+      scope:
+        'Hasta cinco páginas; 12 meses de soporte técnico posteriores a la entrega.',
+    };
+    const harness = setupProcessHarness({
+      inboundContent: 'Valor de una paguina web',
+      hermesResponse: { response: 'Podemos ayudarle con su sitio web.' },
+      commercialSnapshot: {
+        market: CommercialMarket.EC,
+        marketSource: 'PHONE_COUNTRY_CODE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers: [launch],
+        needsMarketClarification: false,
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const sent = harness.meta.sendTextMessage.mock.calls
+      .map((call) => String(call[1]))
+      .join(' ');
+    expect(sent).toContain('360');
+    expect(sent).not.toContain('510');
+  });
+
+  it('sends at most two CRM base plans for a tourism price request', async () => {
+    const offers = [
+      testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+      testOffer('Plan de Crecimiento', '510.00', 'WEBSITE'),
+      testOffer('Plan de Autoridad', '1010.00', 'WEBSITE'),
+    ].map((offer) => ({
+      ...offer,
+      scope:
+        'Diseño adaptable; 12 meses de soporte técnico posteriores a la entrega.',
+    }));
+    const harness = setupProcessHarness({
+      inboundContent:
+        'Un aproximado para mi página web de turismo con diez paquetes',
+      hermesResponse: { response: 'Le ayudo a valorar el proyecto.' },
+      commercialSnapshot: {
+        market: CommercialMarket.EC,
+        marketSource: 'PHONE_COUNTRY_CODE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers,
+        needsMarketClarification: false,
+        additionalScope: ['Reservas automatizadas', 'Pagos en línea'],
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const sent = harness.meta.sendTextMessage.mock.calls
+      .map((call) => String(call[1]))
+      .join(' ');
+    expect(sent).toContain('360');
+    expect(sent).toContain('510');
+    expect(sent).not.toContain('1010');
+    expect(sent).toContain('valoración');
+  });
+
+  it('sends three plan cards only for an explicit WhatsApp comparison', async () => {
+    const offers = [
+      testOffer('Plan de Lanzamiento', '360.00', 'WEBSITE'),
+      testOffer('Plan de Crecimiento', '510.00', 'WEBSITE'),
+      testOffer('Plan de Autoridad', '1010.00', 'WEBSITE'),
+    ].map((offer) => ({
+      ...offer,
+      scope:
+        'Diseño adaptable; 12 meses de soporte técnico posteriores a la entrega.',
+    }));
+    const harness = setupProcessHarness({
+      inboundContent: '¿Qué planes web tienen?',
+      hermesResponse: { response: 'Le comparto las opciones.' },
+      commercialSnapshot: {
+        market: CommercialMarket.EC,
+        marketSource: 'PHONE_COUNTRY_CODE',
+        relevantServiceCodes: ['WEBSITE'],
+        offers,
+        needsMarketClarification: false,
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const sent = harness.meta.sendTextMessage.mock.calls
+      .map((call) => String(call[1]))
+      .join(' ');
+    expect(sent).toContain('PLAN DE LANZAMIENTO');
+    expect(sent).toContain('PLAN DE CRECIMIENTO');
+    expect(sent).toContain('PLAN DE AUTORIDAD');
+  });
+
   it('passes the normal Nous claim and suppresses an ambiguous fallback with human review', async () => {
     const turns = {
       claim: jest.fn().mockResolvedValue({
@@ -3270,8 +3370,70 @@ describe('AutoReplyService', () => {
     expect(parts[0].content).toMatch(/Black Friday.*USD 80/iu);
   });
 
+  it('presents an approved Black Friday offer on an organic first commercial reply', async () => {
+    const campaign = approvedCampaignOffer();
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      market: CommercialMarket.EC,
+      marketSource: 'PHONE_COUNTRY_CODE',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [campaign],
+      recommendedOfferId: campaign.id,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: 'Hola, quiero más información',
+      hermesResponse: { response: 'Con gusto le ayudo. ¿A qué se dedica?' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(authority.snapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ prioritizeActiveBlackFriday: true }),
+    );
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts[0].content).toMatch(/Black Friday.*USD \$80\.00/iu);
+    expect(parts[0].content).toMatch(/¿A qué se dedica/iu);
+  });
+
+  it('keeps an online store recommendation after presenting Black Friday first', async () => {
+    const campaign = approvedCampaignOffer();
+    const store = {
+      ...testOffer('Tienda de Lanzamiento', '550.00', 'ONLINE_STORE'),
+      scope:
+        'Catálogo administrable; carrito de compras; proceso de pago seguro; 12 meses de soporte técnico posteriores a la entrega',
+    };
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      market: CommercialMarket.EC,
+      marketSource: 'PHONE_COUNTRY_CODE',
+      relevantServiceCodes: ['ONLINE_STORE', 'LANDING_PAGE'],
+      offers: [campaign, store],
+      recommendedOfferId: store.id,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: 'Quiero vender productos y cobrar por internet',
+      hermesResponse: {
+        response:
+          'Le recomiendo Tienda de Lanzamiento para vender productos y cobrar por internet.',
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const sent = harness.deliveries.prepareBatch.mock.calls[0][0].parts
+      .map((part: { content: string }) => part.content)
+      .join(' ');
+    expect(sent).toMatch(/Black Friday.*USD \$80\.00/iu);
+    expect(sent).toMatch(/Tienda de Lanzamiento/iu);
+    expect(sent).not.toMatch(/Black Friday[^.]*carrito/iu);
+  });
+
   it.each(['gemini_direct', 'nous_hermes'] as const)(
-    '%s sends one concise, named reply for the observed EUR 80 Meta enquiry',
+    '%s sends three named Black Friday parts for the observed EUR 80 Meta enquiry',
     async (engineId) => {
       const promotion = {
         ...approvedCampaignOffer(),
@@ -3325,8 +3487,8 @@ describe('AutoReplyService', () => {
 
       const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
       expect(harness.engine.respond).toHaveBeenCalledTimes(1);
-      expect(parts).toHaveLength(1);
-      expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(1);
+      expect(parts).toHaveLength(3);
+      expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(3);
       expect(authority.snapshot).toHaveBeenCalledWith(
         expect.objectContaining({
           waId: '593991234567',
@@ -3337,16 +3499,17 @@ describe('AutoReplyService', () => {
         }),
       );
       const answer = parts[0].content as string;
-      expect(answer).toMatch(/^Hola, Yaupi\./u);
+      expect(answer).toMatch(/Yaupi/u);
       expect(answer).toMatch(/€\s*80(?:\.00)?/iu);
       expect(answer).not.toMatch(/USD|d[oó]lares|diferencia/i);
       expect(answer).toMatch(/\b(?:landing|página)\b/iu);
-      expect(answer).toMatch(/¿[^?]+\?/u);
-      expect(answer).toMatch(/¿[^?]+\?$/u);
+      expect(parts[1].content).toMatch(/soporte técnico/iu);
+      expect(parts[1].content.match(/\n/gu) ?? []).toHaveLength(9);
+      expect(parts[2].content).toMatch(/¿[^?]+\?$/u);
       expect(answer).not.toMatch(
         /Por lo que me comenta|puede cubrir la parte/iu,
       );
-      expect(answer).not.toContain('5 correos corporativos');
+      expect(parts[1].content).toContain('5 correos corporativos');
       expect(answer.length).toBeLessThanOrEqual(420);
       expect(answer.match(/\bYaupi\b/gu) ?? []).toHaveLength(1);
     },
@@ -3388,7 +3551,7 @@ describe('AutoReplyService', () => {
       inboundMessageId: 'inbound-recovery',
     });
     const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
-    expect(parts).toHaveLength(1);
+    expect(parts).toHaveLength(3);
     expect(parts[0].content).toMatch(/€80\.00/iu);
     expect(parts[0].content).not.toMatch(/USD|d[oó]lares/iu);
     expect(parts[0].content).not.toMatch(/¿El proyecto sería/iu);

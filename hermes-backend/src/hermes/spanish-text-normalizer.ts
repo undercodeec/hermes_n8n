@@ -1,6 +1,8 @@
 const COMMON_COMMERCIAL_TYPOS: Array<[RegExp, string]> = [
   [/\bnesesito\b/g, 'necesito'],
   [/\bsitio wep\b/g, 'sitio web'],
+  [/\b(?:paguina|pajina)(?=\s+(?:web|de internet)\b)/g, 'pagina'],
+  [/\b((?:una?|la|mi|su)\s+)(?:paguina|pajina)\b/g, '$1pagina'],
   [/\brestorante\b/g, 'restaurante'],
   [
     /\b(?:servisiso|servisisos|servisio|servisios|serbisio|serbisios|servico|servicos)\b/g,
