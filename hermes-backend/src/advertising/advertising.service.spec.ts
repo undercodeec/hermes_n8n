@@ -489,7 +489,9 @@ describe('AdvertisingService', () => {
   );
 
   it('claims a queued sync job atomically for one worker and rejects terminal replay', async () => {
-    const status = { value: AdvertisingSyncStatus.QUEUED };
+    const status: { value: AdvertisingSyncStatus } = {
+      value: AdvertisingSyncStatus.QUEUED,
+    };
     const tx = {
       $executeRaw: jest.fn(),
       advertisingSyncJob: {

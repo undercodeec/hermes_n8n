@@ -3,7 +3,7 @@ import { ConversationEventsService } from './conversation-events.service';
 describe('ConversationEventsService', () => {
   it('abre el stream y publica mensajes entrantes sin exponer el payload crudo', async () => {
     const service = new ConversationEventsService();
-    const received: Array<{ type?: string; data: unknown }> = [];
+    const received: Array<{ type?: string; data?: unknown }> = [];
     const subscription = service.stream().subscribe((event) => {
       received.push(event);
     });

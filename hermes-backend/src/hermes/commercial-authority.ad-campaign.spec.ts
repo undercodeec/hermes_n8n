@@ -61,13 +61,13 @@ const verifiedSpainAd = {
   source: 'SOURCE_ID' as const,
   market: CommercialMarket.ES,
   currency: 'EUR' as const,
-};
+} as const;
 const verifiedEcuadorAd = {
   policyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
   source: 'SOURCE_ID' as const,
   market: CommercialMarket.EC,
   currency: 'USD' as const,
-};
+} as const;
 
 function authority(active: boolean, dualMarket = false, spanishOnly = false) {
   let promotionActive = active;
@@ -114,7 +114,7 @@ describe('Commercial Authority with verified ad context', () => {
       verifiedAdPolicyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION,
       priceRequested: false,
       now,
-    };
+    } as const;
     const first = await service.snapshot(input);
     expect(first.offers.map((offer) => offer.amount)).toEqual(['80.00']);
     setPromotionActive(false);

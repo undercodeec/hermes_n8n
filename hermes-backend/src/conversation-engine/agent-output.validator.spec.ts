@@ -88,7 +88,7 @@ describe('AgentOutputValidator', () => {
     expect(() => validator.validate(completion(proposal), 900)).toThrow(reason);
   });
 
-  it.each([
+  it.each<[{ replyText: string; [key: string]: unknown }, string]>([
     [
       { replyText: 'Le ayudamos con desarrollo web.' },
       'general service question',

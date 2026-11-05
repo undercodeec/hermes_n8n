@@ -113,6 +113,7 @@ describe('HermesService commercial contract', () => {
         new Date(),
       );
       const result = await service.generateResponse({
+        contactName: '',
         messageContent: '¿Cuánto cuesta una web?',
         conversationHistory: [],
         conversationGuidance: { ...policy.guidance, allowPriceAnswer: true },
@@ -137,6 +138,7 @@ describe('HermesService commercial contract', () => {
       new Date(),
     );
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: '¿Cuánto tiempo tomaría una web?',
       conversationHistory: [],
       conversationGuidance: policy.guidance,
@@ -160,6 +162,7 @@ describe('HermesService commercial contract', () => {
       new Date(),
     );
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Quiero una web',
       conversationHistory: [],
       conversationGuidance: policy.guidance,
@@ -311,6 +314,7 @@ describe('HermesService commercial contract', () => {
     );
 
     await service.generateResponse({
+      contactName: '',
       messageContent: 'Servicio a domicilio y repuestos',
       conversationHistory: [
         { role: 'user', content: 'Necesito una página web' },
@@ -369,6 +373,7 @@ describe('HermesService commercial contract', () => {
       paymentContext: 'PROJECT_PAYMENT' as const,
     };
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: '¿Puedo pagar 50/50?',
       conversationHistory: [],
       currentIntent: 'consulta_pago_proyecto',
@@ -567,6 +572,7 @@ describe('HermesService commercial contract', () => {
     });
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Necesito información',
       conversationHistory: [],
     });
@@ -588,6 +594,7 @@ describe('HermesService commercial contract', () => {
     );
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Oye, ¿me ayudas con una web pa mi negocio?',
       conversationHistory: [],
     });
@@ -610,6 +617,7 @@ describe('HermesService commercial contract', () => {
     );
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Explícame las opciones',
       conversationHistory: [],
     });
@@ -631,6 +639,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup([informal, informal]);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Necesito una web',
       conversationHistory: [],
       commercialProfile: { service: 'sitio web' },
@@ -662,6 +671,7 @@ describe('HermesService commercial contract', () => {
         new Date(),
       ).guidance;
       const result = await service.generateResponse({
+        contactName: '',
         messageContent: '¿Cuánto cuesta?',
         conversationHistory: [],
         conversationGuidance: { ...guidance, allowPriceAnswer: true },
@@ -688,6 +698,7 @@ describe('HermesService commercial contract', () => {
     const { service } = setup([invalid, invalid]);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: '¿Desde dónde trabajan?',
       conversationHistory: [],
       conversationGuidance: {
@@ -729,6 +740,7 @@ describe('HermesService commercial contract', () => {
       new Date('2026-09-20T18:00:00.000Z'),
     );
     const result = await service.generateResponse({
+      contactName: '',
       messageContent,
       conversationHistory: [],
       conversationGuidance: policy.guidance,
@@ -751,6 +763,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup(priced);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: '¿Cuánto cuesta un sitio web?',
       conversationHistory: [],
       commercialSnapshot: snapshot([
@@ -793,6 +806,7 @@ describe('HermesService commercial contract', () => {
     );
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent,
       conversationHistory: [],
       commercialSnapshot: snapshot([
@@ -823,6 +837,7 @@ describe('HermesService commercial contract', () => {
     );
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent,
       conversationHistory: [],
       commercialSnapshot: snapshot([
@@ -852,6 +867,7 @@ describe('HermesService commercial contract', () => {
     );
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent,
       conversationHistory: [],
       conversationGuidance: policy.guidance,
@@ -890,6 +906,7 @@ describe('HermesService commercial contract', () => {
     );
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'También debe organizar expedientes.',
       conversationHistory: [],
       commercialProfile: {
@@ -920,6 +937,7 @@ describe('HermesService commercial contract', () => {
     const { service } = setup([invalid, invalid]);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Necesito información sobre una web',
       conversationHistory: [],
       commercialProfile: { service: 'sitio web' },
@@ -966,6 +984,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup([informal, formal]);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Necesito información',
       conversationHistory: [],
     });
@@ -1000,6 +1019,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup([informal, mechanical]);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Mostrar servisiso',
       conversationHistory: [],
     });
@@ -1030,6 +1050,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup([meeting, recommendation]);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'También ofrecemos repuestos.',
       conversationHistory: [],
       conversationGuidance: {
@@ -1066,6 +1087,7 @@ describe('HermesService commercial contract', () => {
     );
 
     await service.generateResponse({
+      contactName: '',
       messageContent: 'Buenos días',
       conversationHistory: [],
     });
@@ -1092,6 +1114,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup([templated, natural]);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Necesito una web',
       conversationHistory: [],
     });
@@ -1119,6 +1142,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup([premature, discovery]);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Quiero mostrar unos 15 productos.',
       conversationHistory: [],
       conversationGuidance: {
@@ -1308,6 +1332,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup(malformed);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: '¿Me podrían ayudar con un sitio web?',
       conversationHistory: [],
     });
@@ -1359,6 +1384,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup([fullPlan, options]);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Quiero promocionar mis servicios.',
       conversationHistory: [],
       commercialSnapshot: snapshot([
@@ -1400,6 +1426,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup([incomplete, incomplete]);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Mostrar servicios',
       conversationHistory: [],
       commercialSnapshot: snapshot([
@@ -1452,6 +1479,7 @@ describe('HermesService commercial contract', () => {
     const { service, post } = setup([informal, prematurePlan]);
 
     const result = await service.generateResponse({
+      contactName: '',
       messageContent: 'Reparaciónes de refrigeradores',
       conversationHistory: [
         { role: 'user', content: 'Estoy buscando un sitio web' },

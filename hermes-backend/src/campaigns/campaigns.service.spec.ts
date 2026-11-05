@@ -31,6 +31,7 @@ describe('CampaignsService send idempotency', () => {
   const makeService = (overrides: Record<string, unknown> = {}) => {
     const prisma = {
       campaignRecipient: {
+        findMany: jest.fn(),
         findUnique: jest.fn().mockResolvedValue(recipient),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
         update: jest.fn().mockResolvedValue({}),
@@ -93,7 +94,7 @@ describe('CampaignsService send idempotency', () => {
     await expect(
       service.start('campaign-1', { id: 'user-1' }),
     ).rejects.toBeInstanceOf(ForbiddenException);
-    expect(prisma.campaignRecipient.findMany).toBeUndefined();
+    expect(prisma.campaignRecipient.findMany).not.toHaveBeenCalled();
   });
 
   it('snapshots the video configured for the exact approved template language', async () => {

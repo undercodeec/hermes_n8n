@@ -89,6 +89,7 @@ function setup(override: Record<string, unknown> = {}) {
       throw new Error('legacy provider reached');
     });
   const request = {
+    contactName: '',
     conversationId: target,
     canaryServiceWindowExpiresAt: new Date(Date.now() + 120_000).toISOString(),
     canaryReceivedAt: new Date().toISOString(),
@@ -101,7 +102,14 @@ function setup(override: Record<string, unknown> = {}) {
     messageContent: 'Consulta sintética',
     conversationHistory: [{ role: 'assistant', content: 'Mensaje anterior' }],
     approvedLearning: [
-      { id: 'approved-1', version: 1, content: 'Orientación aprobada' },
+      {
+        id: 'approved-1',
+        version: 1,
+        kind: 'STYLE',
+        trigger: 'Consulta sintética',
+        guidance: 'Orientación aprobada',
+        content: 'Orientación aprobada',
+      },
     ],
   };
   return {
@@ -118,7 +126,7 @@ function setup(override: Record<string, unknown> = {}) {
 
 function estimatedSetup() {
   const result = setup();
-  const values = {
+  const values: Record<string, string> = {
     F3_GEMINI_BUDGET_MODE: 'estimated',
     F3_GEMINI_CANARY_WINDOW_START_UTC: new Date(
       Date.now() - 30_000,
@@ -140,7 +148,7 @@ function estimatedSetup() {
   const originalGet = serviceConfig.get.bind(serviceConfig);
   (serviceConfig as unknown as { get: jest.Mock }).get = jest.fn(
     (key: string, fallback?: unknown) =>
-      (values as Record<string, string>)[key] ?? originalGet(key, fallback),
+      values[key] ?? originalGet(key, fallback),
   );
   (result.service as unknown as { model: string }).model = 'gemini-3.8-flash';
   result.request.canaryReceivedAt = new Date().toISOString();

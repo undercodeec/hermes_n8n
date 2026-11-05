@@ -49,6 +49,7 @@ function webhookWithDoubles(
     advertising,
     {} as ConversationEventsService,
     {} as AutomatedDeliveryService,
+    {} as PaymentsService,
   );
 }
 
@@ -121,6 +122,7 @@ describe('WebhookService durable inbox', () => {
       {} as AdvertisingService,
       {} as ConversationEventsService,
       {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
     await service.acceptWebhook(dto);
     expect(createMany).not.toHaveBeenCalled();
@@ -168,6 +170,7 @@ describe('WebhookService durable inbox', () => {
       {} as AdvertisingService,
       {} as ConversationEventsService,
       {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
     const process = jest
       .spyOn(service as any, 'processIncomingMessage')
@@ -200,6 +203,7 @@ describe('WebhookService durable inbox', () => {
       {} as AdvertisingService,
       {} as ConversationEventsService,
       {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
     await expect(service.acceptWebhook(dto)).rejects.toThrow(
       'META_PHONE_NUMBER_ID is required',
@@ -222,6 +226,7 @@ describe('WebhookService durable inbox', () => {
       {} as AdvertisingService,
       {} as ConversationEventsService,
       {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
     await expect(service.acceptWebhook(dto)).rejects.toThrow(
       'META_PHONE_NUMBER_ID is required',
@@ -417,6 +422,7 @@ describe('WebhookService durable inbox', () => {
       } as unknown as AdvertisingService,
       {} as ConversationEventsService,
       {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
     await expect(
       (service as any).processIncomingMessage(message, contact, true),
@@ -453,6 +459,7 @@ describe('WebhookService textual commercial opt-out', () => {
       {} as AdvertisingService,
       {} as ConversationEventsService,
       {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
     const content = 'No me envíen promociones; necesito soporte para mi web';
     await (service as any).routeInbound(
@@ -488,6 +495,7 @@ describe('WebhookService textual commercial opt-out', () => {
       {} as AdvertisingService,
       {} as ConversationEventsService,
       {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
     const content = 'Quiero dar de baja mi servicio contratado';
     await (service as any).routeInbound(
@@ -772,6 +780,8 @@ describe('WebhookService campaign replies', () => {
       {} as ConversationGuardService,
       {} as AdvertisingService,
       {} as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
     const log = jest.spyOn(
       (service as unknown as { logger: Logger }).logger,
@@ -816,6 +826,8 @@ describe('WebhookService campaign replies', () => {
       {} as ConversationGuardService,
       {} as AdvertisingService,
       {} as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
 
     expect(service.validateSignature(payload, signature)).toBe(true);
@@ -845,6 +857,7 @@ describe('WebhookService campaign replies', () => {
       {} as AdvertisingService,
       {} as ConversationEventsService,
       {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
     expect(
       service.verifyWebhook(
@@ -930,6 +943,8 @@ describe('WebhookService campaign replies', () => {
       guard,
       advertising,
       conversationEvents,
+      {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
 
     await (service as any).processIncomingMessage(
@@ -1057,6 +1072,8 @@ describe('WebhookService campaign replies', () => {
       {
         publishCustomerMessage: jest.fn(),
       } as unknown as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
 
     await (service as any).processIncomingMessage(
@@ -1121,6 +1138,8 @@ describe('WebhookService campaign replies', () => {
         {} as ConversationGuardService,
         {} as AdvertisingService,
         {} as ConversationEventsService,
+        {} as AutomatedDeliveryService,
+        {} as PaymentsService,
       );
       await (service as any).getOrCreateConversation('contact-new', {
         source_type: 'ad',
@@ -1201,6 +1220,7 @@ describe('WebhookService campaign replies', () => {
       {} as AdvertisingService,
       {} as ConversationEventsService,
       {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
     await (service as any).getOrCreateConversation('contact-new');
     expect(prismaMock.conversation.create).toHaveBeenCalledWith({
@@ -1253,6 +1273,8 @@ describe('WebhookService campaign replies', () => {
       {} as ConversationGuardService,
       {} as AdvertisingService,
       {} as ConversationEventsService,
+      {} as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
 
     const result = await (service as any).getOrCreateConversation('contact-1');
@@ -1339,6 +1361,7 @@ describe('WebhookService campaign replies', () => {
         publishCustomerMessage: jest.fn().mockResolvedValue(undefined),
       } as unknown as ConversationEventsService,
       deliveries as unknown as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
 
     await (service as any).processIncomingMessage(
@@ -1395,6 +1418,7 @@ describe('WebhookService campaign replies', () => {
       {} as AdvertisingService,
       {} as ConversationEventsService,
       deliveries as unknown as AutomatedDeliveryService,
+      {} as PaymentsService,
     );
 
     await (service as any).sendSystemMessage(
