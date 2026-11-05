@@ -54,7 +54,7 @@ La tabla registra cada paquete señalado. “Sí” en arreglo significa que npm
 | `handlebars` | 4.7.9 | `ts-jest`; GHSA-xw65-4hp5-5hc7, GHSA-8r5x-fm3f-whwj, GHSA-p8wg-vrv2-v86f | Crítica | Desarrollo | Sí | Sin uso de Handlebars desde la aplicación; condiciones específicas descritas arriba. |
 | `deepmerge` | 4.3.1 | `@nestjs/cli` → `fork-ts-checker-webpack-plugin` y Jest; GHSA-gcqx-w48m-w2h4 | Baja | Desarrollo | Mayor | Herramientas de build/test. |
 | `fork-ts-checker-webpack-plugin` | 9.1.0 | `@nestjs/cli` → `deepmerge` | Baja | Desarrollo | Mayor | Build local/CI. |
-| `fast-uri` | 3.1.8 | `@nestjs/cli` → AJV; cuatro avisos GHSA en JSON | Moderada | Desarrollo | Sí | Validación de esquemas de tooling. |
+| `fast-uri` | 3.1.8 | `@nestjs/cli` → AJV; GHSA-w74x-v6f9-j3xg, GHSA-xhq7-xmqj-769h, GHSA-wjr9-j795-jxcr, GHSA-333x-w4r6-6crp | Moderada | Desarrollo | Sí | Validación de esquemas de tooling. |
 | `glob` | 13.0.6, 10.5.0 | `@nestjs/cli` y Jest; GHSA-3g3m-2fjr-6pw4, `minimatch` | Moderada | Desarrollo | Mayor | Patrones internos de herramientas. |
 | `minimatch` | 10.2.5, 9.0.9 | `glob` y `@typescript-eslint/typescript-estree`; GHSA-g3hv-75wg-m249 | Moderada | Desarrollo | Mayor | Patrones de build, test y lint. |
 | `@nestjs/cli` | 11.0.23 | directo → `glob`, `fork-ts-checker-webpack-plugin` | Moderada | Desarrollo | Mayor (12) | Solo CLI. |
@@ -81,8 +81,8 @@ Se reprodujo en el piloto con `NODE_OPTIONS=--trace-warnings`. La pila identific
 
 ## Estrategia Git, riesgos y dictamen
 
-1. Revisar y fusionar el PR independiente `fix/hermes-typescript-baseline-20261104` hacia el piloto. Mantener `e54e683` separado de los cambios de saludos y paquetes.
-2. Revisar el PR independiente `fix/hermes-follow-redirects-20261104` hacia el piloto. `ff4f667` corrige solo la dependencia productiva; no mezclar con lógica comercial.
+1. Revisar y fusionar el [PR #11](https://github.com/undercodeec/hermes_n8n/pull/11), rama independiente `fix/hermes-typescript-baseline-20261104`, hacia el piloto. Mantener `e54e683` separado de los cambios de saludos y paquetes.
+2. Revisar el [PR #12](https://github.com/undercodeec/hermes_n8n/pull/12), rama independiente `fix/hermes-follow-redirects-20261104`, hacia el piloto. `ff4f667` corrige solo la dependencia productiva; no mezclar con lógica comercial.
 3. Integrar ambos commits por merge normal, sin rebase destructivo ni force push, en las ramas de PR #9 y PR #10 según sus dependencias; los cherry-picks temporales prueban que aplican sin conflictos. Repetir gates sobre los HEAD finales y las nueve pruebas comerciales de PR #10 antes de fusionar o desplegar.
 
 **HERMES_TYPESCRIPT_GATE_PASSED** para el piloto saneado y para las combinaciones temporales de PR #9/#10, con todos los gates técnicos y funcionales requeridos aprobados. **HERMES_TYPESCRIPT_GATE_BLOCKED** para los HEAD originales de PR #9/#10 hasta integrar el saneamiento. **HERMES_SECURITY_REVIEW_REQUIRED** porque los HEAD originales aún fijan `follow-redirects@1.16.1` y quedan 21 alertas de desarrollo por revisar. Las ramas temporales con ambos commits dejan cero alertas productivas; la rama separada de seguridad también pasó build, 1.748 unitarias, 188 integradas, 31 A7-D16, ESLint, Prisma y secretos. **No desplegar todavía**.
