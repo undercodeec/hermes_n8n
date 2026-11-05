@@ -230,7 +230,7 @@ describe('AutoReplyService', () => {
     conversationStateUpsert: jest.Mock;
     prisma: PrismaService;
     learning: { select: jest.Mock; recordShadowMatches: jest.Mock };
-    config: { get: jest.Mock };
+    config: ConfigService;
   } {
     const inbound = {
       id: 'inbound-recovery',
@@ -1558,7 +1558,7 @@ describe('AutoReplyService', () => {
           commercialSnapshot,
         });
         const snapshotBefore = JSON.stringify(commercialSnapshot);
-        let providerPost: jest.Mock;
+        let providerPost: jest.Mock | jest.SpyInstance;
         if (engineId === 'gemini_direct') {
           const hermes = new HermesService(
             new ConfigService({
@@ -1574,7 +1574,7 @@ describe('AutoReplyService', () => {
               salesPlaybook: { findMany: jest.fn().mockResolvedValue([]) },
             } as unknown as PrismaService,
           );
-          providerPost = jest.fn().mockResolvedValue({
+          const geminiPost = jest.fn().mockResolvedValue({
             data: {
               choices: [
                 {
@@ -1591,7 +1591,8 @@ describe('AutoReplyService', () => {
           });
           (
             hermes as unknown as { httpClient: { post: jest.Mock } }
-          ).httpClient.post = providerPost;
+          ).httpClient.post = geminiPost;
+          providerPost = geminiPost;
           const engine = new DirectGeminiEngine(hermes);
           harness.engine.respond.mockImplementation(
             (turn: ConversationTurnInput) => engine.respond(turn),
@@ -5834,6 +5835,7 @@ describe('AutoReplyService', () => {
       authority,
       {} as ConversationGuardService,
       {} as Queue,
+      {} as AutomatedDeliveryService,
     );
 
     expect(
@@ -5858,6 +5860,7 @@ describe('AutoReplyService', () => {
       authority,
       {} as ConversationGuardService,
       queue,
+      {} as AutomatedDeliveryService,
     );
     const data = {
       conversationId: 'conversation-1',
@@ -5892,6 +5895,7 @@ describe('AutoReplyService', () => {
       authority,
       {} as ConversationGuardService,
       { add } as unknown as Queue<AutoReplyJobData>,
+      {} as AutomatedDeliveryService,
     );
 
     await service.enqueue(
@@ -6728,11 +6732,11 @@ describe('AutoReplyService', () => {
         );
         expect(
           batches.find((batch) => batch.sourceMessageId === 'synthetic-on')
-            ?.parts[0].metadata.learningExposed,
+            ?.parts[0]?.metadata?.learningExposed,
         ).toEqual([{ id: active.id, version: active.version }]);
         expect(
           batches.find((batch) => batch.sourceMessageId === 'synthetic-off')
-            ?.parts[0].metadata.learningExposed,
+            ?.parts[0]?.metadata?.learningExposed,
         ).toBeUndefined();
       },
     );

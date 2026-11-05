@@ -43,6 +43,7 @@ function setup(enabled: boolean, shortSystemPrompt = false) {
 }
 
 const request = (messageContent: string) => ({
+  contactName: '',
   conversationId: target,
   correlationId: 'synthetic-source',
   singleGenerationCanary: claim,

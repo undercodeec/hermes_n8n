@@ -15,7 +15,7 @@ describe('retention ADMIN API', () => {
   let app: INestApplication;
   const secret = 'isolated-retention-test-secret';
   const jwt = new JwtService({ secret });
-  const user = {
+  const user: { id: string; role: UserRole; [key: string]: unknown } = {
     id: 'operator-1',
     email: 'operator@example.test',
     name: 'Operator',

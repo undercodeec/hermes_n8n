@@ -70,6 +70,7 @@ describe('Nous BullMQ global concurrency (integration)', () => {
         return Date.now() - job.timestamp;
       }),
     );
+    expect(queue.listenerCount('closing')).toBe(0);
     latencies.sort((a, b) => a - b);
     const elapsedMs = Date.now() - startedAt;
     expect(maximumActive).toBe(1);

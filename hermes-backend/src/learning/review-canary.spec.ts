@@ -211,9 +211,17 @@ function fixture(allowlist: string, enabled = true) {
         },
       ),
     },
-    message: { findFirst: jest.fn(async () => ({ id: 'message' })) },
+    message: {
+      findFirst: jest.fn(
+        async (): Promise<{ id: string } | null> => ({ id: 'message' }),
+      ),
+    },
     automatedDelivery: {
-      findFirst: jest.fn(async () => ({ sourceMessageId: 'source-1' })),
+      findFirst: jest.fn(
+        async (): Promise<{ sourceMessageId: string } | null> => ({
+          sourceMessageId: 'source-1',
+        }),
+      ),
     },
     conversationReview: {
       count: jest.fn(
@@ -421,7 +429,7 @@ describe('reviewer canary fail closed', () => {
       good.service.triggerCanary({ feedbackId: A, requestKey: KEY }, 'admin-1'),
     ).rejects.toBeInstanceOf(BadRequestException);
     const ineligible = fixture(A);
-    ineligible.prisma.message.findFirst.mockResolvedValue(null);
+    ineligible.prisma.message.findFirst.mockImplementation(async () => null);
     await expect(
       ineligible.service.triggerCanary(
         { feedbackId: A, requestKey: KEY },
@@ -429,7 +437,9 @@ describe('reviewer canary fail closed', () => {
       ),
     ).rejects.toBeInstanceOf(BadRequestException);
     const unconfirmed = fixture(A);
-    unconfirmed.prisma.automatedDelivery.findFirst.mockResolvedValue(null);
+    unconfirmed.prisma.automatedDelivery.findFirst.mockImplementation(
+      async () => null,
+    );
     await expect(
       unconfirmed.service.triggerCanary(
         { feedbackId: A, requestKey: KEY },
