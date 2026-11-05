@@ -16,6 +16,7 @@ RUN npx prisma generate
 
 COPY . .
 RUN npm run build
+RUN test -s /app/dist/main.js && node --check /app/dist/main.js
 
 # Production stage
 FROM node:22-bookworm-slim AS production
@@ -51,6 +52,7 @@ COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/prisma ./prisma
 COPY --from=builder /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+RUN test -s /app/dist/main.js && node --check /app/dist/main.js
 
 EXPOSE 3003
 
