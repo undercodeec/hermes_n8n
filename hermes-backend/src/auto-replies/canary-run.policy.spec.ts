@@ -40,7 +40,7 @@ describe('explicit F3 Gemini run policy', () => {
     );
   });
 
-  it.each([
+  it.each<Record<string, string>>([
     { F3_CANARY_RUN_ID: 'not-a-uuid' },
     { F3_CANARY_RUN_START_UTC: '2026-10-25T15:00:01.000Z' },
     { F3_CANARY_RUN_DEADLINE_UTC: '2026-10-25T15:00:00.000Z' },

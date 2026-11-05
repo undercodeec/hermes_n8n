@@ -14,7 +14,7 @@ import { PriceListsController } from '../src/price-lists/price-lists.controller'
 import { PriceListsService } from '../src/price-lists/price-lists.service';
 
 describe('Price lists HTTP access (synthetic)', () => {
-  let app: INestApplication<App>;
+  let app: INestApplication;
   const secret = 'local-synthetic-test-secret';
   const jwt = new JwtService({ secret });
   const update = jest.fn().mockResolvedValue({ id: 'promo-1', isActive: true });
@@ -53,7 +53,7 @@ describe('Price lists HTTP access (synthetic)', () => {
         { provide: ConfigService, useValue: { getOrThrow: () => secret } },
       ],
     }).compile();
-    app = module.createNestApplication<App>();
+    app = module.createNestApplication();
     await app.init();
   });
 
@@ -75,7 +75,7 @@ describe('Price lists HTTP access (synthetic)', () => {
     );
 
   it('allows an ADMIN to activate with only isActive', async () => {
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as App)
       .put('/api/price-lists/promo-1')
       .auth(token('admin'), { type: 'bearer' })
       .send({ isActive: true })
@@ -84,7 +84,7 @@ describe('Price lists HTTP access (synthetic)', () => {
   });
 
   it('rejects a non-admin without invoking the service', async () => {
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as App)
       .put('/api/price-lists/promo-1')
       .auth(token('agent'), { type: 'bearer' })
       .send({ isActive: true })
@@ -93,12 +93,12 @@ describe('Price lists HTTP access (synthetic)', () => {
   });
 
   it('rejects invalid and expired tokens without invoking the service', async () => {
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as App)
       .put('/api/price-lists/promo-1')
       .auth('invalid-token', { type: 'bearer' })
       .send({ isActive: true })
       .expect(401);
-    await request(app.getHttpServer())
+    await request(app.getHttpServer() as App)
       .put('/api/price-lists/promo-1')
       .auth(token('admin', -1), { type: 'bearer' })
       .send({ isActive: true })

@@ -208,6 +208,7 @@ describe('F3 native diagnostics on isolated PostgreSQL', () => {
         post: nativePost,
       };
     const response = await service.generateResponse({
+      contactName: '',
       conversationId,
       canaryServiceWindowExpiresAt: new Date(
         Date.now() + 120_000,

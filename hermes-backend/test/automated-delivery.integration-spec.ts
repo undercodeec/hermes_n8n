@@ -203,6 +203,7 @@ describe('AutomatedDelivery PostgreSQL claims (integration)', () => {
   it('rechecks NEWER_INBOUND before each reply part', async () => {
     if (!prisma || !contactId)
       throw new Error('Integration fixture unavailable');
+    const fixtureContactId = contactId;
     const delivery = await prisma.automatedDelivery.findUniqueOrThrow({
       where: { id: deliveryId },
     });
@@ -222,7 +223,7 @@ describe('AutomatedDelivery PostgreSQL claims (integration)', () => {
       await prisma!.message.create({
         data: {
           conversationId: delivery.conversationId,
-          contactId,
+          contactId: fixtureContactId,
           direction: MessageDirection.INBOUND,
           sender: MessageSender.CONTACT,
           type: MessageType.TEXT,

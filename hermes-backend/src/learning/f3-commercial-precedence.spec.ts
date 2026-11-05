@@ -15,7 +15,7 @@ const context = {
 const row = (
   id: string,
   guidance: string,
-  riskLevel = LearningRiskLevel.LOW,
+  riskLevel: LearningRiskLevel = LearningRiskLevel.LOW,
 ) => ({
   id,
   version: 1,

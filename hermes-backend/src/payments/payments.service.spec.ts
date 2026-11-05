@@ -591,7 +591,7 @@ describe('transfer approval with attributed CONTRACT_WON', () => {
     };
     await payments.approve('transfer-1', decision, 'admin-1');
     expect(lead.stage).toBe(LeadStage.WON);
-    expect(transfer?.status).toBe(TransferPaymentStatus.APPROVED);
+    expect(transfer).toMatchObject({ status: TransferPaymentStatus.APPROVED });
     const won = conversions.get(`lead-1:${AdvertisingEventType.CONTRACT_WON}`)!;
     expect(won).toMatchObject({
       leadId: lead.id,

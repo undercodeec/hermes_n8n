@@ -31,7 +31,8 @@ describe('GoogleDataManagerService', () => {
           gclid: 'gclid',
           gbraid: null,
           wbraid: null,
-          adUserData: AdvertisingConsentChoice.GRANTED,
+          adUserData:
+            AdvertisingConsentChoice.GRANTED as AdvertisingConsentChoice,
           adPersonalization: AdvertisingConsentChoice.DENIED,
         },
       },
