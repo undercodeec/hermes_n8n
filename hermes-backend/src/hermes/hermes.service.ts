@@ -35,6 +35,11 @@ import {
 } from './f3-native-diagnostics';
 import { commercialSnapshotKnowledge } from './commercial-authority.service';
 import {
+  explicitSalutationPreference,
+  polishCustomerGreeting,
+  resolveCustomerSalutation,
+} from './customer-salutation';
+import {
   answerExplicitPriceIfMissing,
   reviewCommercialClaims,
   reconcileCommercialIntent,
@@ -137,7 +142,7 @@ export class HermesService {
   private readonly systemPrompt = `Eres Hermes, asesor comercial digital de Undercodeec por WhatsApp. Ofrecemos desarrollo web, aplicaciones móviles y software a medida.
 
 ## Conversación
-Hable con cercanía y profesionalidad, como parte del equipo comercial, sin afirmar que es una persona. Trate al cliente de usted de manera consistente. Use su nombre solo de forma natural al iniciar o cuando aporte cercanía; no lo repita en cada mensaje. Evite halagos automáticos, entusiasmo artificial y muletillas como «Perfecto», «excelente idea» o «negocio precioso» cuando no aporten información. No use fórmulas corporativas como «Bienvenido a Undercodeec»; ante un saludo, corresponda de forma natural y pregunte cómo podemos ayudarle.
+Hable con cercanía y profesionalidad, como parte del equipo comercial, sin afirmar que es una persona. Trate al cliente de usted de manera consistente. Use exclusivamente el tratamiento resuelto por el backend en el contexto del cliente: estimado o estimada solo si está autorizado; saludo neutral para empresas y nombres sin resolución. No infiera género por su cuenta ni lo pregunte. Use el tratamiento como máximo una vez al iniciar y no lo repita en cada mensaje. Evite halagos automáticos, entusiasmo artificial y muletillas como «Perfecto», «excelente idea» o «negocio precioso» cuando no aporten información. No use fórmulas corporativas como «Bienvenido a Undercodeec»; ante un saludo, corresponda de forma natural y pregunte cómo podemos ayudarle.
 
 El cliente puede tutear, usar voseo, regionalismos, abreviaturas o cometer errores ortográficos. Interprete su intención sin corregirlo ni restringir la conversación por su forma de expresarse. Mantenga usted el trato profesional de «usted».
 
@@ -256,8 +261,18 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     try {
       const businessContext = await this.loadBusinessContext(request);
       const contextParts: string[] = [];
-      if (request.contactName)
-        contextParts.push(`Cliente: ${request.contactName}`);
+      const salutation = resolveCustomerSalutation(
+        request.contactName,
+        explicitSalutationPreference([
+          ...request.conversationHistory
+            .filter((message) => message.role !== 'assistant')
+            .map((message) => message.content),
+          request.messageContent,
+        ]),
+      );
+      contextParts.push(
+        `Tratamiento autorizado: ${JSON.stringify(salutation)}`,
+      );
       if (request.leadStage)
         contextParts.push(`Etapa del lead: ${request.leadStage}`);
       if (request.productOfInterest)
@@ -2280,6 +2295,23 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         ? `${withoutRequest} Podemos continuar por este mismo chat.`
         : 'Podemos continuar por este mismo chat.';
     }
+    response.response = polishCustomerGreeting({
+      reply: response.response,
+      customerMessage: request.messageContent,
+      firstReply: !request.conversationHistory.some(
+        (message) => message.role === 'assistant',
+      ),
+      contactName: request.contactName,
+      salutation: resolveCustomerSalutation(
+        request.contactName,
+        explicitSalutationPreference([
+          ...request.conversationHistory
+            .filter((message) => message.role !== 'assistant')
+            .map((message) => message.content),
+          request.messageContent,
+        ]),
+      ),
+    });
     return response;
   }
 
@@ -2305,14 +2337,16 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         : message.startsWith('buenos dias')
           ? 'Buenos días'
           : 'Hola';
-    const firstName = request.contactName
-      ?.trim()
-      .match(/[\p{L}\p{M}'-]+/u)?.[0];
-    const usableName =
-      firstName && this.normalizeSearch(firstName) !== 'undercodeec'
-        ? firstName
-        : undefined;
-    return `${greeting}${usableName ? `, ${usableName}` : ''}. ¿En qué podemos ayudarle?`;
+    const salutation = resolveCustomerSalutation(
+      request.contactName,
+      explicitSalutationPreference([request.messageContent]),
+    );
+    const address = salutation.treatment
+      ? `, ${salutation.treatment}${salutation.firstName ? ` ${salutation.firstName}` : ''}`
+      : salutation.firstName
+        ? `, ${salutation.firstName}`
+        : '';
+    return `${greeting}${address}. ¿En qué podemos ayudarle?`;
   }
 
   private parseShortText(

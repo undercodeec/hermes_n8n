@@ -1184,7 +1184,9 @@ describe('HermesService commercial contract', () => {
     });
 
     expect(post).toHaveBeenCalledTimes(1);
-    expect(result.response).toBe('Buenos días. ¿En qué podemos ayudarle?');
+    expect(result.response).toBe(
+      'Buenos días, Christopher. ¿En qué podemos ayudarle?',
+    );
   });
 
   it('turns a generic first-contact service inquiry into a natural opening', async () => {
@@ -1228,7 +1230,7 @@ describe('HermesService commercial contract', () => {
     });
 
     expect(result.response).toBe(
-      'Con gusto le ayudamos con su sitio web. ¿A qué se dedica su negocio?',
+      'Hola, Christopher. Con gusto le ayudamos con su sitio web. ¿A qué se dedica su negocio?',
     );
   });
 

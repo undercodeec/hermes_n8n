@@ -465,6 +465,53 @@ describe('NousHermesTransport', () => {
     },
   );
 
+  it('sends a controlled treatment and corrects an unsupported Nous greeting in the first part', async () => {
+    post.mockResolvedValue({
+      data: {
+        model: 'hermes-agent',
+        choices: [
+          {
+            finish_reason: 'stop',
+            message: {
+              content: JSON.stringify({
+                replyParts: [
+                  'Hola, estimada Carlos. Con gusto le explico.',
+                  'Una web presenta sus servicios.',
+                  '¿A qué se dedica su negocio?',
+                ],
+              }),
+            },
+          },
+        ],
+      },
+    });
+    const input = baseInput({
+      customerMessage: 'Hola, quiero información de una web.',
+      approvedContext: {
+        ...baseInput().approvedContext,
+        contactName: 'Carlos Pérez',
+        recentMessages: [],
+      },
+    });
+    const result = await configuredTransport().execute(input);
+    expect(result.replyParts).toEqual([
+      'Hola, estimado Carlos. Con gusto le explico.',
+      'Una web presenta sus servicios.',
+      '¿A qué se dedica su negocio?',
+    ]);
+    expect(result.replyText).toBe(result.replyParts?.join(' '));
+    const request = post.mock.calls[0][1] as {
+      messages: Array<{ content: string }>;
+    };
+    const state = JSON.parse(request.messages.at(-1)!.content) as {
+      approvedState: { salutation: { kind: string; treatment: string } };
+    };
+    expect(state.approvedState.salutation).toMatchObject({
+      kind: 'MASCULINE',
+      treatment: 'estimado',
+    });
+  });
+
   it('presents a phone-based market as a fallback without treating it as project location', async () => {
     post.mockResolvedValue({
       data: {
