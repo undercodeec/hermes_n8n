@@ -117,4 +117,28 @@ describe('Black Friday landing recognition', () => {
     );
     expect(isGeneralBlackFridayInquiry('¿Qué me dan por los $80?')).toBe(false);
   });
+
+  it.each([
+    'hola quiero mas informacion de la promocion de $80.00',
+    'Quiero información de la promoción de $80',
+    'Quisiera saber más de Black Friday',
+    'Me interesa la página de ochenta dólares',
+    'Vi su promoción y quiero detalles',
+    'Quiero conocer la oferta completa',
+    'Quiero conocer la oferta completa de Black Friday',
+    'Hola quiero más información de $80.00',
+  ])('treats an explicit broad promotion request as general: %s', (message) => {
+    expect(isGeneralBlackFridayInquiry(message)).toBe(true);
+  });
+
+  it.each([
+    'Tengo un presupuesto de USD 80 para una landing',
+    '¿Incluye hosting la promoción de $80?',
+    '¿Cuánto tiempo de soporte tiene Black Friday?',
+    'Ahora necesito una tienda online',
+    '¿Cuánto cuesta Black Friday?',
+    '¿Cuál es el precio de Black Friday?',
+  ])('does not make a specific or unrelated request general: %s', (message) => {
+    expect(isGeneralBlackFridayInquiry(message)).toBe(false);
+  });
 });

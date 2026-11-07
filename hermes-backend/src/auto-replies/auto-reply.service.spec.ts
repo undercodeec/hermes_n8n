@@ -3335,7 +3335,7 @@ describe('AutoReplyService', () => {
     ).toContain('USD $80.00');
   });
 
-  it('joins short Nous replyParts for a general Black Friday enquiry without Meta attribution', async () => {
+  it('replaces short Nous replyParts with two approved Black Friday deliveries without Meta attribution', async () => {
     const promotion = approvedCampaignOffer();
     (authority.snapshot as jest.Mock).mockResolvedValueOnce({
       marketSource: 'UNKNOWN',
@@ -3366,9 +3366,74 @@ describe('AutoReplyService', () => {
     });
     expect(harness.engine.respond).toHaveBeenCalledTimes(1);
     const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
-    expect(parts).toHaveLength(1);
-    expect(parts[0].content).toMatch(/Black Friday.*USD 80/iu);
+    expect(parts).toHaveLength(2);
+    expect(parts[0].content).toMatch(/Black Friday por USD \$80/iu);
+    expect(
+      parts[0].content
+        .split('\n')
+        .filter((line: string) => /^[🎯🖥📱💬📝⭐🌍📧🔍🛠]/u.test(line)),
+    ).toHaveLength(10);
+    expect(parts[1].content).toMatch(/qué tipo de proyecto/iu);
   });
+
+  it.each([
+    ['gemini_direct', 'hola quiero mas informacion de la promocion de $80.00'],
+    ['nous_hermes', 'hola quiero mas informacion de la promocion de $80.00'],
+    ['gemini_direct', 'Hola quiero más información de $80.00'],
+    ['nous_hermes', 'Hola quiero más información de $80.00'],
+  ] as const)(
+    '%s prepares and sends two physical messages for %s',
+    async (engineId, customerRequest) => {
+      const promotion = approvedCampaignOffer();
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        market: CommercialMarket.EC,
+        marketSource: 'CURRENT',
+        relevantServiceCodes: ['LANDING_PAGE'],
+        offers: [promotion],
+        recommendedOfferId: promotion.id,
+        needsMarketClarification: false,
+      });
+      const harness = setupProcessHarness({
+        engineId,
+        conversationMetadata: { pilotEngine: engineId },
+        contactName: null,
+        inboundContent: customerRequest,
+        hermesResponse: {
+          response: 'La promoción cuesta USD 80. ¿A qué se dedica?',
+        },
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      expect(harness.engine.respond).toHaveBeenCalledTimes(1);
+      expect(harness.deliveries.prepareBatch).toHaveBeenCalledTimes(1);
+      const parts = harness.deliveries.prepareBatch.mock.calls[0][0]
+        .parts as Array<{ partIndex: number; content: string }>;
+      expect(parts).toHaveLength(2);
+      expect(parts.map((part) => part.partIndex)).toEqual([0, 1]);
+      expect(parts[0].content).toMatch(/Black Friday por USD \$80/u);
+      expect(parts[0].content).toContain('\n\n🎯');
+      expect(parts[0].content).toMatch(
+        /^(?:Buenos días|Buenas tardes|Buenas noches)\./u,
+      );
+      expect(
+        parts[0].content
+          .split('\n')
+          .filter((line) => /^[🎯🖥📱💬📝⭐🌍📧🔍🛠]/u.test(line)),
+      ).toHaveLength(10);
+      expect(parts[0].content).toContain(
+        '🛠️ *1 año de soporte técnico posterior a la entrega*',
+      );
+      expect(parts[0].content).not.toMatch(/IVA incluido/iu);
+      expect(parts[1].content).toBe(
+        'Cuénteme, por favor, ¿qué tipo de proyecto o solución tiene en mente?',
+      );
+      expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(2);
+      expect(harness.messageCreate).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it('presents an approved Black Friday offer on an organic first commercial reply', async () => {
     const campaign = approvedCampaignOffer();
@@ -3433,7 +3498,7 @@ describe('AutoReplyService', () => {
   });
 
   it.each(['gemini_direct', 'nous_hermes'] as const)(
-    '%s sends three named Black Friday parts for the observed EUR 80 Meta enquiry',
+    '%s sends two named Black Friday parts for the observed EUR 80 Meta enquiry',
     async (engineId) => {
       const promotion = {
         ...approvedCampaignOffer(),
@@ -3487,8 +3552,8 @@ describe('AutoReplyService', () => {
 
       const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
       expect(harness.engine.respond).toHaveBeenCalledTimes(1);
-      expect(parts).toHaveLength(3);
-      expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(3);
+      expect(parts).toHaveLength(2);
+      expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(2);
       expect(authority.snapshot).toHaveBeenCalledWith(
         expect.objectContaining({
           waId: '593991234567',
@@ -3503,14 +3568,18 @@ describe('AutoReplyService', () => {
       expect(answer).toMatch(/€\s*80(?:\.00)?/iu);
       expect(answer).not.toMatch(/USD|d[oó]lares|diferencia/i);
       expect(answer).toMatch(/\b(?:landing|página)\b/iu);
-      expect(parts[1].content).toMatch(/soporte técnico/iu);
-      expect(parts[1].content.match(/\n/gu) ?? []).toHaveLength(9);
-      expect(parts[2].content).toMatch(/¿[^?]+\?$/u);
+      expect(parts[0].content).toMatch(/soporte técnico/iu);
+      expect(
+        parts[0].content
+          .split('\n')
+          .filter((line: string) => /^[🎯🖥📱💬📝⭐🌍📧🔍🛠]/u.test(line)),
+      ).toHaveLength(10);
+      expect(parts[1].content).toMatch(/¿[^?]+\?$/u);
       expect(answer).not.toMatch(
         /Por lo que me comenta|puede cubrir la parte/iu,
       );
-      expect(parts[1].content).toContain('5 correos corporativos');
-      expect(answer.length).toBeLessThanOrEqual(420);
+      expect(parts[0].content).toContain('5 correos corporativos');
+      expect(answer.length).toBeLessThanOrEqual(1000);
       expect(answer.match(/\bYaupi\b/gu) ?? []).toHaveLength(1);
     },
   );
@@ -3551,7 +3620,7 @@ describe('AutoReplyService', () => {
       inboundMessageId: 'inbound-recovery',
     });
     const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
-    expect(parts).toHaveLength(3);
+    expect(parts).toHaveLength(2);
     expect(parts[0].content).toMatch(/€80\.00/iu);
     expect(parts[0].content).not.toMatch(/USD|d[oó]lares/iu);
     expect(parts[0].content).not.toMatch(/¿El proyecto sería/iu);
@@ -4001,22 +4070,28 @@ describe('AutoReplyService', () => {
       inboundMessageId: 'inbound-recovery',
     });
     const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
-    expect(parts).toHaveLength(3);
+    expect(parts).toHaveLength(2);
     expect(parts.map((part: { partIndex: number }) => part.partIndex)).toEqual([
-      0, 1, 2,
+      0, 1,
     ]);
-    expect(parts[0].content).toMatch(/promoción Black Friday/iu);
-    expect(parts[1].content.split('\n')).toHaveLength(10);
-    expect(parts[1].content).toContain('🎯 Captación de clientes potenciales');
-    expect(parts[1].content).toContain(
+    expect(parts[0].content).toMatch(/promoción \*Black Friday/iu);
+    expect(
+      parts[0].content
+        .split('\n')
+        .filter((line: string) => /^[🎯🖥📱💬📝⭐🌍📧🔍🛠]/u.test(line)),
+    ).toHaveLength(10);
+    expect(parts[0].content).toContain('🎯 Captación de clientes potenciales');
+    expect(parts[0].content).toContain(
       '🛠️ *1 año de soporte técnico posterior a la entrega*',
     );
-    expect(parts[1].content).not.toMatch(
+    expect(parts[0].content).not.toMatch(
       /carrito|ecommerce|pago en línea|\\|\*\*/iu,
     );
-    expect(parts[2].content).toBe('¿A qué se dedica su negocio?');
-    expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(3);
-    expect(harness.messageCreate).toHaveBeenCalledTimes(3);
+    expect(parts[1].content).toBe(
+      'Cuénteme, por favor, ¿qué tipo de proyecto o solución tiene en mente?',
+    );
+    expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(2);
+    expect(harness.messageCreate).toHaveBeenCalledTimes(2);
     expect(
       harness.messageCreate.mock.calls.map(
         (call: unknown[]) =>
@@ -4051,10 +4126,16 @@ describe('AutoReplyService', () => {
       inboundMessageId: 'inbound-recovery',
     });
     const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
-    expect(parts).toHaveLength(3);
-    expect(parts[1].content.split('\n')).toHaveLength(10);
-    expect(parts[2].content).toBe('¿A qué se dedica su negocio?');
-    expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(3);
+    expect(parts).toHaveLength(2);
+    expect(
+      parts[0].content
+        .split('\n')
+        .filter((line: string) => /^[🎯🖥📱💬📝⭐🌍📧🔍🛠]/u.test(line)),
+    ).toHaveLength(10);
+    expect(parts[1].content).toBe(
+      'Cuénteme, por favor, ¿qué tipo de proyecto o solución tiene en mente?',
+    );
+    expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(2);
   });
 
   it('keeps the authorized price when scope and price are requested together', async () => {
@@ -4085,10 +4166,14 @@ describe('AutoReplyService', () => {
       inboundMessageId: 'inbound-recovery',
     });
     const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
-    expect(parts).toHaveLength(3);
+    expect(parts).toHaveLength(2);
     expect(parts[0].content).toMatch(/USD.*80/iu);
-    expect(parts[1].content.split('\n')).toHaveLength(10);
-    expect(parts[1].content).toContain(
+    expect(
+      parts[0].content
+        .split('\n')
+        .filter((line: string) => /^[🎯🖥📱💬📝⭐🌍📧🔍🛠]/u.test(line)),
+    ).toHaveLength(10);
+    expect(parts[0].content).toContain(
       '🌍 Dominio .com y hosting básico por 1 año',
     );
   });
@@ -4123,13 +4208,16 @@ describe('AutoReplyService', () => {
       });
       const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
       expect(parts).toHaveLength(maxParts);
+      expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(maxParts);
       const delivered = parts
         .map((part: { content: string }) => part.content)
         .join('\n');
       expect(delivered).toContain(
         '🛠️ *1 año de soporte técnico posterior a la entrega*',
       );
-      expect(delivered).toContain('¿A qué se dedica su negocio?');
+      if (maxParts === 2)
+        expect(parts[1].content).toContain('¿qué tipo de proyecto');
+      else expect(parts[0].content).not.toMatch(/¿[^?]+\?/u);
       expect(
         harness.deliveries.recordSuppressedInference,
       ).not.toHaveBeenCalled();

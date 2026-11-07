@@ -40,6 +40,15 @@ export function recognizesBlackFridayLanding(
     if (/\b(?:presupuesto|tengo|dispongo|cuento con)\b.{0,35}\b80\b/.test(text))
       return false;
     return (
+      /\b(?:landing|pagina|web)\b.{0,45}\bochenta\b(?:\s+dolares)?\b/.test(
+        text,
+      ) ||
+      /\b(?:quiero|quisiera|me interesa|busco)\b.{0,30}\b(?:mas )?(?:informacion|detalles|saber mas)\b.{0,25}\b80\b/.test(
+        text,
+      ) ||
+      /\b(?:vi|quiero|me interesa|conocer)\b.{0,45}\b(?:promocion|oferta)\b.{0,45}\b(?:detalles|informacion|beneficios|caracteristicas|completa)\b/.test(
+        text,
+      ) ||
       /\b(?:landing|pagina|web|promocion|promo|oferta)\b.{0,45}\b80\b(?!\s+paginas?\b)/.test(
         text,
       ) ||
@@ -69,6 +78,13 @@ export function isGeneralBlackFridayInquiry(message: string): boolean {
     .toLocaleLowerCase('es')
     .normalize('NFD')
     .replace(/[\u0300-\u036f]/g, '');
+  if (
+    /\b(?:cuanto|precio|cuesta|costo|vale)\b/u.test(normalized) &&
+    !/\b(?:informacion|detalles|beneficios|caracteristicas|prestaciones|completa)\b/u.test(
+      normalized,
+    )
+  )
+    return false;
   return !/\b(?:incluye|incluido|que me dan|que viene|dominio|hosting|correos?|seo|soporte|whatsapp|formulario|que es|para que|captar|captacion|leads?|tienda online)\b/.test(
     normalized,
   );

@@ -1742,35 +1742,38 @@ export class AutoReplyService {
         offer.promotion &&
         offer.policyVersion === BLACK_FRIDAY_LANDING_POLICY_VERSION,
     );
-    const campaignOffer = campaignOffers.every(
-      (offer) => offer.scope === campaignOffers[0].scope,
-    )
-      ? campaignOffers[0]
-      : undefined;
+    // One selected, priced CRM offer is required for a single-currency pitch.
+    const campaignOffer =
+      campaignOffers.length === 1 &&
+      campaignOffers[0].priceType !== 'QUOTE_REQUIRED' &&
+      campaignOffers[0].amount &&
+      !commercialSnapshot.needsMarketClarification &&
+      !commercialSnapshot.needsCampaignTariffConfirmation &&
+      !commercialSnapshot.needsAdMarketConflictClarification
+        ? campaignOffers[0]
+        : undefined;
     const detailParts =
       !response.diagnostic &&
       !shouldHandoff &&
       !quoteCreated &&
       campaignOffer &&
-      (asksForBlackFridayDetails(customerMessage) ||
-        (priorityCampaignInquiry &&
-          Boolean(verifiedAdCampaign) &&
-          !/\b(?:cu[aá]nto|precio|cuesta|tienda|web|reservas?|pagos?|necesito|quiero (?:una?|vender))\b/iu.test(
-            customerMessage,
-          )))
+      (isGeneralBlackFridayInquiry(customerMessage) ||
+        asksForBlackFridayDetails(customerMessage) ||
+        (initialCampaignInquiry && Boolean(verifiedAdCampaign)))
         ? blackFridayDetailParts({
             offer: campaignOffer,
             profile: response.commercialProfile,
             recentMessages: context.recentMessages,
-            priceAnswer: priorityCampaignInquiry
-              ? this.polishInitialGreeting({
-                  reply: `${campaignOffer.name}: ${campaignOffer.currency === 'EUR' ? 'EUR €' : 'USD $'}${campaignOffer.amount}${campaignOffer.taxMode === 'INCLUDED' && campaignOffer.taxLabel ? `, ${campaignOffer.taxLabel} incluido` : ''}.`,
-                  ...greetingInput,
-                })
-              : policy.guidance.priceAnswerRequired
-                ? answerExplicitPriceIfMissing('', commercialSnapshot, true)
-                : undefined,
+            customerMessage,
             maxParts: Math.min(9, engineResult.f3CapsBudget?.maxParts ?? 9),
+            salutation: resolveCustomerSalutation(
+              greetingInput.contactName,
+              explicitSalutationPreference([
+                ...greetingInput.customerHistory,
+                greetingInput.customerMessage,
+              ]),
+            ),
+            firstReply: greetingInput.firstReply,
           })
         : undefined;
     const packageParts =
@@ -1890,14 +1893,18 @@ export class AutoReplyService {
         })
         ? greetedParts
         : [response.response]);
-    const messageParts = conversationalParts.flatMap((part) =>
-      splitWhatsAppMessage(
-        part,
-        detailParts || packageParts
-          ? 1000
-          : this.positiveInteger('AI_MESSAGE_SPLIT_THRESHOLD', 520),
-      ),
-    );
+    // Detail parts already passed the 1000-character bound and carry approved
+    // paragraph breaks. The generic splitter collapses consecutive newlines.
+    const messageParts =
+      detailParts ??
+      conversationalParts.flatMap((part) =>
+        splitWhatsAppMessage(
+          part,
+          packageParts
+            ? 1000
+            : this.positiveInteger('AI_MESSAGE_SPLIT_THRESHOLD', 520),
+        ),
+      );
     if (
       engineResult.f3CapsBudget &&
       (messageParts.length > engineResult.f3CapsBudget.maxParts ||
