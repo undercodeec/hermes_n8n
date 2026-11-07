@@ -542,7 +542,17 @@ export class PaymentsService {
       });
       return payment;
     });
-    if (!transfer) return false;
+    if (!transfer) {
+      // A recovery can arrive after the transfer left the open statuses.
+      // Its proof still owns this inbound message, so do not route it to AI.
+      const recorded = await this.prisma.transferPaymentProofMessage.findUnique(
+        {
+          where: { messageId },
+          select: { messageId: true },
+        },
+      );
+      if (!recorded) return false;
+    }
     await this.deliveries.prepareBatch({
       deliveryKind: 'SYSTEM_NOTICE',
       conversationId: message.conversationId,

@@ -80,6 +80,7 @@ describe('PaymentsService', () => {
   const prisma = {
     message: { findUnique: jest.fn() },
     transferPayment: { findUnique: jest.fn() },
+    transferPaymentProofMessage: { findUnique: jest.fn() },
     automatedDelivery: { findFirst: jest.fn() },
     $transaction: jest.fn((callback: (client: typeof tx) => unknown) =>
       callback(tx),
@@ -108,6 +109,9 @@ describe('PaymentsService', () => {
     (prisma.message.findUnique as jest.Mock).mockResolvedValue(message);
     tx.transferPayment.findFirst.mockResolvedValue(transfer);
     tx.transferPaymentProofMessage.findUnique.mockResolvedValue(null);
+    (
+      prisma.transferPaymentProofMessage.findUnique as jest.Mock
+    ).mockResolvedValue(null);
     tx.task.findFirst.mockResolvedValue(null);
     tx.transferPaymentProofMessage.upsert.mockResolvedValue({
       messageId: message.id,
@@ -136,6 +140,19 @@ describe('PaymentsService', () => {
     });
     expect(await service.detectProof(message.id)).toBe(true);
     expect(tx.transferPaymentProofMessage.upsert).not.toHaveBeenCalled();
+    expect(tx.task.create).not.toHaveBeenCalled();
+    expect(tx.auditLog.create).not.toHaveBeenCalled();
+  });
+
+  it('recognizes a previously recorded proof after the transfer leaves open statuses', async () => {
+    tx.transferPayment.findFirst.mockResolvedValue(null);
+    (
+      prisma.transferPaymentProofMessage.findUnique as jest.Mock
+    ).mockResolvedValue({
+      messageId: message.id,
+    });
+    expect(await service.detectProof(message.id)).toBe(true);
+    expect(deliveries.prepareBatch).toHaveBeenCalledTimes(1);
     expect(tx.task.create).not.toHaveBeenCalled();
     expect(tx.auditLog.create).not.toHaveBeenCalled();
   });
@@ -592,6 +609,12 @@ describe('transfer approval with attributed CONTRACT_WON', () => {
     await payments.approve('transfer-1', decision, 'admin-1');
     expect(lead.stage).toBe(LeadStage.WON);
     expect(transfer).toMatchObject({ status: TransferPaymentStatus.APPROVED });
+    await expect(
+      (webhook as any).processIncomingMessage(proofMessage, metaContact, true),
+    ).resolves.toBe('payment_proof');
+    expect(proofs.size).toBe(1);
+    expect(tasks).toHaveLength(1);
+    expect(messages.size).toBe(4);
     const won = conversions.get(`lead-1:${AdvertisingEventType.CONTRACT_WON}`)!;
     expect(won).toMatchObject({
       leadId: lead.id,
