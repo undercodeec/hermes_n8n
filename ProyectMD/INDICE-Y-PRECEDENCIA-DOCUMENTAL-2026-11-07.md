@@ -1,8 +1,23 @@
-# Hermes 2.0 — índice y precedencia documental (A7-BF17-R1, 7/11/2026)
+# Hermes 2.0 — índice y precedencia documental (A7-BF17-R4, 7/11/2026)
 
-Este índice incorpora el diagnóstico A7-BF17-R1 y conserva abajo los cortes A7-BF17 y A7-BF16 como antecedentes. La publicación de una imagen no acredita un despliegue. Los informes anteriores conservan su fecha y alcance originales.
+El corte vigente es la publicación GHCR A7-BF17-R4. Los cortes R3, R1, A7-BF17 y A7-BF16 conservan su fecha y alcance originales. La publicación de una imagen no acredita un despliegue ni resuelve los bloqueos productivos.
 
-## Corte vigente: A7-BF17-R1, 7/11/2026 16:48:36 UTC
+## Corte vigente: A7-BF17-R4, 7/11/2026
+
+**Dictamen:** `HERMES_A7_BF17_R4_GHCR_PUBLISHED`. **Documentación:** informes R3 y R4 consolidados en la rama documental del [PR #16](https://github.com/undercodeec/hermes_n8n/pull/16), basada en `main`; el PR sigue como borrador y no está fusionado. Consultar el [informe R4](HERMES_A7_BF17_R4_GHCR_PUBLICATION_REPORT_2026-11-07.md) y el [informe R3](HERMES_A7_BF17_R3_MERGE_REPORT_2026-11-07.md).
+
+| Tema | Estado y precedencia |
+| --- | --- |
+| Código piloto | [PR #17](https://github.com/undercodeec/hermes_n8n/pull/17) fusionado; commit `ca85b991db1651f5bf500f3fb8e9db95ba9d56f0`, tree `0f1b57434021587dd46347f03629ac9bac82122f`. Contiene Black Friday e Inbox. Las pruebas posteriores constan en R3. |
+| Imagen GHCR nueva | `ghcr.io/undercodeec/hermes-backend@sha256:c94fcecc47ee381b7a76f9a4fd07d1d4ed2aacdf19c812b3fc128c143b40123d`, publicada y verificada por el [run #42426065900](https://github.com/undercodeec/hermes_n8n/actions/runs/42426065900), `linux/amd64`, OCI revision `ca85b991db1651f5bf500f3fb8e9db95ba9d56f0`. Sustituye a A7-BF16 como candidata más reciente, sin invalidar su registro histórico. |
+| Producción | **Sin despliegue ni verificación VPS en R4.** La última evidencia productiva documentada en R1 señala un backend anterior. No inferir la identidad actual del contenedor a partir de GHCR. |
+| Bloqueos | `BACKUP_RESTORE_NOT_VERIFIED`; reconciliación de los 23 archivos Compose en `current.json`; tratamiento seguro del evento `FAILED`; evaluación de credenciales expuestas; nuevo preflight productivo y autorización independiente del despliegue. |
+
+## Corte anterior: A7-BF17-R3, 7/11/2026
+
+La integración del PR #17 y sus gates posteriores están descritos en [R3](HERMES_A7_BF17_R3_MERGE_REPORT_2026-11-07.md). El informe se copió sin cambios desde el [PR documental #18](https://github.com/undercodeec/hermes_n8n/pull/18) a la rama del PR #16 para consolidarlo con R4 sobre `main`. Ninguno de esos PR documentales se fusionó automáticamente.
+
+## Corte anterior: A7-BF17-R1, 7/11/2026 16:48:36 UTC
 
 **Dictamen:** `HERMES_A7_BF17_R1_ROOT_CAUSE_CONFIRMED`. **Documentación:** `DOCS_SYNC_PENDING` hasta verificar este índice y el [informe público A7-BF17-R1](HERMES_A7_BF17_R1_INCIDENT_DIAGNOSIS_2026-11-07.md) en el PR #16.
 
