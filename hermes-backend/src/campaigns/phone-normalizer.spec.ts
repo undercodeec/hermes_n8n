@@ -31,10 +31,20 @@ describe('normalizeWhatsAppId', () => {
   it('accepts international WhatsApp identifiers from Spain and Ecuador', () => {
     expect(normalizeWhatsAppId('34600111222')).toBe('34600111222');
     expect(normalizeWhatsAppId('593991234567')).toBe('593991234567');
+    expect(normalizeWhatsAppId('  +593991234567  ')).toBe('593991234567');
   });
 
   it('rejects malformed identifiers', () => {
     expect(normalizeWhatsAppId('34 600 111 222')).toBeNull();
     expect(normalizeWhatsAppId('invalid')).toBeNull();
+    expect(normalizeWhatsAppId(undefined)).toBeNull();
+    expect(normalizeWhatsAppId(null)).toBeNull();
+    expect(normalizeWhatsAppId(593991234567)).toBeNull();
+    expect(normalizeWhatsAppId(true)).toBeNull();
+    expect(normalizeWhatsAppId({ wa_id: '593991234567' })).toBeNull();
+    expect(normalizeWhatsAppId('')).toBeNull();
+    expect(normalizeWhatsAppId('   ')).toBeNull();
+    expect(normalizeWhatsAppId('0991234567')).toBeNull();
+    expect(normalizeWhatsAppId('0034593991234567')).toBeNull();
   });
 });

@@ -128,7 +128,7 @@ describe('WebhookService durable inbox', () => {
     expect(createMany).not.toHaveBeenCalled();
   });
 
-  it('ignores an inbound event without a phone_number_id', async () => {
+  it('durably stores an actionable event without a phone_number_id for quarantine', async () => {
     const createMany = jest.fn();
     const service = webhookWithDoubles({
       metaWebhookInbox: { createMany },
@@ -136,7 +136,15 @@ describe('WebhookService durable inbox', () => {
     const missingPhone = structuredClone(dto);
     missingPhone.entry[0].changes[0].value.metadata.phone_number_id = '';
     await service.acceptWebhook(missingPhone);
-    expect(createMany).not.toHaveBeenCalled();
+    expect(createMany).toHaveBeenCalledWith({
+      data: [
+        expect.objectContaining({
+          eventKey: 'message:wamid.synthetic',
+          payload: expect.objectContaining({ phoneNumberId: '' }),
+        }),
+      ],
+      skipDuplicates: true,
+    });
   });
 
   it('rechecks the phone number when recovering a durable inbox event', async () => {
@@ -179,7 +187,11 @@ describe('WebhookService durable inbox', () => {
     expect(process).not.toHaveBeenCalled();
     expect(updateMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ outcome: 'unauthorized_phone' }),
+        data: expect.objectContaining({
+          status: MetaWebhookInboxStatus.FAILED,
+          outcome: 'PERMANENT_INVALID_PAYLOAD:UNAUTHORIZED_PHONE',
+          leaseUntil: null,
+        }),
       }),
     );
   });

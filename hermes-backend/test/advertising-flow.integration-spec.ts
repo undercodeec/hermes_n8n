@@ -169,6 +169,7 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
     wamid: string,
     content: string,
     scan = true,
+    includeContact = true,
   ) {
     const dto: MetaWebhookDto = {
       object: 'whatsapp_business_account',
@@ -184,7 +185,11 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
                   display_phone_number: '',
                   phone_number_id: phoneId,
                 },
-                contacts: [{ wa_id: waId, profile: { name: 'Fixture' } }],
+                ...(includeContact
+                  ? {
+                      contacts: [{ wa_id: waId, profile: { name: 'Fixture' } }],
+                    }
+                  : {}),
                 messages: [
                   {
                     id: wamid,
@@ -233,6 +238,78 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
     return port;
   }
 
+  it('quarantines a signed malformed MESSAGE in PostgreSQL without retry or commercial effects', async () => {
+    const suffix = randomInt(100000, 999999).toString();
+    const wamid = `wamid.ads-h-invalid-${suffix}`;
+    const eventKey = `message:${wamid}`;
+    eventKeys.push(eventKey);
+    const message = {
+      id: wamid,
+      from_user_id: `synthetic-user-${suffix}`,
+      timestamp: '1',
+      type: 'text',
+      text: { body: 'texto sintético' },
+    };
+    const contact = {
+      user_id: `synthetic-user-${suffix}`,
+      profile: { name: 'Fixture' },
+    };
+    const dto = {
+      object: 'whatsapp_business_account',
+      entry: [
+        {
+          id: 'synthetic-account',
+          changes: [
+            {
+              field: 'messages',
+              value: {
+                messaging_product: 'whatsapp',
+                metadata: { phone_number_id: phoneId },
+                messages: [message],
+                contacts: [contact],
+              },
+            },
+          ],
+        },
+      ],
+    };
+    const raw = Buffer.from(JSON.stringify(dto));
+    const signature = `sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`;
+    await controller.receive(dto, raw, signature);
+    let row = await prisma.metaWebhookInbox.findUniqueOrThrow({
+      where: { eventKey },
+    });
+    for (
+      let attempt = 0;
+      attempt < 100 && row.status !== MetaWebhookInboxStatus.FAILED;
+      attempt++
+    ) {
+      await webhook.scan();
+      await wait(20);
+      row = await prisma.metaWebhookInbox.findUniqueOrThrow({
+        where: { eventKey },
+      });
+    }
+    expect(row.status).toBe(MetaWebhookInboxStatus.FAILED);
+    expect(row.outcome).toBe('PERMANENT_INVALID_PAYLOAD:MESSAGE_FROM_MISSING');
+    expect(row.leaseUntil).toBeNull();
+    expect(row.attempts).toBe(1);
+    expect(row.payload).toEqual({ message, contact, phoneNumberId: phoneId });
+    expect(await prisma.message.count({ where: { wamid } })).toBe(0);
+    expect(enqueue).not.toHaveBeenCalled();
+    // Even an accidentally expired lease cannot override the typed quarantine.
+    await prisma.metaWebhookInbox.update({
+      where: { id: row.id },
+      data: { leaseUntil: new Date(0) },
+    });
+    await Promise.all([webhook.scan(), webhook.scan()]);
+    row = await prisma.metaWebhookInbox.findUniqueOrThrow({
+      where: { eventKey },
+    });
+    expect(row.attempts).toBe(1);
+    expect(row.status).toBe(MetaWebhookInboxStatus.FAILED);
+  });
+
   it('rejects the ACK if the inbox write fails and processes a redelivery once', async () => {
     const suffix = randomInt(100000, 999999).toString();
     const waId = `593994${suffix}`;
@@ -265,6 +342,22 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
       await prisma.conversation.count({ where: { contact: { waId } } }),
     ).toBe(1);
     expect(await prisma.lead.count({ where: { contact: { waId } } })).toBe(1);
+  });
+
+  it('processes a signed valid MESSAGE without the optional contacts array', async () => {
+    const suffix = randomInt(100000, 999999).toString();
+    const waId = `593993${suffix}`;
+    const wamid = `wamid.ads-h-no-contact-${suffix}`;
+    waIds.push(waId);
+    const row = await receive(waId, wamid, 'Hola', true, false);
+    expect(row.status).toBe(MetaWebhookInboxStatus.COMPLETED);
+    expect(row.payload).toMatchObject({
+      contact: { wa_id: waId, profile: { name: '' } },
+    });
+    expect(await prisma.message.count({ where: { wamid } })).toBe(1);
+    expect(await prisma.contact.count({ where: { waId } })).toBe(1);
+    expect(await prisma.lead.count({ where: { contact: { waId } } })).toBe(1);
+    expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
   it('keeps one message, conversation, lead, claim and milestone across replays and a second contact', async () => {
@@ -377,7 +470,7 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
         where: { eventKey: `message:${wamid}` },
       });
       expect(failed.status).toBe(MetaWebhookInboxStatus.FAILED);
-      expect(failed.outcome).toBe('attribution_retry');
+      expect(failed.outcome).toBe('RETRYABLE_ATTRIBUTION_ERROR');
       expect(await prisma.message.count({ where: { wamid } })).toBe(1);
       expect(
         (

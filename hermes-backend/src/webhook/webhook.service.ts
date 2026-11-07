@@ -29,10 +29,14 @@ import {
 } from './undercode-pilot';
 import { requestsCommercialContact } from '../hermes/commercial-policy.service';
 import {
+  isRecord,
+  validateInboxMessage,
+  validateInboxStatus,
+} from './webhook-inbox-validation';
+import {
   MetaWebhookDto,
   MetaWebhookMessage,
   MetaWebhookContact,
-  MetaWebhookStatus,
 } from './dto/meta-webhook.dto';
 import {
   ConversationStatus,
@@ -44,6 +48,20 @@ import {
   MetaWebhookInboxStatus,
   Prisma,
 } from '@prisma/client';
+
+const RETRYABLE_INBOX_OUTCOMES = [
+  'RETRYABLE_PROCESSING_ERROR',
+  'RETRYABLE_ATTRIBUTION_ERROR',
+  // Preserve recovery of rows written by the deployed version.
+  'processing_error',
+  'attribution_retry',
+];
+
+class PermanentInvalidPayloadError extends Error {
+  constructor(readonly reason: string) {
+    super(`PERMANENT_INVALID_PAYLOAD:${reason}`);
+  }
+}
 
 @Injectable()
 export class WebhookService implements OnModuleInit, OnModuleDestroy {
@@ -79,44 +97,119 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
 
   /** A signed callback is acknowledged only after every actionable event is durable. */
   async acceptWebhook(dto: MetaWebhookDto): Promise<void> {
-    if (dto.object !== 'whatsapp_business_account') return;
+    if (!isRecord(dto) || dto.object !== 'whatsapp_business_account') return;
     const events: Prisma.MetaWebhookInboxCreateManyInput[] = [];
-    for (const entry of dto.entry || []) {
-      for (const change of entry.changes || []) {
-        if (change.field !== 'messages') continue;
-        if (!this.isAuthorizedPhone(change.value.metadata?.phone_number_id))
+    const malformed = (scope: string) => {
+      const hash = crypto
+        .createHash('sha256')
+        .update(JSON.stringify({ scope, webhook: dto }))
+        .digest('hex');
+      events.push({
+        eventKey: `invalid-envelope:${hash}`,
+        eventType: 'INVALID_ENVELOPE',
+        payload: { scope, webhook: dto } as unknown as Prisma.InputJsonValue,
+      });
+    };
+    if (!Array.isArray(dto.entry)) {
+      malformed('entry');
+    } else
+      for (const [entryIndex, entry] of dto.entry.entries()) {
+        if (!isRecord(entry) || !Array.isArray(entry.changes)) {
+          malformed(`entry:${entryIndex}`);
           continue;
-        const { messages, contacts, statuses } = change.value;
-        for (const message of messages || []) {
-          const contact = contacts?.find(
-            (candidate) => candidate.wa_id === message.from,
-          ) || { wa_id: message.from, profile: { name: '' } };
-          events.push({
-            eventKey: `message:${message.id}`,
-            eventType: 'MESSAGE',
-            payload: {
-              message,
-              contact,
-              phoneNumberId: change.value.metadata?.phone_number_id,
-            } as unknown as Prisma.InputJsonValue,
-          });
         }
-        for (const status of statuses || []) {
-          const hash = crypto
-            .createHash('sha256')
-            .update(JSON.stringify(status))
-            .digest('hex');
-          events.push({
-            eventKey: `status:${hash}`,
-            eventType: 'STATUS',
-            payload: {
-              status,
-              phoneNumberId: change.value.metadata?.phone_number_id,
-            } as unknown as Prisma.InputJsonValue,
-          });
+        for (const [changeIndex, change] of entry.changes.entries()) {
+          if (!isRecord(change)) {
+            malformed(`entry:${entryIndex}:change:${changeIndex}`);
+            continue;
+          }
+          if (change.field !== 'messages') continue;
+          if (!isRecord(change.value)) {
+            malformed(`entry:${entryIndex}:change:${changeIndex}:value`);
+            continue;
+          }
+          const value = change.value;
+          const phoneNumberId = isRecord(value.metadata)
+            ? value.metadata.phone_number_id
+            : undefined;
+          const configuredPhone = this.configuredPhoneNumberId();
+          if (
+            typeof phoneNumberId === 'string' &&
+            phoneNumberId.trim() &&
+            phoneNumberId !== configuredPhone
+          )
+            continue;
+          const { messages, contacts, statuses } = value;
+          if (messages !== undefined && !Array.isArray(messages))
+            malformed(`entry:${entryIndex}:change:${changeIndex}:messages`);
+          if (statuses !== undefined && !Array.isArray(statuses))
+            malformed(`entry:${entryIndex}:change:${changeIndex}:statuses`);
+          for (const [messageIndex, message] of (Array.isArray(messages)
+            ? messages
+            : []
+          ).entries()) {
+            const candidates = Array.isArray(contacts) ? contacts : [];
+            const sender = isRecord(message) ? message.from : undefined;
+            const matched = candidates.find(
+              (candidate) =>
+                isRecord(candidate) &&
+                typeof sender === 'string' &&
+                candidate.wa_id === sender,
+            );
+            // Meta may omit contacts. Only its validated sender may supply a
+            // minimal contact; a supplied but incompatible contact is evidence.
+            const contact =
+              matched ??
+              (candidates.length === 0 &&
+              (contacts === undefined || Array.isArray(contacts)) &&
+              normalizeWhatsAppId(sender)
+                ? { wa_id: sender, profile: { name: '' } }
+                : candidates.length === 1
+                  ? candidates[0]
+                  : null);
+            const id = isRecord(message) ? message.id : undefined;
+            const eventKey =
+              typeof id === 'string' && id.trim()
+                ? `message:${id}`
+                : `message:sha256:${crypto
+                    .createHash('sha256')
+                    .update(
+                      JSON.stringify({
+                        entryIndex,
+                        changeIndex,
+                        messageIndex,
+                        phoneNumberId,
+                        message,
+                      }),
+                    )
+                    .digest('hex')}`;
+            events.push({
+              eventKey,
+              eventType: 'MESSAGE',
+              payload: {
+                message,
+                contact,
+                phoneNumberId,
+              } as unknown as Prisma.InputJsonValue,
+            });
+          }
+          for (const status of Array.isArray(statuses) ? statuses : []) {
+            const rawStatus = status ?? null;
+            const hash = crypto
+              .createHash('sha256')
+              .update(JSON.stringify(rawStatus))
+              .digest('hex');
+            events.push({
+              eventKey: `status:${hash}`,
+              eventType: 'STATUS',
+              payload: {
+                status: rawStatus,
+                phoneNumberId,
+              } as unknown as Prisma.InputJsonValue,
+            });
+          }
         }
       }
-    }
     if (events.length) {
       await this.prisma.metaWebhookInbox.createMany({
         data: events,
@@ -135,7 +228,11 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
         where: {
           OR: [
             { status: MetaWebhookInboxStatus.PENDING },
-            { status: MetaWebhookInboxStatus.FAILED, leaseUntil: { lte: now } },
+            {
+              status: MetaWebhookInboxStatus.FAILED,
+              outcome: { in: RETRYABLE_INBOX_OUTCOMES },
+              leaseUntil: { lte: now },
+            },
             {
               status: MetaWebhookInboxStatus.PROCESSING,
               leaseUntil: { lte: now },
@@ -151,6 +248,9 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
           where: {
             id: event.id,
             status: event.status,
+            ...(event.status === MetaWebhookInboxStatus.FAILED
+              ? { outcome: { in: RETRYABLE_INBOX_OUTCOMES } }
+              : {}),
             ...(event.status === MetaWebhookInboxStatus.PENDING
               ? {}
               : { leaseUntil: { lte: now } }),
@@ -164,27 +264,29 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
         });
         if (!claimed.count) continue;
         try {
-          const payload = event.payload as {
-            message?: MetaWebhookMessage;
-            contact?: MetaWebhookContact | null;
-            status?: MetaWebhookStatus;
-            phoneNumberId?: string;
-          };
           let outcome = 'processed';
-          if (!this.isAuthorizedPhone(payload.phoneNumberId)) {
-            outcome = 'unauthorized_phone';
-          } else if (event.eventType === 'MESSAGE') {
-            outcome =
-              payload.message && payload.contact
-                ? await this.processIncomingMessage(
-                    payload.message,
-                    payload.contact,
-                    event.outcome === 'processing_error' ||
-                      event.status === MetaWebhookInboxStatus.PROCESSING,
-                  )
-                : 'missing_contact';
-          } else if (event.eventType === 'STATUS' && payload.status) {
-            await this.processStatuses([payload.status]);
+          if (event.eventType === 'MESSAGE') {
+            const checked = validateInboxMessage(event.payload);
+            if (!checked.value)
+              throw new PermanentInvalidPayloadError(checked.reason);
+            if (!this.isAuthorizedPhone(checked.value.phoneNumberId))
+              throw new PermanentInvalidPayloadError('UNAUTHORIZED_PHONE');
+            outcome = await this.processIncomingMessage(
+              checked.value.message,
+              checked.value.contact,
+              event.outcome === 'processing_error' ||
+                event.outcome === 'RETRYABLE_PROCESSING_ERROR' ||
+                event.status === MetaWebhookInboxStatus.PROCESSING,
+            );
+          } else if (event.eventType === 'STATUS') {
+            const checked = validateInboxStatus(event.payload);
+            if (!checked.value)
+              throw new PermanentInvalidPayloadError(checked.reason);
+            if (!this.isAuthorizedPhone(checked.value.phoneNumberId))
+              throw new PermanentInvalidPayloadError('UNAUTHORIZED_PHONE');
+            await this.processStatuses([checked.value.status]);
+          } else {
+            throw new PermanentInvalidPayloadError('EVENT_TYPE_INVALID');
           }
           await this.prisma.metaWebhookInbox.updateMany({
             where: { id: event.id, claimToken },
@@ -192,7 +294,7 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
               outcome === 'retry'
                 ? {
                     status: MetaWebhookInboxStatus.FAILED,
-                    outcome: 'attribution_retry',
+                    outcome: 'RETRYABLE_ATTRIBUTION_ERROR',
                     claimToken: null,
                     leaseUntil: new Date(Date.now() + 5000),
                   }
@@ -204,19 +306,29 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
                   },
           });
         } catch (error) {
-          this.logger.warn(
-            `Webhook inbox processing failed: ${error instanceof Error ? error.message : String(error)}`,
-          );
+          const permanent = error instanceof PermanentInvalidPayloadError;
+          if (permanent)
+            this.logger.error(
+              `Webhook inbox quarantined: ${event.id} ${error.reason}`,
+            );
+          else
+            this.logger.warn(
+              `Webhook inbox processing failed: ${event.id} ${error instanceof Error ? error.name : typeof error}`,
+            );
           await this.prisma.metaWebhookInbox.updateMany({
             where: { id: event.id, claimToken },
             data: {
               status: MetaWebhookInboxStatus.FAILED,
-              outcome: 'processing_error',
+              outcome: permanent
+                ? `PERMANENT_INVALID_PAYLOAD:${error.reason}`
+                : 'RETRYABLE_PROCESSING_ERROR',
               claimToken: null,
-              leaseUntil: new Date(
-                Date.now() +
-                  Math.min(60_000, 5000 * Math.max(1, event.attempts + 1)),
-              ),
+              leaseUntil: permanent
+                ? null
+                : new Date(
+                    Date.now() +
+                      Math.min(60_000, 5000 * Math.max(1, event.attempts + 1)),
+                  ),
             },
           });
         }
@@ -334,6 +446,14 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
     metaContact: MetaWebhookContact,
     resumeCommercial = false,
   ): Promise<string> {
+    const checked = validateInboxMessage({
+      message,
+      contact: metaContact,
+      phoneNumberId: 'direct-processing',
+    });
+    if (!checked.value) throw new PermanentInvalidPayloadError(checked.reason);
+    message = checked.value.message;
+    metaContact = checked.value.contact;
     try {
       const alreadyProcessed = await this.prisma.message.findUnique({
         where: { wamid: message.id },
@@ -650,7 +770,7 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
    */
   private async upsertContact(metaContact: MetaWebhookContact) {
     const waId = normalizeWhatsAppId(metaContact.wa_id);
-    if (!waId) throw new Error('Meta envió un wa_id inválido');
+    if (!waId) throw new PermanentInvalidPayloadError('CONTACT_WA_ID_INVALID');
     return this.prisma.contact.upsert({
       where: { waId },
       update: {
@@ -782,6 +902,13 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
   }
 
   private isAuthorizedPhone(inboundId?: string): boolean {
+    const configured = this.configuredPhoneNumberId();
+    if (inboundId === configured) return true;
+    this.logger.warn('Webhook ignored for a different phone_number_id');
+    return false;
+  }
+
+  private configuredPhoneNumberId(): string {
     const configured = this.configService
       .get<string>('META_PHONE_NUMBER_ID', '')
       ?.trim();
@@ -790,9 +917,7 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
         'META_PHONE_NUMBER_ID is required for the WhatsApp pilot',
       );
     }
-    if (inboundId === configured) return true;
-    this.logger.warn('Webhook ignored for a different phone_number_id');
-    return false;
+    return configured;
   }
 
   /**

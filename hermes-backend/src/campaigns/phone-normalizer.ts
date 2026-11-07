@@ -20,7 +20,8 @@ export function normalizeE164Phone(value: string): string | null {
 }
 
 /** Meta ya entrega `wa_id` en formato internacional, sin el signo +. */
-export function normalizeWhatsAppId(value: string): string | null {
+export function normalizeWhatsAppId(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
   const digits = value.trim().replace(/^\+/, '');
   return /^[1-9]\d{7,14}$/.test(digits) ? digits : null;
 }
