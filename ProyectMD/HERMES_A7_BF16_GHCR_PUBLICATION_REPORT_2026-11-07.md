@@ -1,6 +1,6 @@
 # Hermes 2.0 — A7-BF16: publicación GHCR y sincronización documental
 
-**Dictamen:** `HERMES_A7_BF16_GHCR_PUBLISHED_DOCS_SYNCED` una vez abierto el PR documental y comprobados los enlaces indicados abajo. **Fecha:** 7/11/2026. **Alcance:** publicación de imagen e informe; sin despliegue ni cambios comerciales.
+**Dictamen:** `HERMES_A7_BF16_GHCR_PUBLISHED_DOCS_SYNCED`. **Fecha:** 7/11/2026. **Alcance:** publicación de imagen e informe; sin despliegue ni cambios comerciales.
 
 ## A. Identidades y resultado GHCR
 
@@ -42,7 +42,7 @@ La rama `docs/hermes-a7-bf16-20261107` parte del HEAD remoto de `main`, sin modi
 2. [A7-BF16: publicación GHCR y handoff](HERMES_A7_BF16_GHCR_PUBLICATION_REPORT_2026-11-07.md).
 3. [Índice y precedencia documental](INDICE-Y-PRECEDENCIA-DOCUMENTAL-2026-11-07.md).
 
-**PR documental:** por registrar al abrirlo. **Commit documental inicial:** por registrar tras el primer commit. Las referencias definitivas a estos archivos son las de la rama y el PR, hasta que este último sea revisado y fusionado.
+**PR documental:** [#16](https://github.com/undercodeec/hermes_n8n/pull/16), abierto como borrador hacia `main` y pendiente de revisión de seguridad documental. **Commit documental inicial de los tres informes:** [`8befa0b4824677f8a6c2dff7a0cd12d3b0f93e7c`](https://github.com/undercodeec/hermes_n8n/commit/8befa0b4824677f8a6c2dff7a0cd12d3b0f93e7c). Esta actualización del informe se encuentra en el historial posterior del mismo PR. Las rutas remotas consultables son [A7-BF15](https://github.com/undercodeec/hermes_n8n/blob/docs/hermes-a7-bf16-20261107/ProyectMD/HERMES_A7_BF15_MERGE_REPORT_2026-11-07.md), [A7-BF16](https://github.com/undercodeec/hermes_n8n/blob/docs/hermes-a7-bf16-20261107/ProyectMD/HERMES_A7_BF16_GHCR_PUBLICATION_REPORT_2026-11-07.md) y el [índice](https://github.com/undercodeec/hermes_n8n/blob/docs/hermes-a7-bf16-20261107/ProyectMD/INDICE-Y-PRECEDENCIA-DOCUMENTAL-2026-11-07.md).
 
 El [informe Black Friday](https://github.com/undercodeec/hermes_n8n/blob/pilot/a7-d12-monitor-only-20261026/ProyectMD/HERMES_BLACK_FRIDAY_CONVERSATION_FIX_2026-11-07.md) ya se incorporó en el PR #15 y no se duplicó. El [PR #14](https://github.com/undercodeec/hermes_n8n/pull/14) permanece como borrador abierto, sin fusión: su diagnóstico de corrección pendiente es histórico desde el merge #15; el inventario y la evidencia productiva del 5/11 conservan utilidad con su fecha original.
 
