@@ -1,6 +1,22 @@
-# Hermes 2.0 — índice y precedencia documental (A7-BF16, 7/11/2026)
+# Hermes 2.0 — índice y precedencia documental (A7-BF17, 7/11/2026)
 
-Este índice identifica el estado comprobado en A7-BF16. La publicación de una imagen no acredita un despliegue. Los informes anteriores conservan su fecha y alcance originales.
+Este índice incorpora el preflight productivo A7-BF17 y conserva abajo el corte A7-BF16 como antecedente. La publicación de una imagen no acredita un despliegue. Los informes anteriores conservan su fecha y alcance originales.
+
+## Corte vigente: A7-BF17, 7/11/2026 16:23:38 UTC
+
+**Dictamen:** `HERMES_A7_BF17_PRODUCTION_BLOCKED`. **Documentación:** `DOCS_SYNC_PENDING` hasta verificar ambos archivos en el PR #16. Consultar el [informe público A7-BF17](HERMES_A7_BF17_PRODUCTION_PREFLIGHT_2026-11-07.md).
+
+| Tema | Estado verificado en VPS |
+| --- | --- |
+| Backend servido | `hermes-app`, commit/OCI `88e9712fd6e16a730fcfd00acee10a25e84a429b`, imagen `ghcr.io/undercodeec/hermes-backend@sha256:f669a608d0739fdfbdd687d83c0617208cd24be715365a4e10dae34241c3b730`, sin reemplazo observado desde el 5/11. |
+| Candidata y rollback de A7-BF18 | Candidata GHCR `sha256:959e80a4a6cfd8d65a33e38f7d52f9366a70a2b4fd8c526727cfa4955dce676b`, aún sin desplegar; rollback natural: imagen servida `f669a608…`, disponible localmente y en GHCR. |
+| Infraestructura | PostgreSQL 16.14 y Redis responden; 27 migraciones aplicadas, 0 fallidas; 0 trabajos Nous en espera/activos; ledger con 0 `PREPARED`, 0 `AMBIGUOUS`, 85 `CONFIRMED` y 4 `SUPPRESSED`. |
+| CRM | Promoción Black Friday GLOBAL/USD 80 activa, diez prestaciones, 12 meses de soporte, `taxMode=NULL`; inventario 1 Product, 2 PriceLists, 0 tarifas EC. A/B no aplicadas. |
+| Bloqueos | Un evento de inbox `FAILED` sigue reclamado y reintentándose con miles de intentos; `WebhookService.trim` continúa frecuente. `BACKUP_RESTORE_NOT_VERIFIED`. `current.json` omite el último override Compose aunque su imagen/commit/ID coinciden con Docker. |
+
+No solicitar todavía autorización de despliegue A7-BF18. Resolver el ciclo del inbox, validar backup/restauración, reconciliar la cadena Compose y repetir el preflight. El despliegue y toda prueba WhatsApp real requieren autorización separada.
+
+## Corte anterior: A7-BF16
 
 ## Estado y precedencia
 
@@ -35,4 +51,4 @@ El corte A7-D27 del 29/10 (`e673417b9f2fa959959c5e0a75fad1d08d006388`) y R6 del 
 
 Siguen abiertos el preflight productivo, la confirmación de la oferta Black Friday activa (USD 80, diez prestaciones y soporte realmente almacenado), los mantenimientos comerciales A/B aún sin aplicar, la comprobación de backup/restauración y la vigilancia del error histórico de `WebhookService.trim`. Ninguna decisión comercial autoriza escrituras en CRM durante A7-BF16.
 
-La siguiente operación autorizable es **`HERMES_A7_BF17_PRODUCTION_PREFLIGHT`**, de solo lectura, por Codex VPS. Debe verificar imagen servida, rollback, infraestructura, colas, entregas y flags efectivos antes de proponer cualquier despliegue. El [informe A7-BF16](HERMES_A7_BF16_GHCR_PUBLICATION_REPORT_2026-11-07.md) contiene el handoff.
+En el corte A7-BF16, la siguiente operación era **`HERMES_A7_BF17_PRODUCTION_PREFLIGHT`**, de solo lectura, por Codex VPS. Su resultado figura en el informe A7-BF17 enlazado arriba. El [informe A7-BF16](HERMES_A7_BF16_GHCR_PUBLICATION_REPORT_2026-11-07.md) conserva el handoff histórico.
