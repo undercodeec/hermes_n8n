@@ -1,5 +1,9 @@
 import type { AuthorizedOffer } from '../hermes/commercial-authority.service';
 import type { CommercialProfile } from '../hermes/dto/hermes-request.dto';
+import type { CustomerSalutation } from '../hermes/customer-salutation';
+
+// Initial Ecuador bands, deliberately independent of the server's time zone.
+export const BLACK_FRIDAY_GREETING_TIME_ZONE = 'America/Guayaquil';
 
 const icons = ['🎯', '🖥️', '📱', '💬', '📝', '⭐', '🌍', '📧', '🔍', '🛠️'];
 const canonicalScope: { pattern: RegExp; label: string }[] = [
@@ -51,7 +55,7 @@ export function asksForBlackFridayDetails(message: string): boolean {
     !/\b(?:todas?|complet[oa]s?|prestaciones|caracteristicas)\b/u.test(text)
   )
     return false;
-  return /\b(?:que incluye|que trae|que viene|cuales son (?:las )?(?:prestaciones|caracteristicas)|todas? las prestaciones|detalle completo)\b/u.test(
+  return /\b(?:que incluye|que trae|que viene|cuales son (?:las |los )?(?:prestaciones|caracteristicas|beneficios)|(?:me )?comparte (?:las |los )?(?:prestaciones|caracteristicas|beneficios)|todas? las prestaciones|detalle completo)\b/u.test(
     text,
   );
 }
@@ -85,38 +89,100 @@ function supportLabel(item: string): string {
 function followupQuestion(
   profile: CommercialProfile | undefined,
   recentMessages: { role: string; content: string }[],
+  customerMessage = '',
 ): string | undefined {
+  const askedProject = recentMessages.some(
+    (message) =>
+      message.role === 'assistant' &&
+      /¿(?:a que se dedica|cual es su negocio|que hace su negocio|que tipo de proyecto)/iu.test(
+        normalize(message.content),
+      ),
+  );
+  const askedSpecific = recentMessages.some(
+    (message) =>
+      message.role === 'assistant' &&
+      /¿(?:le gustaria destacar sus servicios de|que objetivo desea priorizar)/iu.test(
+        normalize(message.content),
+      ),
+  );
   const business = profile?.sector || profile?.company || profile?.service;
   if (
     business &&
     !/^(?:landing|landing.page|sitio web|pagina web)$/iu.test(business.trim())
   )
-    return recentMessages.some(
-      (message) =>
-        message.role === 'assistant' &&
-        /le gustar[ií]a destacar sus servicios de/iu.test(message.content),
-    )
+    return askedSpecific
       ? undefined
       : `¿Le gustaría destacar sus servicios de ${business.trim()} o facilitar las consultas por WhatsApp?`;
-  const alreadyAsked = recentMessages.some(
-    (message) =>
-      message.role === 'assistant' &&
-      /¿(?:a qu[eé] se dedica|cu[aá]l es su negocio|qu[eé] hace su negocio)/iu.test(
-        message.content,
-      ),
-  );
-  return alreadyAsked ? undefined : '¿A qué se dedica su negocio?';
+  if (
+    /\b(?:para mi|para nuestro|mi negocio es|mi empresa es|me dedico a)\s+[a-z]{3,}/u.test(
+      normalize(customerMessage),
+    )
+  )
+    return askedSpecific
+      ? undefined
+      : '¿Qué objetivo desea priorizar con la landing page?';
+  return askedProject
+    ? undefined
+    : 'Cuénteme, por favor, ¿qué tipo de proyecto o solución tiene en mente?';
+}
+
+function localGreeting(
+  now: Date,
+  timeZone: string,
+  salutation?: CustomerSalutation,
+  firstReply = true,
+  customerMessage = '',
+): string {
+  if (
+    !firstReply &&
+    !/^(?:hola|buenos dias|buenas tardes|buenas noches|buen dia|buenas)\b/u.test(
+      normalize(customerMessage.trim()),
+    )
+  )
+    return '';
+  let hour: number;
+  try {
+    const part = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hour: '2-digit',
+      hourCycle: 'h23',
+    })
+      .formatToParts(now)
+      .find((item) => item.type === 'hour');
+    hour = Number(part?.value);
+  } catch {
+    return localGreeting(
+      now,
+      BLACK_FRIDAY_GREETING_TIME_ZONE,
+      salutation,
+      firstReply,
+      customerMessage,
+    );
+  }
+  const opening =
+    hour < 12 ? 'Buenos días' : hour < 19 ? 'Buenas tardes' : 'Buenas noches';
+  const address =
+    firstReply && salutation?.treatment
+      ? `, ${salutation.treatment}${salutation.firstName ? ` ${salutation.firstName}` : ''}`
+      : firstReply && salutation?.firstName
+        ? `, ${salutation.firstName}`
+        : '';
+  return `${opening}${address}.`;
 }
 
 export function blackFridayDetailParts(input: {
   offer: AuthorizedOffer;
   profile?: CommercialProfile;
   recentMessages: { role: string; content: string }[];
-  priceAnswer?: string;
   maxParts: number;
+  now?: Date;
+  timeZone?: string;
+  salutation?: CustomerSalutation;
+  firstReply?: boolean;
+  customerMessage?: string;
 }): string[] | undefined {
   const items = blackFridayScopeItems(input.offer);
-  if (!items) return undefined;
+  if (!items || !input.offer.amount || input.maxParts < 1) return undefined;
   const list = items
     .map((item, index) => {
       const label =
@@ -128,16 +194,25 @@ export function blackFridayDetailParts(input: {
       return `${icons[index]} ${label}`;
     })
     .join('\n');
-  const intro =
-    input.priceAnswer?.trim() ||
-    'Claro. Estas son las prestaciones de la promoción Black Friday:';
-  const question = followupQuestion(input.profile, input.recentMessages);
+  const price = `${input.offer.currency === 'EUR' ? 'EUR €' : 'USD $'}${input.offer.currency === 'EUR' ? input.offer.amount : input.offer.amount.replace(/\.00$/u, '')}`;
+  const greeting = localGreeting(
+    input.now ?? new Date(),
+    input.timeZone ?? BLACK_FRIDAY_GREETING_TIME_ZONE,
+    input.salutation,
+    input.firstReply,
+    input.customerMessage,
+  );
+  const opening = greeting ? `${greeting} ` : '';
+  const description = greeting ? 'la información' : 'los detalles';
+  const intro = `${opening}Con gusto le comparto ${description} de nuestra promoción *Black Friday por ${price}*.`;
+  const question = followupQuestion(
+    input.profile,
+    input.recentMessages,
+    input.customerMessage,
+  );
+  const information = `${intro}\n\n${list}`;
   const parts =
-    input.maxParts >= 3 && question
-      ? [intro, list, question]
-      : input.maxParts >= 2
-        ? [intro, question ? `${list}\n\n${question}` : list]
-        : [`${intro}\n\n${list}${question ? `\n\n${question}` : ''}`];
+    input.maxParts >= 2 && question ? [information, question] : [information];
   return parts.every((part) => part.length <= 1000) ? parts : undefined;
 }
 

@@ -124,7 +124,10 @@ describe('NousHermesTransport', () => {
     );
     expect(request.messages[0].content).toMatch(/consulta general.*precio/i);
     expect(request.messages[0].content).toMatch(
-      /consulta general[^.]*un solo mensaje breve/i,
+      /consulta general[^.]*diez prestaciones[^.]*dos mensajes físicos/i,
+    );
+    expect(request.messages[0].content).not.toMatch(
+      /un solo mensaje breve|No copies el alcance completo/i,
     );
     expect(request.messages[0].content).toMatch(/euros.*EUR.*d[oó]lares.*USD/i);
     expect(request.messages[0].content).toMatch(
