@@ -1,3 +1,5 @@
+> **AVISO DE VIGENCIA — 7/11/2026.** Este archivo describe principalmente un corte histórico del 5/10/2026. Para el estado operativo y comercial más reciente, leer primero [ESTADO-ACTUAL-HERMES-2026-11-07.md](ESTADO-ACTUAL-HERMES-2026-11-07.md) y [INDICE-Y-PRECEDENCIA-DOCUMENTAL-2026-11-07.md](INDICE-Y-PRECEDENCIA-DOCUMENTAL-2026-11-07.md). La respuesta Black Friday de dos mensajes está solicitada, **no implementada**; las operaciones comerciales A/B tampoco se han aplicado. El backend reportado estable al 5/11 no equivale a una revalidación en vivo del VPS el 7/11. Se conserva el texto siguiente como historial.
+
 # Estado del proyecto Hermes CRM
 
 > **Corte documental:** 2026-10-05, `America/Guayaquil`.
