@@ -1,8 +1,21 @@
-# Hermes 2.0 — índice y precedencia documental (A7-BF17, 7/11/2026)
+# Hermes 2.0 — índice y precedencia documental (A7-BF17-R1, 7/11/2026)
 
-Este índice incorpora el preflight productivo A7-BF17 y conserva abajo el corte A7-BF16 como antecedente. La publicación de una imagen no acredita un despliegue. Los informes anteriores conservan su fecha y alcance originales.
+Este índice incorpora el diagnóstico A7-BF17-R1 y conserva abajo los cortes A7-BF17 y A7-BF16 como antecedentes. La publicación de una imagen no acredita un despliegue. Los informes anteriores conservan su fecha y alcance originales.
 
-## Corte vigente: A7-BF17, 7/11/2026 16:23:38 UTC
+## Corte vigente: A7-BF17-R1, 7/11/2026 16:48:36 UTC
+
+**Dictamen:** `HERMES_A7_BF17_R1_ROOT_CAUSE_CONFIRMED`. **Documentación:** `DOCS_SYNC_PENDING` hasta verificar este índice y el [informe público A7-BF17-R1](HERMES_A7_BF17_R1_INCIDENT_DIAGNOSIS_2026-11-07.md) en el PR #16.
+
+| Tema | Estado verificado en VPS |
+| --- | --- |
+| Backend servido | Permanece en el commit `88e9712fd6e16a730fcfd00acee10a25e84a429b`, imagen `sha256:f669a608d0739fdfbdd687d83c0617208cd24be715365a4e10dae34241c3b730`. La candidata A7-BF16 no está desplegada. |
+| INC-01 | Un evento `MESSAGE` sigue `FAILED`, con 5.276 intentos al corte. El stack y el payload saneado confirman `message.from` y `contact.wa_id` ausentes; `normalizeWhatsAppId()` ejecuta `.trim()` sobre `undefined`. No hay mensaje ni entrega persistida para ese evento. Se propone corrección focalizada y cuarentena trazable, sin reintento infinito. |
+| BACKUP-01 | PostgreSQL 16.14; volumen de backups vacío, última evidencia de catálogo del 25/10 sin restauración aislada. `BACKUP_RESTORE_NOT_VERIFIED`. |
+| STATE-01 | La etiqueta Docker contiene 23 archivos Compose; `current.json` registra 22 y omite el override final del 5/11. El render completo reproduce imagen, revisión OCI y entorno efectivo; reconciliación pendiente. |
+
+Priorizar la corrección del inbox mediante Codex Local, PR independiente y pruebas. Preparar después backup/restauración aislada y reconciliación de metadatos con autorizaciones separadas. No solicitar todavía despliegue A7-BF18.
+
+## Corte anterior: A7-BF17, 7/11/2026 16:23:38 UTC
 
 **Dictamen:** `HERMES_A7_BF17_PRODUCTION_BLOCKED`. **Documentación:** `DOCS_SYNC_PENDING` hasta verificar ambos archivos en el PR #16. Consultar el [informe público A7-BF17](HERMES_A7_BF17_PRODUCTION_PREFLIGHT_2026-11-07.md).
 
@@ -16,7 +29,7 @@ Este índice incorpora el preflight productivo A7-BF17 y conserva abajo el corte
 
 No solicitar todavía autorización de despliegue A7-BF18. Resolver el ciclo del inbox, validar backup/restauración, reconciliar la cadena Compose y repetir el preflight. El despliegue y toda prueba WhatsApp real requieren autorización separada.
 
-## Corte anterior: A7-BF16
+## Corte histórico: A7-BF16
 
 ## Estado y precedencia
 
