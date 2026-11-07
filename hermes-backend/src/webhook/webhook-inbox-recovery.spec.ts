@@ -46,8 +46,10 @@ function inboxHarness() {
   };
   const inbox = {
     createMany: jest.fn(({ data }: any) => {
+      let count = 0;
       for (const event of data) {
         if (rows.some((row) => row.eventKey === event.eventKey)) continue;
+        count++;
         rows.push({
           id: `inbox-${rows.length + 1}`,
           eventKey: event.eventKey,
@@ -60,12 +62,16 @@ function inboxHarness() {
           leaseUntil: null,
         });
       }
-      return Promise.resolve({ count: data.length });
+      return Promise.resolve({ count });
     }),
     findMany: jest.fn(({ where }: any) =>
       Promise.resolve(
         rows
-          .filter((row) => where.OR.some((clause: any) => matches(row, clause)))
+          .filter((row) =>
+            where.eventKey?.in
+              ? where.eventKey.in.includes(row.eventKey)
+              : where.OR.some((clause: any) => matches(row, clause)),
+          )
           .map((row) => ({ ...row })),
       ),
     ),
@@ -231,6 +237,45 @@ describe('durable webhook quarantine and recovery', () => {
     expect(process).toHaveBeenCalledTimes(1);
   });
 
+  it('preserves a corrected redelivery for human review without releasing quarantine', async () => {
+    const { rows, service, prisma } = inboxHarness();
+    const invalid = signedBody({ from: undefined }, { wa_id: undefined });
+    await service.acceptWebhook(invalid);
+    await service.scan();
+    const originalPayload = structuredClone(rows[0].payload);
+
+    const corrected = signedBody();
+    await service.acceptWebhook(corrected);
+    await service.acceptWebhook(corrected);
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({
+      status: MetaWebhookInboxStatus.FAILED,
+      outcome: 'PERMANENT_INVALID_PAYLOAD:MESSAGE_FROM_MISSING',
+      attempts: 1,
+      payload: originalPayload,
+    });
+    expect(rows[1]).toMatchObject({
+      eventType: 'REDELIVERY_CONFLICT',
+      payload: {
+        originalEventKey: 'message:wamid.synthetic',
+        receivedEventType: 'MESSAGE',
+        receivedPayload: expect.objectContaining({
+          message: expect.objectContaining({ from: '593990000001' }),
+        }),
+      },
+    });
+    await service.scan();
+    expect(rows[1]).toMatchObject({
+      status: MetaWebhookInboxStatus.FAILED,
+      outcome: 'PERMANENT_INVALID_PAYLOAD:REDELIVERY_CONFLICT',
+      leaseUntil: null,
+    });
+    await service.scan();
+    expect(rows[0].attempts).toBe(1);
+    expect(rows[1].attempts).toBe(1);
+    expect(prisma.message.create).not.toHaveBeenCalled();
+  });
+
   it('accepts a valid Meta sender when the optional contacts array is absent', async () => {
     const { rows, service } = inboxHarness();
     const process = jest
@@ -249,6 +294,72 @@ describe('durable webhook quarantine and recovery', () => {
       expect.objectContaining({ wa_id: '593990000001' }),
       false,
     );
+  });
+
+  it.each([
+    ['text', { type: 'text', text: { body: 'hola' } }],
+    [
+      'image',
+      { type: 'image', image: { id: 'media-1', mime_type: 'image/jpeg' } },
+    ],
+    [
+      'audio',
+      {
+        type: 'audio',
+        audio: { id: 'media-2', mime_type: 'audio/ogg', voice: true },
+      },
+    ],
+    [
+      'document',
+      {
+        type: 'document',
+        document: { id: 'media-3', mime_type: 'application/pdf' },
+      },
+    ],
+    [
+      'video',
+      { type: 'video', video: { id: 'media-4', mime_type: 'video/mp4' } },
+    ],
+    [
+      'location',
+      { type: 'location', location: { latitude: -0.18, longitude: -78.47 } },
+    ],
+    [
+      'reaction',
+      {
+        type: 'reaction',
+        reaction: { message_id: 'wamid.target', emoji: 'ok' },
+      },
+    ],
+    [
+      'button reply',
+      {
+        type: 'interactive',
+        interactive: {
+          type: 'button_reply',
+          button_reply: { id: 'yes', title: 'Sí' },
+        },
+      },
+    ],
+    [
+      'list reply',
+      {
+        type: 'interactive',
+        interactive: {
+          type: 'list_reply',
+          list_reply: { id: 'one', title: 'Opción 1' },
+        },
+      },
+    ],
+  ] as const)('accepts a valid %s payload', async (_name, valid) => {
+    const { rows, service } = inboxHarness();
+    const process = jest
+      .spyOn(service as any, 'processIncomingMessage')
+      .mockResolvedValue('processed');
+    await service.acceptWebhook(signedBody({ text: undefined, ...valid }));
+    await service.scan();
+    expect(rows[0].status).toBe(MetaWebhookInboxStatus.COMPLETED);
+    expect(process).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -286,29 +397,32 @@ describe('durable webhook quarantine and recovery', () => {
     expect(prisma.contact.upsert).not.toHaveBeenCalled();
   });
 
-  it('processes a valid STATUS event through the unchanged status route', async () => {
-    const { rows, service, campaigns } = inboxHarness();
-    const body = signedBody();
-    const value = body.entry[0].changes[0].value;
-    delete (value as any).messages;
-    value.statuses = [
-      {
-        id: 'wamid.status',
-        status: 'delivered',
-        timestamp: '1',
-        recipient_id: '593990000001',
-      },
-    ];
-    await service.acceptWebhook(body);
-    await service.scan();
-    expect(rows[0].status).toBe(MetaWebhookInboxStatus.COMPLETED);
-    expect(campaigns.markRecipientStatus).toHaveBeenCalledWith(
-      'wamid.status',
-      'delivered',
-      '1',
-      undefined,
-    );
-  });
+  it.each(['delivered', 'read', 'failed'] as const)(
+    'processes a valid %s STATUS event through the unchanged route',
+    async (status) => {
+      const { rows, service, campaigns } = inboxHarness();
+      const body = signedBody();
+      const value = body.entry[0].changes[0].value;
+      delete (value as any).messages;
+      value.statuses = [
+        {
+          id: 'wamid.status',
+          status,
+          timestamp: '1',
+          recipient_id: '593990000001',
+        },
+      ];
+      await service.acceptWebhook(body);
+      await service.scan();
+      expect(rows[0].status).toBe(MetaWebhookInboxStatus.COMPLETED);
+      expect(campaigns.markRecipientStatus).toHaveBeenCalledWith(
+        'wamid.status',
+        status,
+        '1',
+        undefined,
+      );
+    },
+  );
 
   it('converts a legacy retry loop to permanent quarantine on its next claim', async () => {
     const { rows, service } = inboxHarness();

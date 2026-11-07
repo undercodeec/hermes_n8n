@@ -57,6 +57,19 @@ const RETRYABLE_INBOX_OUTCOMES = [
   'attribution_retry',
 ];
 
+/** PostgreSQL jsonb may reorder keys, so compare redeliveries by JSON value. */
+function stableJson(value: unknown): string {
+  if (Array.isArray(value))
+    return `[${value.map((item) => stableJson(item)).join(',')}]`;
+  if (isRecord(value))
+    return `{${Object.keys(value)
+      .filter((key) => value[key] !== undefined)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableJson(value[key])}`)
+      .join(',')}}`;
+  return JSON.stringify(value) ?? 'null';
+}
+
 class PermanentInvalidPayloadError extends Error {
   constructor(readonly reason: string) {
     super(`PERMANENT_INVALID_PAYLOAD:${reason}`);
@@ -211,10 +224,47 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
         }
       }
     if (events.length) {
-      await this.prisma.metaWebhookInbox.createMany({
+      const created = await this.prisma.metaWebhookInbox.createMany({
         data: events,
         skipDuplicates: true,
       });
+      if (created?.count < events.length) {
+        const stored = await this.prisma.metaWebhookInbox.findMany({
+          where: { eventKey: { in: events.map((event) => event.eventKey) } },
+          select: { eventKey: true, payload: true },
+        });
+        const byKey = new Map(stored.map((row) => [row.eventKey, row.payload]));
+        const conflicts = events.flatMap((event) => {
+          const previous = byKey.get(event.eventKey);
+          if (
+            previous === undefined ||
+            stableJson(previous) === stableJson(event.payload)
+          )
+            return [];
+          const hash = crypto
+            .createHash('sha256')
+            .update(
+              stableJson({ eventKey: event.eventKey, payload: event.payload }),
+            )
+            .digest('hex');
+          return [
+            {
+              eventKey: `redelivery-conflict:${hash}`,
+              eventType: 'REDELIVERY_CONFLICT',
+              payload: {
+                originalEventKey: event.eventKey,
+                receivedEventType: event.eventType,
+                receivedPayload: event.payload,
+              } as Prisma.InputJsonValue,
+            },
+          ];
+        });
+        if (conflicts.length)
+          await this.prisma.metaWebhookInbox.createMany({
+            data: conflicts,
+            skipDuplicates: true,
+          });
+      }
     }
   }
 
@@ -286,7 +336,11 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
               throw new PermanentInvalidPayloadError('UNAUTHORIZED_PHONE');
             await this.processStatuses([checked.value.status]);
           } else {
-            throw new PermanentInvalidPayloadError('EVENT_TYPE_INVALID');
+            throw new PermanentInvalidPayloadError(
+              event.eventType === 'REDELIVERY_CONFLICT'
+                ? 'REDELIVERY_CONFLICT'
+                : 'EVENT_TYPE_INVALID',
+            );
           }
           await this.prisma.metaWebhookInbox.updateMany({
             where: { id: event.id, claimToken },

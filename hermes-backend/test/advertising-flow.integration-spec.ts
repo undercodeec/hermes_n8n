@@ -208,11 +208,20 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
     const raw = Buffer.from(JSON.stringify(dto));
     const signature = `sha256=${createHmac('sha256', secret).update(raw).digest('hex')}`;
     eventKeys.push(`message:${wamid}`);
-    await controller.receive(
-      dto as unknown as Record<string, unknown>,
-      raw,
-      signature,
-    );
+    // The controller schedules a fire-and-forget scan. Suppress only that
+    // scheduling when a test needs to inject a failure before claiming.
+    const scheduledScan = scan
+      ? null
+      : jest.spyOn(webhook, 'scan').mockResolvedValue(undefined);
+    try {
+      await controller.receive(
+        dto as unknown as Record<string, unknown>,
+        raw,
+        signature,
+      );
+    } finally {
+      scheduledScan?.mockRestore();
+    }
     if (!scan) {
       return prisma.metaWebhookInbox.findUniqueOrThrow({
         where: { eventKey: `message:${wamid}` },
@@ -308,6 +317,48 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
     });
     expect(row.attempts).toBe(1);
     expect(row.status).toBe(MetaWebhookInboxStatus.FAILED);
+
+    const correctedWaId = `593995${suffix}`;
+    waIds.push(correctedWaId);
+    await receive(
+      correctedWaId,
+      wamid,
+      'redelivery sintética corregida',
+      false,
+    );
+    const conflict = (
+      await prisma.metaWebhookInbox.findMany({
+        where: { eventType: 'REDELIVERY_CONFLICT' },
+      })
+    ).find(
+      (candidate) =>
+        (candidate.payload as { originalEventKey?: string })
+          ?.originalEventKey === eventKey,
+    );
+    expect(conflict).toBeDefined();
+    if (!conflict) throw new Error('Corrected redelivery was not retained');
+    eventKeys.push(conflict.eventKey);
+    expect(conflict.payload).toMatchObject({
+      originalEventKey: eventKey,
+      receivedPayload: {
+        message: { id: wamid, from: correctedWaId },
+      },
+    });
+    await webhook.scan();
+    const quarantinedConflict = await prisma.metaWebhookInbox.findUniqueOrThrow(
+      {
+        where: { id: conflict.id },
+      },
+    );
+    expect(quarantinedConflict).toMatchObject({
+      status: MetaWebhookInboxStatus.FAILED,
+      outcome: 'PERMANENT_INVALID_PAYLOAD:REDELIVERY_CONFLICT',
+      leaseUntil: null,
+    });
+    expect(await prisma.message.count({ where: { wamid } })).toBe(0);
+    expect(await prisma.contact.count({ where: { waId: correctedWaId } })).toBe(
+      0,
+    );
   });
 
   it('rejects the ACK if the inbox write fails and processes a redelivery once', async () => {
@@ -359,6 +410,63 @@ describe('Phase D signed inbound correlation in isolated PostgreSQL', () => {
     expect(await prisma.lead.count({ where: { contact: { waId } } })).toBe(1);
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
+
+  it.each(['contact', 'conversation'] as const)(
+    'recovers a transient failure after persisting the %s without duplicates',
+    async (stage) => {
+      const suffix = randomInt(100000, 999999).toString();
+      const waId = `593996${suffix}`;
+      const wamid = `wamid.ads-h-${stage}-${suffix}`;
+      const eventKey = `message:${wamid}`;
+      waIds.push(waId);
+      await receive(waId, wamid, 'Hola', false);
+      const failure =
+        stage === 'contact'
+          ? jest
+              .spyOn(webhook as any, 'getOrCreateConversation')
+              .mockRejectedValueOnce(
+                new Error('synthetic post-contact failure'),
+              )
+          : jest
+              .spyOn(prisma.message, 'create')
+              .mockRejectedValueOnce(
+                new Error('synthetic post-conversation failure'),
+              );
+      try {
+        await webhook.scan();
+      } finally {
+        failure.mockRestore();
+      }
+      let row = await prisma.metaWebhookInbox.findUniqueOrThrow({
+        where: { eventKey },
+      });
+      expect(row.status).toBe(MetaWebhookInboxStatus.FAILED);
+      expect(row.outcome).toBe('RETRYABLE_PROCESSING_ERROR');
+      expect(await prisma.contact.count({ where: { waId } })).toBe(1);
+      expect(
+        await prisma.conversation.count({ where: { contact: { waId } } }),
+      ).toBe(stage === 'contact' ? 0 : 1);
+      expect(await prisma.message.count({ where: { wamid } })).toBe(0);
+
+      await prisma.metaWebhookInbox.update({
+        where: { id: row.id },
+        data: { leaseUntil: new Date(0) },
+      });
+      await webhook.scan();
+      row = await prisma.metaWebhookInbox.findUniqueOrThrow({
+        where: { eventKey },
+      });
+      expect(row.status).toBe(MetaWebhookInboxStatus.COMPLETED);
+      expect(row.attempts).toBe(2);
+      expect(await prisma.contact.count({ where: { waId } })).toBe(1);
+      expect(
+        await prisma.conversation.count({ where: { contact: { waId } } }),
+      ).toBe(1);
+      expect(await prisma.lead.count({ where: { contact: { waId } } })).toBe(1);
+      expect(await prisma.message.count({ where: { wamid } })).toBe(1);
+      expect(enqueue).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('keeps one message, conversation, lead, claim and milestone across replays and a second contact', async () => {
     const issued = await advertising.createContactIntent({
