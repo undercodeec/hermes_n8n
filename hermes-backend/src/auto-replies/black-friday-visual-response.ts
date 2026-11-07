@@ -131,7 +131,15 @@ function localGreeting(
   timeZone: string,
   salutation?: CustomerSalutation,
   firstReply = true,
+  customerMessage = '',
 ): string {
+  if (
+    !firstReply &&
+    !/^(?:hola|buenos dias|buenas tardes|buenas noches|buen dia|buenas)\b/u.test(
+      normalize(customerMessage.trim()),
+    )
+  )
+    return '';
   let hour: number;
   try {
     const part = new Intl.DateTimeFormat('en-US', {
@@ -148,6 +156,7 @@ function localGreeting(
       BLACK_FRIDAY_GREETING_TIME_ZONE,
       salutation,
       firstReply,
+      customerMessage,
     );
   }
   const opening =
@@ -191,8 +200,11 @@ export function blackFridayDetailParts(input: {
     input.timeZone ?? BLACK_FRIDAY_GREETING_TIME_ZONE,
     input.salutation,
     input.firstReply,
+    input.customerMessage,
   );
-  const intro = `${greeting} Con gusto le comparto la información de nuestra promoción *Black Friday por ${price}*.`;
+  const opening = greeting ? `${greeting} ` : '';
+  const description = greeting ? 'la información' : 'los detalles';
+  const intro = `${opening}Con gusto le comparto ${description} de nuestra promoción *Black Friday por ${price}*.`;
   const question = followupQuestion(
     input.profile,
     input.recentMessages,
@@ -200,12 +212,7 @@ export function blackFridayDetailParts(input: {
   );
   const information = `${intro}\n\n${list}`;
   const parts =
-    input.maxParts >= 2
-      ? [
-          information,
-          question ?? 'Quedo atento a su respuesta para orientarle.',
-        ]
-      : [information];
+    input.maxParts >= 2 && question ? [information, question] : [information];
   return parts.every((part) => part.length <= 1000) ? parts : undefined;
 }
 

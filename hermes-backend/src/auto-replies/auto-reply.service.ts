@@ -46,6 +46,10 @@ import {
 import {
   BLACK_FRIDAY_LANDING_POLICY_VERSION,
   isGeneralBlackFridayInquiry,
+  mentionsPersonal80Budget,
+  recognizesBlackFridayLanding,
+  rejectsPromotion,
+  requestsAnotherService,
 } from '../hermes/black-friday-landing';
 import { resolveVerifiedBlackFridayAd } from '../hermes/verified-ad-campaign';
 import {
@@ -596,6 +600,50 @@ export class AutoReplyService {
       (projectAttribution(inbound.metadata).origin !== 'unknown' ||
         projectAttribution(context.recentAttribution?.metadata).origin !==
           'unknown');
+    const recentCustomerMessages = context.recentMessages
+      .filter((message) => message.role === 'user')
+      .map((message) => message.content);
+    const recentCampaignCutoff = Date.now() - 7 * 86_400_000;
+    const campaignHistory = ignoreHistoricalPromotion
+      ? []
+      : context.recentCampaignMessages
+          .filter(
+            (message) => message.occurredAt.getTime() >= recentCampaignCutoff,
+          )
+          .map((message) => message.content);
+    const personal80Budget = mentionsPersonal80Budget(customerMessage);
+    const promotionRejected = rejectsPromotion(customerMessage);
+    const anotherServiceRequested = requestsAnotherService(customerMessage);
+    const blackFridayIdentified =
+      !personal80Budget &&
+      !promotionRejected &&
+      !anotherServiceRequested &&
+      (Boolean(verifiedAdCampaign) ||
+        recognizesBlackFridayLanding(customerMessage, campaignHistory));
+    const generalCampaignInquiry =
+      !personal80Budget &&
+      !promotionRejected &&
+      !anotherServiceRequested &&
+      isGeneralBlackFridayInquiry(
+        customerMessage,
+        campaignHistory,
+        Boolean(verifiedAdCampaign),
+      );
+    const normalizedPromotionMessage = customerMessage
+      .toLocaleLowerCase('es')
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+    const budgetWithCampaignReference =
+      personal80Budget &&
+      /\b(?:black friday|promocion|oferta)\b/u.test(normalizedPromotionMessage);
+    const ambiguousPromotionInquiry =
+      !blackFridayIdentified &&
+      !promotionRejected &&
+      (budgetWithCampaignReference ||
+        (/\b(?:promocion|oferta)\b/u.test(normalizedPromotionMessage) &&
+          /\b(?:vi|quiero|interesa|conocer|informacion|detalles|incluye|beneficios|caracteristicas|completa)\b/u.test(
+            normalizedPromotionMessage,
+          )));
     const policy = this.commercialPolicy.analyze(
       customerMessage,
       receivedAt,
@@ -711,6 +759,8 @@ export class AutoReplyService {
 
     const firstCommercialReply =
       !context.recentMessages.some((message) => message.role === 'assistant') &&
+      !promotionRejected &&
+      !anotherServiceRequested &&
       !/\b(?:soporte de mi|mi servicio contratado|mi proyecto contratado|reclamo|queja|urgente|emergencia|error|fallo|falla|no funciona|no me interesa (?:la )?(?:promoci[oó]n|oferta|black friday)|no quiero (?:la )?(?:promoci[oó]n|oferta)|rechazo (?:la )?(?:promoci[oó]n|oferta))\b/iu.test(
         customerMessage,
       ) &&
@@ -732,18 +782,26 @@ export class AutoReplyService {
       waId: conversation.contact.waId,
       profile: context.commercialProfile,
       productOfInterest: context.productOfInterest,
-      recentCustomerMessages: context.recentMessages
-        .filter((message) => message.role === 'user')
-        .map((message) => message.content),
+      recentCustomerMessages,
       priceRequested: policy.guidance.priceAnswerRequired,
-      prioritizeActiveBlackFriday: firstCommercialReply,
-      ...(verifiedAdCampaign
+      prioritizeActiveBlackFriday:
+        firstCommercialReply && !ambiguousPromotionInquiry && !personal80Budget,
+      ...(verifiedAdCampaign &&
+      !promotionRejected &&
+      !personal80Budget &&
+      !anotherServiceRequested
         ? {
             verifiedAdPolicyVersion: verifiedAdCampaign.policyVersion,
             verifiedAd: verifiedAdCampaign,
           }
         : {}),
-      ...(ignoreHistoricalPromotion ? { ignoreHistoricalPromotion: true } : {}),
+      ...(ignoreHistoricalPromotion ||
+      ambiguousPromotionInquiry ||
+      promotionRejected ||
+      personal80Budget ||
+      anotherServiceRequested
+        ? { ignoreHistoricalPromotion: true }
+        : {}),
     });
     const activeCampaignOffer = commercialSnapshot.offers.some(
       (offer) =>
@@ -752,7 +810,7 @@ export class AutoReplyService {
     );
     const priorityCampaignInquiry = firstCommercialReply && activeCampaignOffer;
     if (
-      (isGeneralBlackFridayInquiry(customerMessage) ||
+      (generalCampaignInquiry ||
         initialCampaignInquiry ||
         priorityCampaignInquiry) &&
       (activeCampaignOffer ||
@@ -1757,7 +1815,8 @@ export class AutoReplyService {
       !shouldHandoff &&
       !quoteCreated &&
       campaignOffer &&
-      (isGeneralBlackFridayInquiry(customerMessage) ||
+      blackFridayIdentified &&
+      (generalCampaignInquiry ||
         asksForBlackFridayDetails(customerMessage) ||
         (initialCampaignInquiry && Boolean(verifiedAdCampaign)))
         ? blackFridayDetailParts({
@@ -1777,7 +1836,11 @@ export class AutoReplyService {
           })
         : undefined;
     const packageParts =
-      !detailParts && !response.diagnostic && !shouldHandoff && !quoteCreated
+      !ambiguousPromotionInquiry &&
+      !detailParts &&
+      !response.diagnostic &&
+      !shouldHandoff &&
+      !quoteCreated
         ? commercialPackageParts({
             message: customerMessage,
             snapshot: commercialSnapshot,
@@ -1801,6 +1864,7 @@ export class AutoReplyService {
       !response.diagnostic &&
       !shouldHandoff &&
       !policy.guidance.priceAnswerRequired &&
+      blackFridayIdentified &&
       campaignOffer
         ? blackFridaySpecificAnswer(customerMessage, campaignOffer)
         : undefined;
@@ -1824,6 +1888,15 @@ export class AutoReplyService {
         /\bEntendido\. Para dimensionar mejor su proyecto[,:]?\s*/giu,
         '',
       );
+    if (
+      ambiguousPromotionInquiry &&
+      !response.diagnostic &&
+      !shouldHandoff &&
+      !quoteCreated
+    )
+      response.response = budgetWithCampaignReference
+        ? 'Con gusto. ¿Se refiere a su presupuesto o a una promoción específica?'
+        : 'Con gusto. ¿A qué promoción u oferta se refiere?';
     response.detectedIntent = reconcileCommercialIntent(
       response.detectedIntent,
       response.response,
@@ -1882,7 +1955,7 @@ export class AutoReplyService {
         activeCampaignOffer &&
         (initialCampaignInquiry ||
           priorityCampaignInquiry ||
-          isGeneralBlackFridayInquiry(customerMessage))
+          generalCampaignInquiry)
       ) &&
       !response.diagnostic &&
       greetedParts?.length &&
@@ -2444,6 +2517,16 @@ export class AutoReplyService {
         this.providerTimestamp(right.rawPayload) ?? right.createdAt;
       return leftTime.getTime() - rightTime.getTime();
     });
+    const recentCampaignMessages = orderedMessages
+      .filter((message) => message.direction === MessageDirection.INBOUND)
+      .map((message) => ({
+        content: redactPaymentMessageForAi(
+          message.content || '',
+          message.metadata,
+        ),
+        occurredAt:
+          this.providerTimestamp(message.rawPayload) ?? message.createdAt,
+      }));
     const recentAttribution = [...orderedMessages].reverse().find((message) => {
       const metadata = message.metadata;
       return (
@@ -2498,6 +2581,7 @@ export class AutoReplyService {
     }, []);
     return {
       recentMessages: conversationHistory,
+      recentCampaignMessages,
       recentAttribution: latestAttribution
         ? {
             metadata: latestAttribution.metadata,

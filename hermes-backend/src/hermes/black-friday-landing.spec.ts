@@ -123,8 +123,6 @@ describe('Black Friday landing recognition', () => {
     'Quiero información de la promoción de $80',
     'Quisiera saber más de Black Friday',
     'Me interesa la página de ochenta dólares',
-    'Vi su promoción y quiero detalles',
-    'Quiero conocer la oferta completa',
     'Quiero conocer la oferta completa de Black Friday',
     'Hola quiero más información de $80.00',
   ])('treats an explicit broad promotion request as general: %s', (message) => {
@@ -132,7 +130,11 @@ describe('Black Friday landing recognition', () => {
   });
 
   it.each([
+    'Vi su promoción y quiero detalles',
+    'Quiero conocer la oferta completa',
     'Tengo un presupuesto de USD 80 para una landing',
+    'Tengo USD 80 de presupuesto para Black Friday',
+    'Puedo gastar USD 80 en una página web',
     '¿Incluye hosting la promoción de $80?',
     '¿Cuánto tiempo de soporte tiene Black Friday?',
     'Ahora necesito una tienda online',
@@ -140,5 +142,38 @@ describe('Black Friday landing recognition', () => {
     '¿Cuál es el precio de Black Friday?',
   ])('does not make a specific or unrelated request general: %s', (message) => {
     expect(isGeneralBlackFridayInquiry(message)).toBe(false);
+  });
+
+  it.each([
+    'Vi su promoción y quiero detalles',
+    'Quiero conocer la oferta completa',
+  ])(
+    'requires confirmed campaign context for a generic offer: %s',
+    (message) => {
+      expect(recognizesBlackFridayLanding(message)).toBe(false);
+      expect(
+        recognizesBlackFridayLanding(message, [
+          'Quiero la promoción Black Friday',
+        ]),
+      ).toBe(true);
+      expect(
+        isGeneralBlackFridayInquiry(message, [
+          'Quiero la promoción Black Friday',
+        ]),
+      ).toBe(true);
+      expect(isGeneralBlackFridayInquiry(message, [], true)).toBe(true);
+    },
+  );
+
+  it('does not inherit a campaign the customer rejected', () => {
+    expect(recognizesBlackFridayLanding('No me interesa Black Friday')).toBe(
+      false,
+    );
+    expect(
+      recognizesBlackFridayLanding('Quiero conocer la oferta completa', [
+        'Quiero información de Black Friday',
+        'No me interesa Black Friday',
+      ]),
+    ).toBe(false);
   });
 });

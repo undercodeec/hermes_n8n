@@ -3462,6 +3462,247 @@ describe('AutoReplyService', () => {
     expect(parts[0].content).toMatch(/¿A qué se dedica/iu);
   });
 
+  it.each([
+    'Vi su promoción y quiero detalles',
+    'Quiero conocer la oferta completa',
+  ])(
+    'asks which promotion the customer means when %s has no trusted campaign context',
+    async (customerRequest) => {
+      const promotion = approvedCampaignOffer();
+      (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+        marketSource: 'UNKNOWN',
+        relevantServiceCodes: ['LANDING_PAGE'],
+        offers: [promotion],
+        recommendedOfferId: promotion.id,
+        needsMarketClarification: false,
+      });
+      const harness = setupProcessHarness({
+        inboundContent: customerRequest,
+        hermesResponse: { response: 'Black Friday cuesta USD $80.' },
+      });
+      await harness.service.process({
+        conversationId: 'conversation-1',
+        contactId: 'contact-1',
+        inboundMessageId: 'inbound-recovery',
+      });
+      expect(authority.snapshot).toHaveBeenCalledWith(
+        expect.objectContaining({ prioritizeActiveBlackFriday: false }),
+      );
+      const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+      expect(parts).toHaveLength(1);
+      expect(parts[0].content).toMatch(
+        /¿A qué promoción u oferta se refiere\?/u,
+      );
+      expect(parts[0].content).not.toMatch(/Black Friday|USD\s*\$?80/iu);
+    },
+  );
+
+  it('does not turn a personal USD 80 budget into the Black Friday offer', async () => {
+    const promotion = approvedCampaignOffer();
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [promotion],
+      recommendedOfferId: promotion.id,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: 'Tengo USD 80 de presupuesto para Black Friday',
+      hermesResponse: { response: 'La promoción Black Friday cuesta USD $80.' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    expect(authority.snapshot).toHaveBeenCalledWith(
+      expect.objectContaining({ prioritizeActiveBlackFriday: false }),
+    );
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].content).toMatch(
+      /¿Se refiere a su presupuesto o a una promoción específica\?/u,
+    );
+    expect(parts[0].content).not.toMatch(/Black Friday por|USD\s*\$?80/iu);
+  });
+
+  it('does not ask for promotion details after the customer declines an offer', async () => {
+    const harness = setupProcessHarness({
+      inboundContent: 'No me interesa la promoción',
+      hermesResponse: { response: 'Entendido, no insistiré con la oferta.' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].content).not.toMatch(
+      /¿A qué promoción u oferta se refiere\?/u,
+    );
+    expect(parts[0].content).not.toMatch(/Black Friday|USD\s*\$?80/iu);
+  });
+
+  it('does not inherit Black Friday from an old conversation for a generic offer', async () => {
+    const promotion = approvedCampaignOffer();
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [promotion],
+      recommendedOfferId: promotion.id,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: 'Quiero conocer la oferta completa',
+      inboundCreatedAt: campaignTime(),
+      historyMessages: [
+        {
+          id: 'old-campaign-request',
+          direction: MessageDirection.INBOUND,
+          content: 'Quiero información de Black Friday',
+          createdAt: campaignTime(-30 * 24 * 60),
+          rawPayload: null,
+          metadata: {},
+        },
+      ],
+      hermesResponse: { response: 'La promoción Black Friday cuesta USD $80.' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].content).toMatch(/¿A qué promoción u oferta se refiere\?/u);
+    expect(parts[0].content).not.toMatch(/Black Friday|USD\s*\$?80/iu);
+  });
+
+  it('uses a verified Black Friday ad for a generic promotion request', async () => {
+    const promotion = approvedCampaignOffer();
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'VERIFIED_AD',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [promotion],
+      recommendedOfferId: promotion.id,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: 'Vi su promoción y quiero detalles',
+      inboundCreatedAt: campaignTime(-3),
+      inboundMetadata: {
+        pilotOrigin: 'meta_ad',
+        pilotOriginEvidence: 'meta_referral_ad',
+        pilotAd: { sourceId: '52581450998031' },
+      },
+      campaignConfig: { HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52581450998031' },
+      hermesResponse: { response: 'La promoción cuesta USD $80.' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(2);
+    expect(parts[0].content.split('\n').slice(-10)).toHaveLength(10);
+    expect(parts[1].content).toMatch(/¿qué tipo de proyecto/u);
+    expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('uses unequivocal Black Friday history for a generic offer follow-up', async () => {
+    const promotion = approvedCampaignOffer();
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [promotion],
+      recommendedOfferId: promotion.id,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: 'Quiero conocer la oferta completa',
+      historyMessages: [
+        {
+          id: 'prior-user',
+          direction: MessageDirection.INBOUND,
+          content: 'Me interesa Black Friday',
+          createdAt: campaignTime(-5),
+          rawPayload: null,
+          metadata: {},
+        },
+      ],
+      hermesResponse: { response: 'La oferta cuesta USD $80.' },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(2);
+    expect(parts[0].content).toMatch(/Black Friday por USD \$80/u);
+  });
+
+  it('prepares one later detail delivery when the project question is still pending', async () => {
+    const promotion = approvedCampaignOffer();
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN',
+      relevantServiceCodes: ['LANDING_PAGE'],
+      offers: [promotion],
+      recommendedOfferId: promotion.id,
+      needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: '¿Qué incluye la promoción?',
+      historyMessages: [
+        {
+          id: 'prior-user',
+          direction: MessageDirection.INBOUND,
+          content: 'Quiero información de Black Friday',
+          createdAt: campaignTime(-5),
+          rawPayload: null,
+          metadata: {},
+        },
+        {
+          id: 'prior-assistant',
+          direction: MessageDirection.OUTBOUND,
+          content:
+            'Cuénteme, por favor, ¿qué tipo de proyecto o solución tiene en mente?',
+          createdAt: campaignTime(-4),
+          rawPayload: null,
+          metadata: {},
+        },
+      ],
+      hermesResponse: { response: 'La promoción incluye hosting y WhatsApp.' },
+    });
+    harness.engine.respond.mockResolvedValue({
+      ...toEngineResult({
+        response: 'La promoción incluye hosting y WhatsApp.',
+      }),
+      f3CapsBudget: {
+        maxParts: 2,
+        validUntil: new Date(Date.now() + 60_000).toISOString(),
+        serviceWindowExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+      },
+    });
+    await harness.service.process({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    });
+    const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+    expect(parts).toHaveLength(1);
+    expect(parts[0].content).toMatch(/^Con gusto le comparto los detalles/u);
+    expect(parts[0].content).toContain(
+      '🛠️ *1 año de soporte técnico posterior a la entrega*',
+    );
+    expect(parts[0].content).not.toMatch(
+      /Buenos días|Buenas tardes|Buenas noches|Quedo atento/u,
+    );
+    expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
   it('keeps an online store recommendation after presenting Black Friday first', async () => {
     const campaign = approvedCampaignOffer();
     const store = {
@@ -3669,11 +3910,14 @@ describe('AutoReplyService', () => {
         inboundMessageId: 'inbound-recovery',
       });
       const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
-      expect(parts).toHaveLength(1);
-      expect(parts[0].content).toMatch(/^Hola[,.!]/u);
-      expect(parts[0].content).not.toMatch(
-        /Hola, (?:Cliente|593991234567|MRS|MR|SR|SRA|UNKNOWN)\b/iu,
+      expect(parts).toHaveLength(2);
+      expect(parts[0].content).toMatch(
+        /^(?:Buenos días|Buenas tardes|Buenas noches)\./u,
       );
+      expect(parts[0].content).not.toMatch(
+        /(?:estimado|estimada) (?:Cliente|593991234567|MRS|MR|SR|SRA|UNKNOWN)\b/iu,
+      );
+      expect(parts[1].content).toMatch(/¿qué tipo de proyecto/u);
     },
   );
 
@@ -4243,6 +4487,16 @@ describe('AutoReplyService', () => {
       });
       const harness = setupProcessHarness({
         inboundContent: message,
+        historyMessages: [
+          {
+            id: 'prior-campaign-request',
+            direction: MessageDirection.INBOUND,
+            content: 'Quiero información de Black Friday',
+            createdAt: campaignTime(-5),
+            rawPayload: null,
+            metadata: {},
+          },
+        ],
         hermesResponse: { response: 'Incluye las diez características.' },
       });
       await harness.service.process({

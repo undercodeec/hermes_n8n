@@ -93,7 +93,7 @@ describe('Black Friday visual response', () => {
     expect(parts?.[0].startsWith(expected)).toBe(true);
   });
 
-  it('uses a validated client time zone when supplied and does not repeat formal address on later turns', () => {
+  it('uses a validated client time zone for a new opening without repeating formal address', () => {
     const parts = blackFridayDetailParts({
       offer,
       recentMessages: [],
@@ -102,9 +102,28 @@ describe('Black Friday visual response', () => {
       timeZone: 'Europe/Madrid',
       salutation: resolveCustomerSalutation('Carlos'),
       firstReply: false,
+      customerMessage: 'Hola, quiero información de Black Friday',
     });
     expect(parts?.[0]).toMatch(/^Buenas tardes\. /u);
     expect(parts?.[0]).not.toContain('estimado Carlos');
+  });
+
+  it('omits the initial greeting on a later detail request', () => {
+    const parts = blackFridayDetailParts({
+      offer,
+      recentMessages: [
+        { role: 'assistant', content: 'La promoción cuesta USD $80.' },
+      ],
+      maxParts: 2,
+      now: new Date('2026-11-07T17:00:00.000Z'),
+      salutation: resolveCustomerSalutation('Carlos'),
+      firstReply: false,
+      customerMessage: '¿Me comparte las características?',
+    });
+    expect(parts?.[0]).toMatch(/^Con gusto le comparto los detalles/u);
+    expect(parts?.[0]).not.toMatch(
+      /Buenos días|Buenas tardes|Buenas noches|estimado Carlos/u,
+    );
   });
 
   it('does not repeat a pending discovery question', () => {
@@ -118,9 +137,14 @@ describe('Black Friday visual response', () => {
         },
       ],
       maxParts: 2,
+      firstReply: false,
+      customerMessage: '¿Qué incluye la promoción Black Friday?',
     });
-    expect(parts).toHaveLength(2);
-    expect(parts?.[1]).toBe('Quedo atento a su respuesta para orientarle.');
+    expect(parts).toHaveLength(1);
+    expect(parts?.[0]).not.toContain(
+      'Quedo atento a su respuesta para orientarle.',
+    );
+    expect(parts?.[0]).toMatch(/^Con gusto le comparto los detalles/u);
   });
 
   it('does not repeat an unaccented pending discovery question', () => {
@@ -131,7 +155,10 @@ describe('Black Friday visual response', () => {
       ],
       maxParts: 2,
     });
-    expect(parts?.[1]).toBe('Quedo atento a su respuesta para orientarle.');
+    expect(parts).toHaveLength(1);
+    expect(parts?.[0]).not.toContain(
+      'Quedo atento a su respuesta para orientarle.',
+    );
   });
 
   it('asks a relevant next question when the customer already described the business', () => {
@@ -290,7 +317,7 @@ describe('Black Friday visual response', () => {
         ],
         maxParts: 3,
       }),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
     expect(
       blackFridayDetailParts({
         offer,
