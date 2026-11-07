@@ -43,15 +43,15 @@ La prueba omitida pertenece a `advertising-flow.integration-spec.ts`: registro d
 
 > Buenos días. Con gusto le comparto la información de nuestra promoción *Black Friday por USD $80*.
 >
-> 🎯 Captación de clientes potenciales  
-> 🖥️ Landing Page de una sola sección  
-> 📱 Diseño responsive, optimizado para celulares  
-> 💬 Botón flotante de WhatsApp y llamada directa  
-> 📝 Formulario de contacto o captura de prospectos  
-> ⭐ Sección de beneficios del servicio o producto  
-> 🌍 Dominio .com y hosting básico por 1 año  
-> 📧 5 correos corporativos  
-> 🔍 SEO técnico base  
+> 🎯 Captación de clientes potenciales\
+> 🖥️ Landing Page de una sola sección\
+> 📱 Diseño responsive, optimizado para celulares\
+> 💬 Botón flotante de WhatsApp y llamada directa\
+> 📝 Formulario de contacto o captura de prospectos\
+> ⭐ Sección de beneficios del servicio o producto\
+> 🌍 Dominio .com y hosting básico por 1 año\
+> 📧 5 correos corporativos\
+> 🔍 SEO técnico base\
 > 🛠️ *1 año de soporte técnico posterior a la entrega*
 
 **Parte 1 — entrega independiente:**
@@ -66,7 +66,7 @@ La promoción depende de que el CRM entregue exactamente una oferta activa con p
 
 Tras aprobar y fusionar el PR, seguir el pipeline habitual de imagen validada y despliegue supervisado. Verificar una conversación de prueba autorizada y los registros de `AutomatedDelivery` para ambas partes. Ante una regresión, volver a la imagen previamente validada y revisar las entregas persistidas antes de cualquier reintento; no editar PriceList ni ejecutar migraciones como parte del rollback.
 
-**Commit de implementación:** `953eb4ef1689bf6a02152e464939ed51e39172a1`  
+**Commit de implementación:** `953eb4ef1689bf6a02152e464939ed51e39172a1`\
 **PR contra `pilot/a7-d12-monitor-only-20261026`:** https://github.com/undercodeec/hermes_n8n/pull/15
 
 **Dictamen:** `HERMES_BLACK_FRIDAY_CONVERSATION_FIX_READY_FOR_REVIEW`
