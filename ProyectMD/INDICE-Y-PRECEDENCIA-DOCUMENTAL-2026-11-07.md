@@ -1,8 +1,21 @@
-# Hermes 2.0 — índice y precedencia documental (A7-BF17-R4, 7/11/2026)
+# Hermes 2.0 — índice y precedencia documental (A7-BF17-R6, 8/11/2026)
 
-El corte vigente es la publicación GHCR A7-BF17-R4. Los cortes R3, R1, A7-BF17 y A7-BF16 conservan su fecha y alcance originales. La publicación de una imagen no acredita un despliegue ni resuelve los bloqueos productivos.
+El corte vigente es el preflight de reconciliación Compose A7-BF17-R6. La lectura actual de la VPS prevalece sobre estados históricos; la publicación GHCR no acredita despliegue. R6 no modificó producción.
 
-## Corte vigente: A7-BF17-R4, 7/11/2026
+## Corte vigente: A7-BF17-R6, 8/11/2026
+
+**Dictamen:** `HERMES_A7_BF17_R6_RECONCILIATION_READY`. **Documentación:** `DOCS_SYNC_PENDING` hasta publicar y verificar el [informe R6](HERMES_A7_BF17_R6_COMPOSE_RECONCILIATION_PREFLIGHT_2026-11-08.md) en el [PR #16](https://github.com/undercodeec/hermes_n8n/pull/16). El PR no se fusionó.
+
+| Tema | Estado y precedencia |
+| --- | --- |
+| Producción comprobada | `hermes-app` sigue en `ghcr.io/undercodeec/hermes-backend@sha256:f669a608d0739fdfbdd687d83c0617208cd24be715365a4e10dae34241c3b730`, revisión `88e9712fd6e16a730fcfd00acee10a25e84a429b`; contenedor en ejecución, HTTP 200. La candidata R4 no está desplegada. |
+| Compose | Docker utiliza 23 archivos; `current.json` registra exactamente los primeros 22 en el mismo orden. Falta el override final del 5/11. El render con 23 archivos reproduce el render histórico de ese despliegue; la reconciliación requiere `HERMES_A7_BF17_R6_RECONCILE_STATE`. El cálculo auxiliar `config --hash app` difiere de la etiqueta y requiere explicación antes de un futuro `up`. |
+| Inbox | Un evento `FAILED` de tipo `MESSAGE` subió de 5.673 a 5.676 intentos durante R6; no tiene mensaje ni entrega asociados. Tratamiento posterior separado y autorizado. |
+| Seguridad | Existe nota privada de exposición accidental de credenciales; evaluación de cierre no acreditada. Rotación, si procede, es operación separada. |
+| Backup | `BACKUP_RESTORE_DEFERRED_OWNER_RISK_ACCEPTED` y `BACKUP_RESTORE_NOT_VERIFIED`. El propietario pospuso backup y restauración hasta ampliar la VPS; deuda técnica y riesgo aceptado, sin autorización de despliegue. |
+| Candidata | El digest R4 `sha256:c94fcecc47ee381b7a76f9a4fd07d1d4ed2aacdf19c812b3fc128c143b40123d` sigue disponible en GHCR; `linux/amd64`, OCI revision `ca85b991db1651f5bf500f3fb8e9db95ba9d56f0`, workflow #42426065900 exitoso. |
+
+## Corte anterior: A7-BF17-R4, 7/11/2026
 
 **Dictamen:** `HERMES_A7_BF17_R4_GHCR_PUBLISHED`. **Documentación:** informes R3 y R4 consolidados en la rama documental del [PR #16](https://github.com/undercodeec/hermes_n8n/pull/16), basada en `main`; el PR sigue como borrador y no está fusionado. Consultar el [informe R4](HERMES_A7_BF17_R4_GHCR_PUBLICATION_REPORT_2026-11-07.md) y el [informe R3](HERMES_A7_BF17_R3_MERGE_REPORT_2026-11-07.md).
 
