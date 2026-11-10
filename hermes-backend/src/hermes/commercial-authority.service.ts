@@ -60,6 +60,7 @@ export type CommercialSnapshot = {
   relevantServiceCodes: string[];
   offers: AuthorizedOffer[];
   needsMarketClarification: boolean;
+  needsExplicitMarketConflictClarification?: boolean;
   needsCampaignTariffConfirmation?: boolean;
   needsAdMarketConflictClarification?: boolean;
   recommendedOfferId?: string;
@@ -265,6 +266,9 @@ export class CommercialAuthorityService {
       relevantServiceCodes,
       offers: [],
       needsMarketClarification: false,
+      needsExplicitMarketConflictClarification: Boolean(
+        detailedResolution.hasExplicitMarketConflict,
+      ),
       needsAdMarketConflictClarification: Boolean(
         blackFridayRequested &&
         input.verifiedAd?.market &&
@@ -279,6 +283,10 @@ export class CommercialAuthorityService {
       priorityCampaign: Boolean(input.prioritizeActiveBlackFriday),
     };
     if (result.needsAdMarketConflictClarification) return result;
+    if (result.needsExplicitMarketConflictClarification) {
+      result.needsMarketClarification = true;
+      return result;
+    }
     const deliveryRequested =
       /\b(?:plazo|tiempo de entrega|cuanto tarda|cuanto demora|dias laborables|para cuando|fecha de entrega)\b/.test(
         normalize(input.customerMessage),
@@ -668,6 +676,11 @@ export function commercialSnapshotKnowledge(
   if (snapshot.needsAdMarketConflictClarification) {
     return [
       'El país del proyecto indicado por el cliente difiere del mercado del anuncio verificado. No cites ninguna tarifa hasta aclararlo. Pregunta brevemente si desea orientación para el país que indicó.',
+    ];
+  }
+  if (snapshot.needsExplicitMarketConflictClarification) {
+    return [
+      'Se mencionaron Ecuador y España para el proyecto. No cites ninguna tarifa hasta que el cliente confirme un único país aplicable.',
     ];
   }
   if (snapshot.needsMarketClarification) {

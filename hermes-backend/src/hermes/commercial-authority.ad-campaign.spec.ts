@@ -215,6 +215,58 @@ describe('Commercial Authority with verified ad context', () => {
     ]);
   });
 
+  it('uses an unequivocal historical Ecuador country above a Spanish waId fallback', async () => {
+    const { service } = authority(true, true);
+    const snapshot = await service.snapshot({
+      customerMessage: '¿Cuánto cuesta Black Friday?',
+      recentCustomerMessages: ['El proyecto es para Ecuador'],
+      waId: '34612345678',
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.market).toBe(CommercialMarket.EC);
+    expect(snapshot.marketInferenceSource).toBe('CRM_CONFIRMED');
+    expect(snapshot.offers).toEqual([
+      expect.objectContaining({ id: ecuadorPromotion.id, currency: 'USD' }),
+    ]);
+  });
+
+  it('does not quote when conflicting historical markets precede a Spanish waId', async () => {
+    const { service } = authority(true, true);
+    const snapshot = await service.snapshot({
+      customerMessage: '¿Cuánto cuesta Black Friday?',
+      recentCustomerMessages: [
+        'El proyecto es para Ecuador',
+        'Quiero opciones para Ecuador y España',
+      ],
+      waId: '34612345678',
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.market).toBeUndefined();
+    expect(snapshot.marketInferenceSource).toBe('UNKNOWN');
+    expect(snapshot.offers).toEqual([]);
+    expect(snapshot.needsExplicitMarketConflictClarification).toBe(true);
+    expect(commercialSnapshotKnowledge(snapshot).join(' ')).toMatch(
+      /No cites ninguna tarifa/iu,
+    );
+  });
+
+  it('does not quote Black Friday when both markets are explicitly named', async () => {
+    const { service } = authority(true, true);
+    const snapshot = await service.snapshot({
+      customerMessage: 'Quiero Black Friday para Ecuador y España',
+      waId: '34612345678',
+      priceRequested: true,
+      now,
+    });
+    expect(snapshot.offers).toEqual([]);
+    expect(snapshot.needsExplicitMarketConflictClarification).toBe(true);
+    expect(commercialSnapshotKnowledge(snapshot).join(' ')).toMatch(
+      /No cites ninguna tarifa/iu,
+    );
+  });
+
   it('uses the existing global USD promotion for verified Ecuador traffic when no EC tariff exists', async () => {
     const { service } = authority(true);
     const snapshot = await service.snapshot({

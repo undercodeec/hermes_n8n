@@ -4,6 +4,15 @@ import type { CustomerSalutation } from '../hermes/customer-salutation';
 
 // Initial Ecuador bands, deliberately independent of the server's time zone.
 export const BLACK_FRIDAY_GREETING_TIME_ZONE = 'America/Guayaquil';
+export const BLACK_FRIDAY_SPAIN_GREETING_TIME_ZONE = 'Europe/Madrid';
+
+export function blackFridayGreetingTimeZone(
+  offer: Pick<AuthorizedOffer, 'market'>,
+): string {
+  return offer.market === 'ES'
+    ? BLACK_FRIDAY_SPAIN_GREETING_TIME_ZONE
+    : BLACK_FRIDAY_GREETING_TIME_ZONE;
+}
 
 const icons = ['🎯', '🖥️', '📱', '💬', '📝', '⭐', '🌍', '📧', '🔍', '🛠️'];
 const canonicalScope: { pattern: RegExp; label: string }[] = [
