@@ -1,0 +1,362 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agents": {
+    "build": { "disabled": true },
+    "plan": { "disabled": true },
+    "general": { "disabled": true },
+    "explore": { "disabled": true }
+  },
+  "default_agent": "hermes-coordinator",
+  "plugins": ["./.opencode/plugins/project-bridge"],
+  "permissions": [
+    {
+      "action": "external_directory",
+      "resource": "*",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "read",
+      "resource": "*.env",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.env.*",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.pem",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.key",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.p12",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.pfx",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.p8",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.crt",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.cer",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.jks",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.keystore",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.dump",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.log",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.jsonl",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*evidence/*",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*evidencia/*",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*clientes/*",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*clients/*",
+      "effect": "deny"
+    },
+    {
+      "action": "read",
+      "resource": "*.env.example",
+      "effect": "allow"
+    },
+    {
+      "action": "grep",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "edit",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "edit",
+      "resource": "*.env",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*.env.*",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*.env.example",
+      "effect": "allow"
+    },
+    {
+      "action": "edit",
+      "resource": "*.pem",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*.key",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*.p12",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*.pfx",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*.sql",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*.dump",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*.log",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": ".git/*",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": ".worktrees/*",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*evidence/*",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*evidencia/*",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*clientes/*",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "*clients/*",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "*",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git status *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git branch --show-current",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git rev-parse --show-toplevel",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git rev-parse HEAD",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git worktree list *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git diff --stat",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git diff --name-only",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git diff --check",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git diff --cached --stat",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git diff --cached --name-only",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git log -1 --oneline",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git show --stat --oneline HEAD",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git push *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git commit *",
+      "effect": "allow"
+    },
+    {
+      "action": "shell",
+      "resource": "git reset *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git clean *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git worktree remove *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "git worktree prune *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "ssh *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "scp *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "rsync *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "kubectl *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "pm2 *",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "*prisma migrate deploy*",
+      "effect": "deny"
+    },
+    {
+      "action": "shell",
+      "resource": "*prisma migrate dev*",
+      "effect": "deny"
+    },
+    {
+      "action": "subagent",
+      "resource": "*",
+      "effect": "deny"
+    },
+    { "action": "subagent", "resource": "hermes-backend", "effect": "allow" },
+    { "action": "subagent", "resource": "hermes-ai", "effect": "allow" },
+    { "action": "subagent", "resource": "hermes-database", "effect": "allow" },
+    { "action": "subagent", "resource": "hermes-security", "effect": "allow" },
+    { "action": "subagent", "resource": "hermes-qa", "effect": "allow" },
+    { "action": "subagent", "resource": "hermes-release", "effect": "allow" },
+    { "action": "subagent", "resource": "global-coordinator", "effect": "allow" },
+    { "action": "subagent", "resource": "architecture-auditor", "effect": "allow" },
+    { "action": "subagent", "resource": "documentation-auditor", "effect": "allow" },
+    {
+      "action": "read",
+      "resource": "Hermes-web/*",
+      "effect": "deny"
+    },
+    {
+      "action": "edit",
+      "resource": "Hermes-web/*",
+      "effect": "deny"
+    }
+  ]
+}
