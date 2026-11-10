@@ -4,7 +4,7 @@ El backend vive en `hermes-backend/` dentro de este repositorio Git. Usa NestJS,
 
 La rama funcional piloto `pilot/a7-d12-monitor-only-20261026` debe comprobarse por HEAD antes de usarla; la raíz local está en `main` y contiene trabajo previo. Un PR integrado o imagen GHCR publicada no demuestra despliegue productivo. No actives F3/F4 ni cambies políticas productivas, tarifas, datos, esquemas o migraciones sin revisión específica.
 
-`Hermes-web/` es otro repositorio Git anidado. No inspecciones ni edites su contenido desde esta sesión. No uses worktrees ajenos como directorios de escritura.
+`Hermes-web/` es otro repositorio Git anidado. En la sesión independiente de Hermes Backend no inspecciones ni edites su contenido; desde UnderCodeEC con /vincular-hermes activo, el usuario autorizó lectura, edición y pruebas de toda D:/Documentos/Hermes, incluido Hermes-web. No uses worktrees ajenos como directorios de escritura.
 
 ## Flujo y trazabilidad
 
@@ -27,7 +27,11 @@ El buzón no concede lectura ni edición del otro repositorio y no inicia agente
 
 ## Cierre de tareas vinculadas
 
-El usuario autorizó en /vincular-hermes el trabajo autónomo hasta commit y push a ramas de desarrollo. En esta raíz Git, prepara commits solo con rutas hermes-backend/** pertenecientes a la tarea; preserva cambios ajenos. Repite pruebas, lint, build e integración Docker/PostgreSQL con recursos desechables y QA antes de publicar. No uses force push ni despliegue productivo. Un rechazo remoto o una validación fallida debe investigarse y resolverse dentro del alcance antes de reportar bloqueo.
+El usuario autorizó en /vincular-hermes el trabajo autónomo hasta commit y push a ramas de desarrollo. En esta raíz Git, prepara commits solo con rutas pertenecientes a la tarea; preserva cambios ajenos. Hermes-web tiene su propia raíz Git y requiere commit y push separados si la tarea lo modifica. Repite pruebas, lint, build e integración Docker/PostgreSQL con recursos desechables y QA antes de publicar. No uses force push ni despliegue productivo. Un rechazo remoto o una validación fallida debe investigarse y resolverse dentro del alcance antes de reportar bloqueo.
 
 
 Para enviar un handoff manual desde Hermes usa /enviar-undercode ID | Asunto | Mensaje; para revisar pendientes usa /buzon-proyectos. El agente puede usar project_bridge_read y project_bridge_ack para leer y confirmar mensajes completos.
+
+## Alcance completo desde UnderCodeEC
+
+/vincular-hermes concede a los agentes de esa sesión lectura y edición de toda D:/Documentos/Hermes, incluido este AGENTS.md, hermes-backend y Hermes-web, además de ejecutar pruebas locales. No detengas una tarea vinculada por la ubicación de un archivo dentro de esta carpeta. Conserva la separación de repositorios Git y realiza commits y pushes a ramas de desarrollo con archivos exactos de la tarea. No despliegues a producción.
