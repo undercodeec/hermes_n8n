@@ -71,6 +71,7 @@ import { splitWhatsAppMessage } from './whatsapp-message-splitter';
 import {
   asksForBlackFridayDetails,
   blackFridayDetailParts,
+  blackFridayGreetingTimeZone,
   blackFridaySpecificAnswer,
 } from './black-friday-visual-response';
 import { commercialPackageParts } from './commercial-package-response';
@@ -1833,6 +1834,7 @@ export class AutoReplyService {
               ]),
             ),
             firstReply: greetingInput.firstReply,
+            timeZone: blackFridayGreetingTimeZone(campaignOffer),
           })
         : undefined;
     const packageParts =

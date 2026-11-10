@@ -4,6 +4,7 @@ import { resolveCustomerSalutation } from '../hermes/customer-salutation';
 import {
   asksForBlackFridayDetails,
   blackFridayDetailParts,
+  blackFridayGreetingTimeZone,
   blackFridaySpecificAnswer,
 } from './black-friday-visual-response';
 
@@ -106,6 +107,28 @@ describe('Black Friday visual response', () => {
     });
     expect(parts?.[0]).toMatch(/^Buenas tardes\. /u);
     expect(parts?.[0]).not.toContain('estimado Carlos');
+  });
+
+  it('uses Madrid time for the Spanish tariff and keeps Ecuador on Guayaquil time', () => {
+    const instant = new Date('2026-11-07T17:00:00.000Z');
+    const spanishOffer = {
+      ...offer,
+      market: 'ES' as const,
+      currency: 'EUR' as const,
+    };
+    expect(blackFridayGreetingTimeZone(spanishOffer)).toBe('Europe/Madrid');
+    expect(blackFridayGreetingTimeZone(offer)).toBe('America/Guayaquil');
+    expect(
+      blackFridayDetailParts({
+        offer: spanishOffer,
+        recentMessages: [],
+        maxParts: 1,
+        now: instant,
+        timeZone: blackFridayGreetingTimeZone(spanishOffer),
+      })?.[0],
+    ).toMatch(
+      /^Buenas tardes\. Con gusto le comparto la información de nuestra promoción \*Black Friday por EUR €80\.00\*/u,
+    );
   });
 
   it('omits the initial greeting on a later detail request', () => {

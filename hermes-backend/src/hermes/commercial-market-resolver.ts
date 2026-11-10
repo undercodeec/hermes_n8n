@@ -19,6 +19,8 @@ export type MarketResolution = {
   phoneCountry?: CommercialMarket;
   projectCountry?: CommercialMarket;
   requestedCurrency?: 'EUR' | 'USD' | 'AMBIGUOUS';
+  /** The customer named both supported markets, so no tariff is applicable. */
+  hasExplicitMarketConflict?: boolean;
 };
 
 function normalize(value: string): string {
@@ -54,6 +56,11 @@ function mentionedMarket(text: string): CommercialMarket | undefined {
     /\bespana\b/u.test(value) &&
     !/\bno\s+(?:en|para|soy de)\s+espana\b/u.test(value);
   return ec === es ? undefined : ec ? CommercialMarket.EC : CommercialMarket.ES;
+}
+
+function mentionsBothMarkets(text: string): boolean {
+  const value = normalize(text);
+  return /\becuador\b/u.test(value) && /\bespana\b/u.test(value);
 }
 
 export function explicitProjectMarket(
@@ -95,12 +102,16 @@ export class CommercialMarketResolver {
       .reverse()
       .map(explicitProjectMarket)
       .find(Boolean);
+    const historicalMarkets = (input.recentCustomerMessages ?? [])
+      .map(mentionedMarket)
+      .filter((market): market is CommercialMarket => Boolean(market));
+    const hasHistoricalMarketConflict =
+      (input.recentCustomerMessages ?? []).some(mentionsBothMarkets) ||
+      new Set(historicalMarkets).size > 1;
     const requestedCurrency = mentionedCurrency(input.customerMessage);
     const currentCountries = normalize(input.customerMessage);
     const ambiguousCurrentProject =
-      /\b(?:ecuador|espana)\s+(?:o|y)\s+(?:ecuador|espana)\b/u.test(
-        currentCountries,
-      );
+      !currentProject && mentionsBothMarkets(currentCountries);
     const result = (
       market: CommercialMarket | undefined,
       source: MarketInferenceSource,
@@ -115,7 +126,11 @@ export class CommercialMarketResolver {
           : {}),
       ...(requestedCurrency ? { requestedCurrency } : {}),
     });
-    if (ambiguousCurrentProject) return result(undefined, 'UNKNOWN');
+    if (ambiguousCurrentProject)
+      return {
+        ...result(undefined, 'UNKNOWN'),
+        hasExplicitMarketConflict: true,
+      };
     if (currentProject) return result(currentProject, 'EXPLICIT_PROJECT');
     if (input.verifiedAdMarket)
       return result(input.verifiedAdMarket, 'VERIFIED_META_AD');
@@ -129,15 +144,20 @@ export class CommercialMarketResolver {
     if (requestedCurrency === 'USD')
       return result(CommercialMarket.EC, 'EXPLICIT_CUSTOMER_CURRENCY');
     if (requestedCurrency === 'AMBIGUOUS') return result(undefined, 'UNKNOWN');
+    if (hasHistoricalMarketConflict)
+      return {
+        ...result(undefined, 'UNKNOWN'),
+        hasExplicitMarketConflict: true,
+      };
     if (priorProject) return result(priorProject, 'CRM_CONFIRMED');
-    if (input.profile?.market === 'EC' || input.profile?.market === 'ES') {
-      return result(input.profile.market, 'CRM_CONFIRMED');
-    }
-    if (phoneCountry) return result(phoneCountry, 'PHONE_COUNTRY_CODE');
     for (const message of [...(input.recentCustomerMessages ?? [])].reverse()) {
       const historical = mentionedMarket(message);
       if (historical) return result(historical, 'HISTORY');
     }
+    if (input.profile?.market === 'EC' || input.profile?.market === 'ES') {
+      return result(input.profile.market, 'CRM_CONFIRMED');
+    }
+    if (phoneCountry) return result(phoneCountry, 'PHONE_COUNTRY_CODE');
     return result(undefined, 'UNKNOWN');
   }
 }
