@@ -1,5 +1,7 @@
 # Meta attribution in UnderCodeEC CRM
 
+> **Diseño histórico.** Describe intención, no prueba despliegue ni aceptación. [Estado vigente](../../../ProyectMD/estado-proyecto.md).
+
 ## Intent and scope
 
 Show the already persisted WhatsApp acquisition evidence to authorized CRM staff. Keep `meta_ad`, verified `organic` (Meta post referral), and `unknown` distinct. Preserve the first conversation origin, and list later ad referrals separately. Google Ads and Nous behavior remain unchanged.

@@ -1,5 +1,7 @@
 # Diseño: multimedia reutilizable por plantilla de WhatsApp
 
+> **Diseño histórico.** Describe intención, no prueba despliegue ni aceptación. [Estado vigente](../../../ProyectMD/estado-proyecto.md).
+
 **Fecha:** 2026-09-07
 
 **Repositorios:** `hermes_n8n` y `websiteUndercodeec`

@@ -1,5 +1,7 @@
 # Isolated learning capacity harness (candidate)
 
+> **Protocolo técnico de harness aislado**. Clasificación 10/11/2026. Capacidad sintética no acredita capacidad ni despliegue productivo. El requisito histórico de checkout aislado no autoriza crear worktrees automáticamente; usar el entorno de desarrollo expresamente elegido. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 This harness reuses `docker-compose.learning-test.yml` and the official
 `learning:harness:up` / `learning:harness:down` scripts. It runs a synthetic
 inbound turn through `ConversationEngineService`, persists the proposed reply,

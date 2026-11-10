@@ -1,5 +1,7 @@
 # Market and conversational continuity implementation plan
 
+> **Plan histórico, no autorización operativa.** Conservar resultados y checklist como evidencia fechada. [Estado vigente](../../../ProyectMD/estado-proyecto.md).
+
 > **For agentic workers:** Use superpowers:executing-plans to implement this plan task by task. Steps use checkbox syntax.
 
 **Goal:** Resolve the commercial market from auditable signals, keep PriceList as the only price authority, and maintain useful replies when a tariff is unavailable.

@@ -1,5 +1,7 @@
 # F2 provider evaluation — revisión humana de salidas reales
 
+> **Plantilla — no acta de aprobación**. Clasificación 10/11/2026. Los campos pendientes y valores de referencia no acreditan ejecución, aprobación ni configuración actual. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 **Estado:** pendiente. Esta plantilla no registra una evaluación real ni aprueba un candidato.
 
 - Fecha/zona: _pendiente_

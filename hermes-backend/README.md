@@ -1,104 +1,64 @@
-<p align="center">
-  <a href="http://nestjs.com/" target="blank"><img src="https://nestjs.com/img/logo-small.svg" width="120" alt="Nest Logo" /></a>
-</p>
+# Hermes backend
 
-[circleci-image]: https://img.shields.io/circleci/build/github/nestjs/nest/master?token=abc123def456
-[circleci-url]: https://circleci.com/gh/nestjs/nest
+> **Protocolo vigente de desarrollo**, contrastado con el código `ca85b991` el 10/11/2026. No acredita despliegue ni configuración productiva. Estado transversal: [estado del proyecto](../ProyectMD/estado-proyecto.md).
 
-  <p align="center">A progressive <a href="http://nodejs.org" target="_blank">Node.js</a> framework for building efficient and scalable server-side applications.</p>
-    <p align="center">
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/v/@nestjs/core.svg" alt="NPM Version" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/l/@nestjs/core.svg" alt="Package License" /></a>
-<a href="https://www.npmjs.com/~nestjscore" target="_blank"><img src="https://img.shields.io/npm/dm/@nestjs/common.svg" alt="NPM Downloads" /></a>
-<a href="https://circleci.com/gh/nestjs/nest" target="_blank"><img src="https://img.shields.io/circleci/build/github/nestjs/nest/master" alt="CircleCI" /></a>
-<a href="https://discord.gg/G7Qnnhy" target="_blank"><img src="https://img.shields.io/badge/discord-online-brightgreen.svg" alt="Discord"/></a>
-<a href="https://opencollective.com/nest#backer" target="_blank"><img src="https://opencollective.com/nest/backers/badge.svg" alt="Backers on Open Collective" /></a>
-<a href="https://opencollective.com/nest#sponsor" target="_blank"><img src="https://opencollective.com/nest/sponsors/badge.svg" alt="Sponsors on Open Collective" /></a>
-  <a href="https://paypal.me/kamilmysliwiec" target="_blank"><img src="https://img.shields.io/badge/Donate-PayPal-ff3f59.svg" alt="Donate us"/></a>
-    <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
-  <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
-</p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
+CRM conversacional de WhatsApp en NestJS 11/TypeScript, Prisma/PostgreSQL y BullMQ/Redis. La imagen versionada usa Node 22. Este repositorio contiene el backend; la interfaz CRM externa no se acredita por compilar esta API.
 
-## Publicidad y atribución
+## Desarrollo local
 
-La arquitectura, el contrato server-to-server con UnderCodeEC y el procedimiento
-de activación de Google Ads están documentados en
-[`docs/advertising-attribution.md`](docs/advertising-attribution.md).
+Desde `hermes-backend/`, con Node 22 y servicios **de desarrollo**:
 
-## Description
-
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
-
-## Project setup
-
-```bash
-$ npm install
+```sh
+npm ci
+npx prisma generate
+npm run build
+npm test -- --runInBand
 ```
 
-## Compile and run the project
+Para arrancar, preparar `.env` privado a partir de [`.env.example`](.env.example), con PostgreSQL/Redis aislados y credenciales simuladas o autorizadas; no reutilizar las productivas. Después, `npm run start:dev` (watch), `npm start` o `npm run start:prod` (requiere build). `PORT` gobierna el puerto: fallback del bootstrap 3000, Compose 3003. Swagger está en `/api/docs`. CORS exige `CORS_ORIGINS` en producción.
 
-```bash
-# development
-$ npm run start
+No ejecutar seeds ni migraciones sobre una base existente como parte de esta preparación. Revisar por separado las migraciones necesarias para una base local desechable. El Compose principal incluye n8n, secretos externos y una red privada Nous: no es un entorno de pruebas autocontenido.
 
-# watch mode
-$ npm run start:dev
+## Comandos reales
 
-# production mode
-$ npm run start:prod
-```
+| Propósito | Comando desde este directorio |
+| --- | --- |
+| Unitarias / cobertura | `npm test -- --runInBand` / `npm run test:cov` |
+| E2E / integración (revisar fixtures y servicios antes) | `npm run test:e2e` / `npm run test:integration` |
+| Evaluación sintética sin proveedor | `npm run evaluate:phase0:offline` |
+| Evaluación F2 offline por defecto | `npm run evaluate:f2-provider` |
+| Harness learning aislado | `npm run test:learning:integration` |
+| Harness Nous aislado | `npm run test:a7-d16:e2e` |
+| Capacidad aislada | `npm run capacity:learning` |
+| Escaneo local de secretos | `npm run security:secrets` |
+| Formato / lint **modifican archivos** | `npm run format` / `npm run lint` |
 
-## Run tests
+La fuente exhaustiva es [package.json](package.json). `evaluate:phase0:provider`, OAuth, creación de administradores y scripts de auditoría tienen requisitos y efectos propios: no son pasos automáticos del setup. Los resultados históricos de pruebas no equivalen a una ejecución nueva.
 
-```bash
-# unit tests
-$ npm run test
+## Arquitectura y rutas
 
-# e2e tests
-$ npm run test:e2e
+- `src/main.ts`: validación estricta de DTO, CORS, filtros, Swagger; `src/app.module.ts`: módulos y configuración.
+- `src/webhook` → `src/auto-replies` → `src/conversation-engine`: ingreso Meta, turnos durables, selección Gemini/Nous y política comercial; `src/automated-deliveries` conserva el ledger de entrega. La identidad y los estados persistidos no se borran para reintentar un envío ambiguo.
+- `src/hermes`: autoridad comercial y revisión de afirmaciones; productos y listas autorizadas alimentan el snapshot. Un seed o una respuesta del LLM no autoriza precios.
+- `src/prisma` y `prisma/`: persistencia. `src/integrations`: n8n, Calendar y transporte Nous. `src/learning`: reviewer y candidatos sujetos a flags y aprobación humana.
 
-# test coverage
-$ npm run test:cov
-```
+| Superficie | Rutas existentes (no implican activación) |
+| --- | --- |
+| Auth / CRM | `/api/auth/*`, `/api/contacts`, `/api/leads`, `/api/conversations`, `/api/messages`, `/api/tasks`, `/api/handoff` |
+| Catálogo | `/api/products`, `/api/price-lists`, `/api/knowledge`, `/api/playbooks` |
+| WhatsApp | `GET/POST /webhooks/meta/whatsapp` |
+| Publicidad | `/api/advertising/*`, `POST /api/advertising/contact-intents`, `/api/campaigns`, `/api/analytics/*` |
+| Transferencias | `/api/bank-accounts`, `/api/transfers/:id`, `POST /api/transfers/:id/start-review`, `/approve`, `/reject` |
+| Calendar | `GET /api/meetings`; OAuth `/api/integrations/google/auth` y `/callback` restringidos a desarrollo local |
+| Learning | `/api/learning/candidates`, `POST /api/learning/candidates/:id/decision`, `POST /api/learning/reviews/canary` |
+| Retención | `/api/admin/retention-recovery-policy` y operaciones subordinadas |
 
-## Deployment
+Los controladores/guards son la autoridad para métodos, roles y autenticación. La existencia de ruta no prueba disponibilidad en VPS ni integración de la UI.
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
+## Operación y documentación
 
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+- [Despliegue y rollback](docs/deployment-runbook.md): procedencia, preflight y verificación separada del runtime.
+- [Operación comercial Black Friday](docs/commercial-black-friday-runbook.md): mercado, autoridad y validación sin activar campañas.
+- [Índice documental](docs/README.md), [Nous](docs/nous-hermes-runbook.md), [Calendar](docs/google-calendar-runbook.md), [publicidad](docs/advertising-attribution.md), [transferencias](docs/transfer-payment-crm-implementation-plan.md), [learning](docs/conversation-learning-operations.md).
 
-```bash
-$ npm install -g @nestjs/mau
-$ mau deploy
-```
-
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
-
-## Resources
-
-Check out a few resources that may come in handy when working with NestJS:
-
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
-
-## Support
-
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
-
-## Stay in touch
-
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
-
-## License
-
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+Las cabeceras distinguen protocolos, plantillas e historia. Las actas se conservan; no usar sus flags, tarifas, commits o resultados como estado vigente. No se presume activado learning, pagos, Calendar, publicidad ni Nous.

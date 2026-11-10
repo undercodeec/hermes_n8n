@@ -1,5 +1,7 @@
 # Publicidad y atribucion en Hermes
 
+> **Protocolo técnico con actas históricas**. Clasificación revisada 10/11/2026: los despliegues, credenciales y validaciones de septiembre siguientes no describen el runtime actual. Las rutas existen en `src/advertising/advertising.controller.ts`; eso no acredita ADC, envíos ni UI externa activos. Las afirmaciones sobre políticas de Google requieren revalidación con el proveedor antes de operar. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md). Preflight común: [operación comercial](commercial-black-friday-runbook.md) y [despliegue](deployment-runbook.md).
+
 ## Alcance
 
 Esta implementacion pertenece exclusivamente a Hermes. No modifica los botones,

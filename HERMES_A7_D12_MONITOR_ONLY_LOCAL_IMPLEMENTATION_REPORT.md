@@ -1,5 +1,7 @@
 # HERMES A7-D12 — implementación local MONITOR_ONLY
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](ProyectMD/estado-proyecto.md).
+
 Fecha: 26/10/2026. Dictamen: **BLOCKED** para revisión de publicación. Este informe describe solo el worktree local; Nous comercial, F3 y F4 siguen sin activarse.
 
 ## A. Identidad

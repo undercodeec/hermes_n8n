@@ -1,5 +1,7 @@
 # F3 single-generation canary guard
 
+> **Protocolo técnico vigente del guard; evidencia offline**. Clasificación 10/11/2026. Su existencia/default no prueba despliegue o activación del guard ni de retrieval. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md); operación común: [despliegue](deployment-runbook.md).
+
 This guard limits one explicitly configured QA conversation to one provider generation per canonical inbound source message. It is OFF by default and independent of the learning retrieval scope. It is an offline implementation gate; deploying or enabling retrieval requires separate review.
 
 ## Configuration

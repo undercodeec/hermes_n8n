@@ -1,5 +1,7 @@
 # HERMES — Informe de humanización del fallback de audio
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](estado-proyecto.md).
+
 Fecha: 2026-10-29. Alcance: desarrollo local y publicación Git; sin acceso ni despliegue VPS.
 
 ## Hallazgo y flujo actual

@@ -1,5 +1,7 @@
 # Hermes CRM First Deployment Implementation Plan
 
+> **Plan histórico, no autorización operativa.** Conservar resultados y checklist como evidencia fechada. [Estado vigente](../../../ProyectMD/estado-proyecto.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make Hermes CRM safe to deploy beside the private Nous Hermes Agent while leaving commercial Nous traffic disabled.

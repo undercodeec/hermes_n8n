@@ -1,5 +1,7 @@
 # F3 retrieval canary — preparación local
 
+> **Histórico — preparación de canary, no autorización live**. Clasificación 10/11/2026. Bloqueos y flags corresponden al corte original; no elegir una conversación real por inferencia. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md); preflight: [despliegue](deployment-runbook.md).
+
 Base: `66cd47722372f8252d0df49610b21403b6171d5f`. Estado: `BLOCKED_F3_RETRIEVAL_CANARY_QA_CONVERSATION_MISSING`; F3 sigue `OPEN`.
 
 ## Control de scope implementado

@@ -1,5 +1,7 @@
 # Plan operativo: opción B, doce meses de soporte
 
+> **Plan histórico, no autorización operativa.** Revalidar antes de ejecutar. [Estado vigente](estado-proyecto.md).
+
 ## Autorización comercial y separación
 
 El propietario aprobó la **opción B** el 2026-11-04 en `ProyectMD/prompt.md`: nueve planes con doce meses de soporte, mismos precios y prestaciones; Plan de Autoridad y Tienda Élite mantienen VIP prioritario. La aprobación comercial permite preparar código y procedimientos, **sin autorizar escrituras productivas ni despliegue**.

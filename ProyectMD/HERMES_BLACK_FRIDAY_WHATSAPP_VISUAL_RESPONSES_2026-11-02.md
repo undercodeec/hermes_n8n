@@ -1,5 +1,7 @@
 # Respuestas visuales Black Friday por WhatsApp — 2026-11-02
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](estado-proyecto.md).
+
 ## Comportamiento anterior
 
 Ante «¿Qué incluye?», `AutoReplyService` sustituía la propuesta de Nous por las diez cláusulas del `scope` en una lista numerada dentro de una sola respuesta. Una pregunta sobre una prestación concreta podía parecerse a una solicitud de catálogo completo. El divisor por longitud podía cortar una respuesta sin respetar introducción, prestaciones y continuación comercial.

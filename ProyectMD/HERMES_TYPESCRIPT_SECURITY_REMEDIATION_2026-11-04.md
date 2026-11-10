@@ -1,5 +1,7 @@
 # HERMES 2.0 — saneamiento TypeScript y revisión de dependencias
 
+> **Acta histórica.** Resultados originales conservados; no acredita seguridad ni CI actual. [Estado vigente](estado-proyecto.md).
+
 Fecha: 2026-11-04. Entorno: Windows, Node 24.12.0 existente, Docker Desktop, bases y Redis desechables en loopback. No se tocó producción, no se desplegó ni se fusionó ningún PR.
 
 ## Referencias y comparación reproducible

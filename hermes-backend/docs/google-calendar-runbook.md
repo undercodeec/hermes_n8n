@@ -1,5 +1,7 @@
 # Google Calendar / Meet en Hermes
 
+> **Protocolo técnico vigente con antecedentes OAuth**. Revisión 10/11/2026 contra `src/integrations/google-calendar`: existen servicios y `GET /api/meetings`; OAuth HTTP está limitado a desarrollo local. No se verificaron credenciales, consentimiento, modo Google Cloud, flag efectivo ni reuniones productivas; las observaciones de configuración siguientes son históricas. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md); preflight común: [despliegue](deployment-runbook.md).
+
 ## Estado y arquitectura
 
 Integración local con feature flag. No despliega ni autoriza cuentas automáticamente.

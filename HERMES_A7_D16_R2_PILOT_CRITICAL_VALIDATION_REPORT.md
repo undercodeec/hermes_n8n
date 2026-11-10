@@ -1,5 +1,7 @@
 # HERMES A7-D16-R2 — cierre de validaciones críticas
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](ProyectMD/estado-proyecto.md).
+
 Fecha local: 2026-10-27. **Dictamen: `PILOT_CRITICAL_TESTS_PASSED`.** Las tres pruebas críticas con interrupción y reinicio de procesos pasaron en el arnés local, junto con la regresión seleccionada. Este dictamen prepara la revisión de un piloto pequeño y supervisado; no equivale a `E2E_VALIDATED` para toda la matriz avanzada ni autoriza por sí solo activar o desplegar el piloto.
 
 ## Alcance y entorno

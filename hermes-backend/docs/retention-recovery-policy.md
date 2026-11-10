@@ -1,5 +1,7 @@
 # Retention and recovery policy (F2)
 
+> **Protocolo técnico; aprobación operativa separada**. Clasificación 10/11/2026. Implementación y endpoint no equivalen a política productiva aprobada, backups recientes ni restore verificado. El status inferior es el corte original. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md); preflight: [despliegue](deployment-runbook.md).
+
 Status: `F2_RETENTION_RECOVERY_TECHNICALLY_VALIDATED_POLICY_APPROVAL_PENDING`.
 This implementation does not approve production values, deploy itself, or turn on periodic work.
 

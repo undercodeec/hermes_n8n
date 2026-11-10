@@ -1,5 +1,7 @@
 # Mercado y moneda por Meta Ad ID verificado — 31 de octubre de 2026
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](estado-proyecto.md).
+
 ## Estado
 
 - Rama: `fix/meta-ad-market-currency-20261031`, basada en `fix/nous-conversational-quality-20261031` (`0a0bb53975085abc5a02b7b9af005bc06eec2bbc`).

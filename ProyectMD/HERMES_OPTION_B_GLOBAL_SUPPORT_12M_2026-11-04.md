@@ -1,5 +1,7 @@
 # Opción B: soporte anual de los nueve planes — 2026-11-04
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](estado-proyecto.md).
+
 ## Decisión y alcance
 
 El propietario aprobó expresamente en `ProyectMD/prompt.md` la opción B: Landing Básica GLOBAL/USD 250 pasa de un mes a doce meses de soporte técnico; los otros ocho planes EC/USD se preparan con doce meses desde su creación; Autoridad y Élite mantienen VIP prioritario. Los nueve importes permanecen 250, 600, 1500, 360, 510, 1010, 550, 850 y 3490 USD. La aprobación es **comercial**, no es permiso para escribir en producción.

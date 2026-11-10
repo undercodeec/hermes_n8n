@@ -1,5 +1,7 @@
 # Preflight de secretos y dependencias
 
+> **Histórico — auditoría del 21/09/2026**. Clasificación 10/11/2026. No acredita rotación, versiones o permisos actuales. Conservar evidencias sin reproducir secretos. Procedimiento vigente: [despliegue](deployment-runbook.md). Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 Fecha: 2026-09-21. Base: `058874eedc53b4a423ef9f68e646844437088b56`.
 
 Este cambio prepara el repositorio. No accede a la VPS, no rota credenciales,

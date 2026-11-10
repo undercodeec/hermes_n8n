@@ -1,5 +1,7 @@
 # F3 approval authority and retrieval eligibility
 
+> **Histórico — gate offline**. Clasificación 10/11/2026. Evidencia limitada al commit y corpus descritos; las afirmaciones OFF/OPEN son del corte original, no observación actual. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md). Operación: [learning](conversation-learning-operations.md).
+
 Base commit: `a2a6cc4b0faaefd764f2f36fbc4b8fe6abc05c22`. This document belongs to the resulting single Git commit. The gate uses only synthetic data in local PostgreSQL/Redis and fake provider HTTP. F3 remains OPEN and the four `LEARNING_*` flags remain OFF.
 
 ## Actual authority path

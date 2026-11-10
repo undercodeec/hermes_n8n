@@ -1,5 +1,7 @@
 # HERMES A7-D4 — corrección local de idempotencia Nous
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](estado-proyecto.md).
+
 ## Identidad y alcance
 
 - Base: `a7/piloto-nous-gemini-local` en `9f0ed46b58cc18df8b7f49387b56d4dbb3f47996` (tree `bccd14661b0a8c425892199c724ff0523b2fb139`).

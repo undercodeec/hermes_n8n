@@ -1,5 +1,7 @@
 # Fase 0: evaluación de la salida final
 
+> **Protocolo técnico de harness con evidencia histórica**. Clasificación 10/11/2026. Los resultados y corpus citados no representan una ejecución nueva ni delivery real. El modo provider requiere revisión separada. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 Este harness local recorre los 24 casos sintéticos de `test/fixtures/conversation-engine.baseline.json` con `nous_hermes` y `gemini_direct` (48 ejecuciones). El recorrido usa la ruta de `WebhookService`, el guard de entrada, `AutoReplyService`, `CommercialPolicyService`, `CommercialSnapshot`, los revisores de afirmaciones comerciales, el guard de salida y la regla de elegibilidad de `AutomatedDeliveryService`. El texto evaluado es el lote preparado **después** de las correcciones finales; `delivery.syntheticIds` indica las partes que el fake habría confirmado. Una parte preparada puede quedar suprimida por la ventana de WhatsApp.
 
 ## Garantía de aislamiento

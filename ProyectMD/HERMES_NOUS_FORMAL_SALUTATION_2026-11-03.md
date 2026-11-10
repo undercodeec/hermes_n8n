@@ -1,5 +1,7 @@
 # Hermes/Nous: tratamiento formal personalizado (2026-11-03)
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](estado-proyecto.md).
+
 ## Base y alcance
 
 Rama: `fix/nous-personalized-formal-salutation-20261103`, creada desde el HEAD remoto de `pilot/a7-d12-monitor-only-20261026` (`fb36afe`). El worktree principal, que contenía cambios ajenos, quedó intacto. No se modificaron tarifas, promociones, condiciones comerciales, Prisma schema, autenticación ni Meta Ads. No hubo migraciones, despliegue ni publicación de imágenes.

@@ -1,5 +1,7 @@
 # Evaluación de memoria larga de Hermes (Fase 4)
 
+> **Histórico — evaluación local**. Clasificación 10/11/2026. Resultados y gates corresponden al corte descrito, no prueban eficacia o activación actual. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 Estado: preparación local. No existen resultados de proveedor real ni del recorrido completo del backend para este corpus. `LEARNING_SUMMARY_ENABLED` permanece apagado; no hay escritor automático de `ConversationState.summary` en esta fase.
 
 ## Corpus y pares

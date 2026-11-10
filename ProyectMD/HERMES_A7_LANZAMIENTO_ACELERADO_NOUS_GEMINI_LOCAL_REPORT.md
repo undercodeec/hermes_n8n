@@ -1,5 +1,7 @@
 # A7 — preparación local del piloto Nous → Gemini Direct
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](estado-proyecto.md).
+
 **Corte:** 2026-10-25. **Base auditada:** `a4a70fb7ccaa4f6e0b456161b7e373f777b2a0e2` (A6, 25 migraciones según el acta D1). **Parche local:** rama `a7/piloto-nous-gemini-local`, commit `634bfdf607e8a08878f5dd6dab3fcb7bf5c9732f`, tree `e5361e7813efbe5768a648b022e79722ce93e451`, worktree `D:\Documentos\Hermes\.worktrees\a7-piloto-local`. **Alcance:** un negocio y un número WhatsApp; código local y pruebas simuladas. La imagen DARK `sha256:93684d3ff2612d7b8ab635bcb9ef39dd35e50f511a3d2459f146cc986ddf1bc2` y el resultado Round A son datos del prompt, no comprobaciones VPS de esta sesión. Se leyeron las actas locales A6-D0 y A6-D1. **A6-D3-S1 y el acta del último Round A no estaban en el repositorio local**; su resultado solo se conoce por el prompt: HTTP 200, 3.876 tokens de entrada, 1.440 de pensamiento, 56 de candidato, `MAX_TOKENS`, entrega suprimida y cero duplicados reportados.
 
 ## Decisión local

@@ -1,5 +1,7 @@
 # Baseline reproducible del agente CRM
 
+> **Histórico — baseline del 21/09/2026**. Clasificación 10/11/2026. Flujos, deuda y resultados siguientes describen esa base, no el código ni servicios actuales. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md); arquitectura actual: [README](../README.md).
+
 Fecha de captura: 2026-09-21, America/Guayaquil. Rama base: `main`; commit base: `5c99222` (`fix(hermes): recover coherent WhatsApp conversations`). Rama de trabajo: `feat/hermes-conversation-engine`.
 
 ## Alcance y configuración verificada

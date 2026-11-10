@@ -1,5 +1,7 @@
 # Reconciliación controlada del catálogo comercial — 2026-11-04
 
+> **Plan histórico, no autorización operativa.** Revalidar antes de ejecutar. [Estado vigente](estado-proyecto.md).
+
 ## Evidencia y decisión comercial
 
 La migración `20260923020000_seed_global_commercial_prices` insertó nueve Product/PriceList GLOBAL/USD. Las migraciones posteriores presentes en esta rama no contienen borrado de los ocho faltantes; `20260925120000_commercial_plan_terms` añade metadatos a los nueve y `20261029200000_black_friday_landing_80` añade solo la promoción de landing básica. El historial Git contiene un procedimiento selectivo de recuperación de la landing básica (`ee9e4bb`, endurecido en `fd82b97`), sin prueba de que se haya ejecutado en producción. Tampoco hay evidencia local de una eliminación intencional, de un backup parcial o de la causa de la ausencia productiva. **No repetir la migración histórica ni ejecutar reset/db push.**

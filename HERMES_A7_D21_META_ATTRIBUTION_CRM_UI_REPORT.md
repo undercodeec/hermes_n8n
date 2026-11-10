@@ -1,5 +1,7 @@
 # Hermes A7-D21 — atribución Meta Ads en el CRM
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](ProyectMD/estado-proyecto.md).
+
 **Dictamen: `ATTRIBUTION_UI_LOCAL_READY`**
 Fecha: 2026-10-28. Alcance: implementación, pruebas y documentación locales. No se integró ni desplegó.
 

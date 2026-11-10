@@ -1,5 +1,7 @@
 # Black Friday: soporte de 12 meses y release único — 2026-11-02
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](estado-proyecto.md).
+
 ## Alcance y autoridad
 
 La instrucción comercial vigente para esta tarea es **12 meses de soporte técnico posteriores a la entrega** en la promoción Black Friday Landing Page. Las otras nueve prestaciones y los importes permanecen intactos. El backend sigue leyendo el `scope` de la `PriceList` seleccionada en cada turno: mientras el registro productivo diga un mes, esa es la duración comunicable. Preparar código y pruebas no actualiza el CRM.
