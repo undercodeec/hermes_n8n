@@ -11,6 +11,7 @@ import {
   MessageDirection,
   MessageSender,
   MessageType,
+  Prisma,
   TaskStatus,
   TaskType,
 } from '@prisma/client';
@@ -20,16 +21,21 @@ import { ConversationsService } from './conversations.service';
 
 describe('ConversationsService', () => {
   const tx = {
+    $queryRaw: jest.fn().mockResolvedValue([]),
     $executeRaw: jest.fn(),
-    message: { create: jest.fn(), findFirst: jest.fn() },
-    conversation: { findUnique: jest.fn(), update: jest.fn() },
+    message: { create: jest.fn(), findFirst: jest.fn(), groupBy: jest.fn() },
+    conversation: {
+      findUnique: jest.fn(),
+      update: jest.fn(),
+      findMany: jest.fn(),
+    },
     humanHandoff: { findFirst: jest.fn() },
     auditLog: { create: jest.fn() },
   };
   const prisma = {
-    $queryRaw: jest.fn().mockResolvedValue([]),
+    $queryRaw: tx.$queryRaw,
     conversation: {
-      findMany: jest.fn(),
+      findMany: tx.conversation.findMany,
       findUnique: jest.fn(),
       count: jest.fn(),
     },
@@ -37,7 +43,7 @@ describe('ConversationsService', () => {
       findFirst: jest.fn(),
       findMany: jest.fn(),
       count: jest.fn(),
-      groupBy: jest.fn(),
+      groupBy: tx.message.groupBy,
     },
     $transaction: jest.fn((callback: (client: typeof tx) => unknown) =>
       callback(tx),
@@ -52,7 +58,13 @@ describe('ConversationsService', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    (prisma.$queryRaw as jest.Mock).mockResolvedValue([]);
+    (prisma.$queryRaw as jest.Mock).mockImplementation((query: Prisma.Sql) =>
+      Promise.resolve(
+        query.sql.includes('unnest')
+          ? (query.values[0] as string[]).map((id) => ({ id }))
+          : [],
+      ),
+    );
     tx.conversation.findUnique.mockResolvedValue({
       id: 'conversation-1',
       status: ConversationStatus.HANDED_OFF,
