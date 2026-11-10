@@ -1,5 +1,7 @@
 # Runbook de despliegue VPS — correcciones locales
 
+> **Histórico — procedimiento y evidencia de septiembre**. Clasificación 10/11/2026. No ejecutar sus comandos de actualización/migración como receta vigente. Procedimiento operativo único: [despliegue](deployment-runbook.md). Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md). Se conserva el acta original sin acreditar despliegue actual.
+
 Fecha: 2026-09-22
 Commit de referencia: `8da7d06b4cc6415dd7d8c28444983576b226d424`
 Autor: `Christopher Gallardo <undercodeec@gmail.com>`

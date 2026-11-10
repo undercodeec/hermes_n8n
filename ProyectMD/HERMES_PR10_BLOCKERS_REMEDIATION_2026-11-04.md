@@ -1,5 +1,7 @@
 # Remediación de bloqueantes de PR #10 — 2026-11-04
 
+> **Acta histórica.** Resultados originales conservados; PR #10 ya integrado al corte vigente. [Estado vigente](estado-proyecto.md).
+
 ## Alcance y estado
 
 - Rama de trabajo: `feat/hermes-commercial-packages-20261104`; HEAD inicial `e332c75fb5361cb2dd58eb14784be75ab44c8aec`. El commit `41b9365` de PR #9 es ancestro. No se modificó la rama piloto ni PostgreSQL productivo.

@@ -1,5 +1,7 @@
 # Conversación comercial de Nous: auditoría local y despliegue focalizado
 
+> **Histórico — auditoría del 22/09/2026**. Clasificación 10/11/2026. Las limitaciones de catálogo de esta acta no describen el snapshot comercial actual. No usar precios web, actualización a `origin/main` ni instrucciones antiguas como operación vigente. Ver [Black Friday](commercial-black-friday-runbook.md), [despliegue](deployment-runbook.md) y [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 Fecha: 2026-09-22. HEAD inicial: `51024c59700ee1dad72d7483c7d34266bf29bac5`.
 
 ## Dónde se forma la respuesta

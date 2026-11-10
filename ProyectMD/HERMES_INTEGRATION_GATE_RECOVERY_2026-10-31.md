@@ -1,5 +1,7 @@
 # Recuperación del gate de integración — 31 de octubre de 2026
 
+> **Acta histórica.** Resultados originales conservados; no acredita CI verde actual. [Estado vigente](estado-proyecto.md).
+
 ## Dictamen y alcance
 
 **INTEGRATION_GATE_PASSED** en el entorno local aislado: se ejecutaron las 18 suites de `jest-integration.json`, con **188 pruebas aprobadas, cero fallidas y una omisión opcional preexistente**. El backend productivo no se modificó y no hubo envíos WhatsApp reales.

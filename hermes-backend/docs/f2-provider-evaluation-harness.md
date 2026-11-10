@@ -1,5 +1,7 @@
 # F2 provider evaluation: corpus y harness offline
 
+> **Protocolo técnico de harness con corte histórico**. Clasificación 10/11/2026. El modo real requiere autorización separada; los gates aquí citados pertenecen a esta preparación y no sustituyen el [estado vigente](../../ProyectMD/estado-proyecto.md). No activa learning.
+
 Contrato del reviewer: backend `721f9756e658bc553ea0238b836fb236f8ae850b`. Rúbrica humana: `ae4cfa23567f4745fd990df3dd853e97749b65d6`, `docs/f2-human-review-synthetic-2026-10-13.md`. Este harness no cierra `F2_PROVIDER_EVALUATION_GATE` ni activa learning.
 
 ## Corpus congelado

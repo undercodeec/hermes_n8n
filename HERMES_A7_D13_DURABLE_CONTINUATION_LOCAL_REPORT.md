@@ -1,5 +1,7 @@
 # HERMES A7-D13 — continuación durable local de MONITOR_ONLY
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](ProyectMD/estado-proyecto.md).
+
 Fecha: 26/10/2026. Dictamen: **READY_FOR_GIT_REVIEW**. Este dictamen habilita únicamente la revisión del código local; no acredita capacidad productiva, activación de Nous ni política aprobada de retención.
 
 ## A. Estado inicial

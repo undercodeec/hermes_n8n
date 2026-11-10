@@ -1,5 +1,7 @@
 # A7 — procedimiento futuro en Codex VPS: smoke Nous y piloto
 
+> **Plan histórico, no autorización operativa.** Revalidar antes de ejecutar. [Estado vigente](estado-proyecto.md).
+
 **Documento operativo; no ejecutado.** Requiere autorización separada para cada cambio VPS, llamada real QA, apertura de piloto y anuncios. Alcance: una instancia, un negocio y un número WhatsApp. El punto de partida declarado es A6 en DARK, imagen `sha256:93684d3ff2612d7b8ab635bcb9ef39dd35e50f511a3d2459f146cc986ddf1bc2`, OCI `a4a70fb7ccaa4f6e0b456161b7e373f777b2a0e2`, 25 migraciones y F3 OFF; Codex VPS debe comprobarlo. El parche A7 no añade migraciones.
 
 ## 1. Gate de lectura y preparación

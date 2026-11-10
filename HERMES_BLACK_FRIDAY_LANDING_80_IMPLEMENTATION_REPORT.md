@@ -1,5 +1,7 @@
 # Informe de implementación: Black Friday Landing Page USD $80
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](ProyectMD/estado-proyecto.md).
+
 Fecha: 30 de octubre de 2026. Rama: `feat/nous-black-friday-landing-80-pilot`. Base: `origin/pilot/a7-d12-monitor-only-20261026` (`1fa0e13ba46e72949797c283fab554d93d1aa1d3`). Commit de integración: `4a4e39d`. Alcance: desarrollo local; sin acceso a producción ni despliegue. La implementación original `6fb5e120a372a6291b0761dccecf1bbdc9beca08` estaba basada en un `main` divergente; se integró sobre la línea piloto que ya contiene Audio Inbox y el fallback humanizado.
 
 ## Arquitectura y regla comercial

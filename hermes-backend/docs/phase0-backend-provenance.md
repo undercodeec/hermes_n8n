@@ -1,5 +1,7 @@
 # Backend image provenance (prepared; not deployed)
 
+> **Protocolo técnico de procedencia**. Clasificación 10/11/2026. “Not deployed” describe esta preparación original, no un inventario actual. La publicación GHCR se valida separando SHA del workflow, fuente, árbol y digest; ver [despliegue](deployment-runbook.md). Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 The versioned Dockerfile rejects a missing or malformed full Git SHA and writes
 `org.opencontainers.image.revision` on the production image. The versioned
 Compose build requires `BACKEND_GIT_COMMIT`. This does not assign a commit to

@@ -1,5 +1,7 @@
 # HERMES 2.0 — A7-D10-R3: compatibilidad backend ↔ Nous A7-D8
 
+> **Histórico — informe A7-D10-R3**. Clasificación 10/11/2026. Dictamen y evidencia externa se conservan para esa revisión; no equivalen a una auditoría nueva del gateway ni del despliegue. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 **Dictamen: INCOMPLETA.** No se encontró una incompatibilidad del contrato HTTP entre el parche A7-D10-R1 y el agente A7-D8. El backend local separa ahora los insumos con los que A7-D8 deriva una sesión, incluso si varios clientes escriben el mismo saludo. Falta ejecutar la matriz de aislamiento contra el gateway A7-D8 real en una red aislada; el test del backend y el smoke anterior de un solo inbound no prueban que el agente no comparta estado. Este dictamen no habilita publicación ni activación.
 
 ## Identidades y alcance

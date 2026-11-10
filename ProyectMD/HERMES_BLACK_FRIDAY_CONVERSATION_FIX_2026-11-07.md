@@ -1,5 +1,7 @@
 # Hermes 2.0 — corrección conversacional de Black Friday (2026-11-07)
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](estado-proyecto.md).
+
 **Estado:** ajustes finales del PR #15 validados localmente; pendiente de revisión y fusión.
 
 ## Causa raíz y reglas

@@ -1,5 +1,7 @@
 # F3 commercial precedence — offline authority map
 
+> **Histórico — gate offline de autoridad**. Clasificación 10/11/2026. No prueba flags productivos actuales ni autoriza tarifas. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md); operación: [Black Friday](commercial-black-friday-runbook.md).
+
 Base: `620c64de00e6efc4447d060a51f0d927da288121`. The gate exercises retrieval locally with fake providers. Production learning flags remain OFF.
 
 | Domain | Authoritative source in this codebase | Learning influence | Enforcement exercised |

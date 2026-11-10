@@ -1,5 +1,7 @@
 # F3 retrieval rollback — procedimiento conceptual
 
+> **Protocolo conceptual con evidencia histórica offline**. Clasificación 10/11/2026. No registra rollback productivo ni estado actual de flags. Procedimiento común: [despliegue](deployment-runbook.md). Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 Base offline: `83364e8d1175a05077d8e4b970fe2872bcdd6467`. Gate: `F3_ROLLBACK_GATE = PROVEN_OFFLINE`. F3 sigue `OPEN`; el canary de retrieval está pendiente.
 
 ## Frontera real

@@ -1,5 +1,7 @@
 # Corrección de calidad conversacional de Nous — 31 de octubre de 2026
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](estado-proyecto.md).
+
 ## Estado y procedencia
 
 - Base productiva: `871d332ada0eb2dae22e9c39be367734090c3e76`.

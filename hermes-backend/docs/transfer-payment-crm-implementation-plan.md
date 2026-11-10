@@ -1,5 +1,7 @@
 # Plan de implementación: transferencias bancarias en Hermes CRM
 
+> **Histórico — plan y avance de implementación**. Revisión 10/11/2026: el backend contiene `src/payments/payments.controller.ts` (cuentas, consulta y revisión/aprobación/rechazo), y la ruta autenticada de media en `src/conversations/conversations.controller.ts`. Esto no verifica UI externa, migración aplicada, cuenta bancaria ni flag servido. No activar ni ejecutar migraciones desde este plan. Operación consolidada: [Black Friday](commercial-black-friday-runbook.md); estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 **Estado:** implementación local preparada; pendiente de configuración, migración aplicada y prueba con Meta
 **Última actualización:** 2026-10-02
 **Repositorios implicados:** `Hermes/hermes-backend` y `undercodeec_nextjs`.

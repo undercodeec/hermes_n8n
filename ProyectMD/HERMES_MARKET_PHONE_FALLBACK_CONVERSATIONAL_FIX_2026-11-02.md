@@ -1,5 +1,7 @@
 # Hermes: mercado por señales y continuidad comercial
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](estado-proyecto.md).
+
 Fecha: 2026-11-02
 Base piloto: `56a8b48121463ce653918744031372b7c1807207`
 Rama: `fix/market-phone-conversation-20261102`

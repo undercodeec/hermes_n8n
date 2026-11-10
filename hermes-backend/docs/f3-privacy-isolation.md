@@ -1,5 +1,7 @@
 # F3 privacy isolation: actual runtime boundary
 
+> **Histórico — gate offline de privacidad**. Clasificación 10/11/2026. “Actual” y los flags del cuerpo corresponden a la base indicada, no a una inspección nueva de VPS. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 Base commit: `a117e85c8eeb37eb96bb376c4a0a758ae94c6829`. Scope: offline synthetic data only. `F3 = OPEN`; all four `LEARNING_*` flags remain OFF. The final commit is the Git commit containing this document.
 
 ## Data flow

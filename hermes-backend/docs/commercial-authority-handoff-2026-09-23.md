@@ -1,5 +1,7 @@
 # Autoridad comercial global de Hermes
 
+> **Histórico — handoff fechado**. Clasificación 10/11/2026. Se preservan decisiones y evidencia originales; importes, semillas y configuración aquí descritos no son tarifas ni estado productivo vigente. Operación consolidada: [Black Friday](commercial-black-friday-runbook.md). Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 ## Fuente operativa
 
 `Product` y `PriceList` de PostgreSQL son la única fuente de precios de Hermes. La migración `20260923020000_seed_global_commercial_prices` carga nueve planes globales, en USD e IVA incluido. Una tarifa con `market = NULL` aplica igual para Ecuador, España y cualquier otro mercado; Hermes no convierte la moneda ni solicita país para comunicarla.

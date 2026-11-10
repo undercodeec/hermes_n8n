@@ -1,5 +1,7 @@
 # UnderCodeEC Pilot Implementation Plan
 
+> **Plan histórico, no autorización operativa.** Conservar resultados y checklist como evidencia fechada. [Estado vigente](../../../ProyectMD/estado-proyecto.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Preparar el backend A7-D4 para un único número UnderCodeEC, con Nous comercial desactivado por defecto y controles mínimos de operación.

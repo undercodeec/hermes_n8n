@@ -1,5 +1,11 @@
 # Runbook de Hermes CRM con Nous Hermes Agent
 
+> **Protocolo técnico con procedimiento histórico de septiembre**. Revisión 10/11/2026. La operación general y rollback se consolidan en [despliegue](deployment-runbook.md); el procedimiento focalizado inferior se conserva como antecedente, no autoriza migraciones ni activar modo abierto. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
+## Corrección de precedencia para este HEAD
+
+`src/conversation-engine/conversation-engine.service.ts` prioriza `assignedEngine`. Si hay `HERMES_PILOT_NEW_CONVERSATION_ENGINE` configurado, una conversación sin asignación usa Gemini directo; la asignación del piloto se gestiona separadamente. Por ello, la descripción legacy de allowlist/motor global que sigue solo aplica sin asignación ni esa política de piloto: cambiar el motor global no revierte por sí solo conversaciones ya asignadas. Consultar [operación comercial consolidada](commercial-black-friday-runbook.md). La presencia del transporte privado y su validador no acredita versión/compatibilidad del agente externo ni flags activos en VPS.
+
 La auditoría del contexto, las fuentes comerciales y el contrato de mensajes
 independientes está en [nous-commercial-conversation-change.md](nous-commercial-conversation-change.md).
 
@@ -16,7 +22,7 @@ NOUS_HERMES_CONVERSATION_ALLOWLIST=
 NOUS_HERMES_OPEN_INBOUND_TEST=false
 ```
 
-Con estos valores todas las conversaciones usan `DirectGeminiEngine`; el CRM
+Sin asignación persistida ni política de piloto, estos valores seleccionan `DirectGeminiEngine`; el CRM
 no depende de Nous. Si se configura `nous_hermes` con el modo abierto en
 `false`, una conversación que no figure por su UUID interno en la allowlist
 continúa con Gemini directo. El valor literal `true` de
@@ -133,19 +139,14 @@ El aprovisionamiento, permisos, rotación coordinada y rollback se detallan en
 Sólo `app` se conecta a `hermes_client_api`; PostgreSQL, Redis y n8n permanecen
 en la red predeterminada. No añadir `ports:` para `8642`.
 
-## Despliegue focalizado desde la VPS
+## Despliegue focalizado desde la VPS (antecedente sustituido)
 
-Con el modo abierto desactivado y la allowlist vacía, ejecutar en la VPS:
-
-```bash
-COMPOSE_ENV=/etc/hermes-crm/compose.env
-docker compose --env-file "$COMPOSE_ENV" build app
-docker compose --env-file "$COMPOSE_ENV" run --rm app npx prisma migrate deploy
-docker compose --env-file "$COMPOSE_ENV" up -d app
-```
-
-La migración debe completarse antes de reiniciar la aplicación porque crea el
-ledger durable `automated_deliveries`. Si falla, no iniciar el nuevo contenedor.
+El procedimiento histórico construía `app`, aplicaba migraciones y recreaba el
+servicio. No repetir esa secuencia automáticamente: allowlist vacía y modo
+abierto desactivado no neutralizan asignaciones persistidas. Aplicar el
+[preflight vigente](deployment-runbook.md), fijar imagen inmutable y revisar
+por separado cualquier migración pendiente. La creación histórica del ledger
+`automated_deliveries` no demuestra que hoy falte esa migración.
 
 Comprobar DNS y salud desde el mismo contenedor, sin imprimir Authorization:
 
@@ -156,9 +157,10 @@ docker exec hermes-app node -e "const fs=require('node:fs');const k=fs.readFileS
 ```
 
 No imprimir la clave, headers, cuerpos completos de prompts/respuestas ni usar
-`set -x`. Una prueba sintética inicial puede usar una conversación ficticia y
-una allowlist de un solo UUID. Vaciarla inmediatamente al terminar; después,
-el modo abierto permite pruebas reales de múltiples contactos entrantes.
+`set -x`. Una prueba sintética requiere conversación QA/operator-owned y
+autorización de entrega. Al cerrar, restaurar la configuración aprobada y
+revisar asignaciones persistidas; no habilitar modo abierto ni admitir
+contactos reales como continuación automática de la prueba.
 
 ## Cola, límites y fallos de Nous
 

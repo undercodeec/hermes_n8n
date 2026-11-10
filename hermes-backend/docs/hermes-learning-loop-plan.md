@@ -1,5 +1,7 @@
 # Plan de desarrollo: memoria y mejora continua de Hermes
 
+> **Histórico — plan y registro de fases**. Clasificación 10/11/2026. Se conservan actas, decisiones y evolución; no mantener aquí un segundo estado global ni interpretar flags fechados como actuales. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md); guía técnica: [operación learning](conversation-learning-operations.md).
+
 **Estado documental local (21/10/2026; sin auditoría VPS en LF-13).** F0 mantiene la línea base aprobada con seguimiento; F0A, F1 y F2 constan CLOSED en actas fechadas. F3 y F4 siguen OPEN; Round A/B no están autorizadas. Las observaciones operativas del 16–17/10 se conservan abajo como historia, sin trasladarlas al estado servido actual. En el árbol local de integración existe la implementación de la guarda de generación única y la migración `20261017140000_f3_single_generation_canary_guard`, con `F3_SINGLE_GENERATION_CANARY_ENABLED=false` por defecto; LF-11 acreditó validación, build y pruebas locales con fakes. Eso no prueba que la migración esté aplicada en VPS ni que el código esté servido. La última observación productiva fechada informó 23 migraciones y flags learning apagados, pero su vigencia, backups y configuración requieren auditoría VPS de solo lectura por separado.
 
 ## 1. Resultado buscado y límites

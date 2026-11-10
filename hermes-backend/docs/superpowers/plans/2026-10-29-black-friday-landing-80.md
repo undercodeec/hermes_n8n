@@ -1,5 +1,7 @@
 # Black Friday Landing $80 Implementation Plan
 
+> **Histórico — plan de implementación, no tarea pendiente ni tarifa vigente**. Clasificación 10/11/2026. Checkboxes, instrucciones a agentes e importe USD corresponden al plan original; no ejecutar automáticamente ni usar el seed como autorización comercial. Estado vigente: [estado del proyecto](../../../../ProyectMD/estado-proyecto.md); operación consolidada: [Black Friday](../../commercial-black-friday-runbook.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Let Nous answer confirmed questions about the temporary UnderCodeEC Black Friday Landing Page for USD $80 without changing normal plans.
@@ -8,7 +10,7 @@
 
 **Tech Stack:** NestJS, Prisma/PostgreSQL, Jest.
 
-**Spec:** `D:/Documentos/Hermes/ProyectMD/prompt.md`
+**Spec histórica:** `ProyectMD/prompt.md` (documento de trabajo original, no contrato vigente; véase [operación consolidada](../../commercial-black-friday-runbook.md)).
 
 ## Global Constraints
 

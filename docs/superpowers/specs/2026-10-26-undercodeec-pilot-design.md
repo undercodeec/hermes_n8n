@@ -1,5 +1,7 @@
 # Piloto comercial UnderCodeEC: diseño propuesto
 
+> **Diseño histórico.** Describe intención, no prueba despliegue ni aceptación. [Estado vigente](../../../ProyectMD/estado-proyecto.md).
+
 ## Propósito y alcance
 
 Habilitar en una fase posterior la atención comercial con Nous Hermes para conversaciones nuevas que lleguen al único número WhatsApp Business de UnderCodeEC, tanto desde anuncios de Meta como de forma orgánica. El código entregado debe permanecer DARK: sin activación, despliegue, push ni inferencias reales.

@@ -1,5 +1,7 @@
 # Meta Attribution CRM Implementation Plan
 
+> **Plan histórico, no autorización operativa.** Conservar resultados y checklist como evidencia fechada. [Estado vigente](../../../ProyectMD/estado-proyecto.md).
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
 
 **Goal:** Give authorized CRM staff a safe, filterable view of Meta WhatsApp origins, later references, and verified acquisition results.

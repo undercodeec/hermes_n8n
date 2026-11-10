@@ -1,5 +1,7 @@
 # HERMES A7-D16-R1 — informe del arnés E2E aislado
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](ProyectMD/estado-proyecto.md).
+
 Fecha local: 2026-10-27. **Dictamen: `E2E_HARNESS_READY`.** El recorrido sintético principal y las suites integradas seleccionadas pasaron localmente. No corresponde `E2E_VALIDATED` para todos los puntos de interrupción: algunos solo cuentan con pruebas unitarias de fallos simulados y faltan pruebas de caída real del proceso en esos límites.
 
 ## Entorno y rama

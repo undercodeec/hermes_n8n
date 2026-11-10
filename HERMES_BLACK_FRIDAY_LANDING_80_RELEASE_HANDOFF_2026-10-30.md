@@ -1,5 +1,7 @@
 # Hermes 2.0 — handoff de release Black Friday Landing Page USD $80
 
+> **Handoff histórico.** No autoriza despliegue ni acredita producción actual. [Estado vigente](ProyectMD/estado-proyecto.md).
+
 Fecha: 30 de octubre de 2026. Destinatario: Codex VPS y operador de release. **Dictamen local: `READY_FOR_VPS_DEPLOY`**, sujeto a los controles de preflight que se indican abajo. Este documento prepara el despliegue; no registra un despliegue, una migración productiva ni la activación comercial.
 
 ## 1. Identidad inmutable y procedencia

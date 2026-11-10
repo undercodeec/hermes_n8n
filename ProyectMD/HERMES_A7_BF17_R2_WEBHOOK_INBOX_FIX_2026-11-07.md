@@ -1,5 +1,7 @@
 # Hermes 2.0 — A7-BF17-R2: corrección del Webhook Inbox
 
+> **Acta histórica.** Resultados originales conservados; no acredita producción actual. [Estado vigente](estado-proyecto.md). Los documentos PR #16 enlazados son evidencia remota no integrada.
+
 **Estado:** revisión técnica final validada para el PR #17. No fusionada ni desplegada.
 **Fecha:** 2026-11-07
 **Base:** `pilot/a7-d12-monitor-only-20261026` en `49a7f6adf3776e81fae9675f66b12ad48271dcf3`.
@@ -7,7 +9,7 @@
 
 ## Causa raíz
 
-El [diagnóstico A7-BF17-R1](HERMES_A7_BF17_R1_INCIDENT_DIAGNOSIS_2026-11-07.md) documenta un evento `MESSAGE` sin `message.from` ni `contact.wa_id`. La versión servida invoca `.trim()` sobre un valor ausente y vuelve a reclamar indefinidamente ese `FAILED` porque trata todos los errores como recuperables. Al corte del diagnóstico, el evento seguía conservado y no tenía mensaje ni entrega vinculada. Los identificadores alternativos del payload no permiten inferir un número WhatsApp autorizado.
+El [diagnóstico A7-BF17-R1](https://github.com/undercodeec/hermes_n8n/blob/5034fac19dcdbe49562a5b5cec068d3de0f9f60d/ProyectMD/HERMES_A7_BF17_R1_INCIDENT_DIAGNOSIS_2026-11-07.md) documenta un evento `MESSAGE` sin `message.from` ni `contact.wa_id`. La versión servida invoca `.trim()` sobre un valor ausente y vuelve a reclamar indefinidamente ese `FAILED` porque trata todos los errores como recuperables. Al corte del diagnóstico, el evento seguía conservado y no tenía mensaje ni entrega vinculada. Los identificadores alternativos del payload no permiten inferir un número WhatsApp autorizado.
 
 ## Solución implementada
 
@@ -67,7 +69,7 @@ Este cambio local no altera el evento productivo. Antes de intervenir, un operad
 
 ## Estado y riesgos pendientes
 
-La corrección está basada en el HEAD piloto que ya incluye Black Friday. La imagen GHCR A7-BF16 es inmutable y no contiene este parche. Según el último [preflight público](HERMES_A7_BF17_PRODUCTION_PREFLIGHT_2026-11-07.md), producción seguía en un commit anterior; este informe no afirma haber repetido la lectura productiva. El evento continuará fallando hasta una intervención autorizada.
+La corrección está basada en el HEAD piloto que ya incluye Black Friday. La imagen GHCR A7-BF16 es inmutable y no contiene este parche. Según el último [preflight público](https://github.com/undercodeec/hermes_n8n/blob/5034fac19dcdbe49562a5b5cec068d3de0f9f60d/ProyectMD/HERMES_A7_BF17_PRODUCTION_PREFLIGHT_2026-11-07.md), producción seguía en un commit anterior; este informe no afirma haber repetido la lectura productiva. El evento continuará fallando hasta una intervención autorizada.
 
 La procedencia de los identificadores alternativos aún no se conoce. La huella de eventos sin ID depende de su JSON y posición; si el proveedor reagrupa el lote, podría aparecer otra fila en cuarentena. La clasificación evita un envío sin destino autorizado, pero el mensaje afectado requiere revisión humana. También siguen pendientes backup reciente y restauración aislada, reconciliación de `current.json`, evaluación del incidente de credenciales por el procedimiento de seguridad correspondiente, nuevo preflight y autorización de despliegue. Ningún test local sustituye una verificación productiva controlada.
 

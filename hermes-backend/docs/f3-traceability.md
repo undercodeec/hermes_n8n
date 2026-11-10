@@ -1,5 +1,7 @@
 # F3 traceability gate — offline
 
+> **Histórico — gate offline de trazabilidad**. Clasificación 10/11/2026. Resultados, métricas y gates se conservan en su corte; no son una nueva medición ni estado servido. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 Base: `0ee1a8c10bfec43c7f53a3ae85763fb6f31886b4`. Result: `F3_TRACEABILITY_GATE_PROVEN_OFFLINE`. F3 remains `OPEN`. The corpus and measurements are in `artifacts/f3-traceability-gate/`.
 
 ## Meaning of the trace

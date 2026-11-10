@@ -1,5 +1,7 @@
 # Integración conversacional de Nous Hermes Agent
 
+> **Histórico — contrato y auditoría de septiembre**. Clasificación 10/11/2026. Los ejemplos y recuentos de claves pertenecen al corte descrito; para el contrato de este HEAD consultar `src/conversation-engine/agent-output.validator.ts` y sus tipos/pruebas, no inferirlo de una acta anterior. Operación: [Nous](nous-hermes-runbook.md). Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 ## Contrato de salida verificado en CRM (2026-09-22)
 
 El punto de partida local fue `645709735ecbe491241d604f7413f485376525b0`.

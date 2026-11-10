@@ -1,5 +1,7 @@
 # Operación de revisión de conversaciones (Fase 2)
 
+> **Protocolo técnico con actas históricas**. Clasificación 10/11/2026. Las fechas y cierres citados abajo son antecedentes, no evidencia de flags servidos. Contrato HTTP actual: `src/learning/learning.controller.ts`; configuración efectiva y autorización deben verificarse por separado. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md); preflight: [despliegue](deployment-runbook.md).
+
 **Estado documental (15/10/2026):** F1 y F2 están **CLOSED** según el [plan maestro](hermes-learning-loop-plan.md), con harness aislado, canary controlado, revisión humana y evaluación provider F2 ya registrados allí. F3 sigue **OPEN**: aprobación y sombra tuvieron despliegue técnico, y el core retrieval se probó offline en `231b119`, sin desplegarlo ni activar aprendizaje. Los cuatro flags `LEARNING_*` y las allowlists se reportaron apagados/vacíos en ese corte; su estado servido actual requiere auditoría VPS de solo lectura. Esta guía describe la operación del reviewer; las actas del 08/10 que siguen son antecedentes, no pendientes vigentes.
 
 ## Activación y aislamiento

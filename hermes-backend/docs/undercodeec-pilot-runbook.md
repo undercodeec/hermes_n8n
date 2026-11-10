@@ -1,5 +1,7 @@
 # Piloto comercial UnderCodeEC — runbook actualizado a R6 (26/10/2026)
 
+> **Histórico — runbook R6 y adendas de implementación**. Clasificación 10/11/2026. Las afirmaciones “desplegado”, “DARK”, “OFF”, “no integrado” y “no publicado” del cuerpo pertenecen a sus fechas y no describen el estado servido hoy. Se preserva el acta; la operación vigente se consolida en [despliegue](deployment-runbook.md) y [Black Friday](commercial-black-friday-runbook.md). Estado vigente único: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 > **CORTE DOCUMENTAL: 26/10/2026.** Preparado a partir de fuentes Markdown aportadas y reportes de Codex, no de una inspección nueva en vivo. **Este archivo descargable no está integrado por sí mismo en Git, en la VPS ni en el CRM.** Conserva debajo la versión histórica cuando corresponde. Cualquier operación de push, despliegue o activación requiere autorización separada.
 
 **ESTADO: backend implementado y desplegado en DARK. NOUS COMERCIAL OFF.** Este es un documento de preparación, no una autorización de activación. Un número WhatsApp UnderCodeEC. Tráfico elegible de Meta Ads y orgánico; no multi-tenant.

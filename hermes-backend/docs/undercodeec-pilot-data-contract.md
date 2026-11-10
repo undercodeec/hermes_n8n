@@ -1,5 +1,7 @@
 # UnderCodeEC A7-D10-R1: contrato mínimo de datos y evidencia pendiente
 
+> **Histórico — contrato mínimo y evidencia A7-D10**. Clasificación 10/11/2026. Mantiene el alcance y pendientes de su corte, sin afirmar inexistencia actual de toda API analítica. Los controladores actuales se listan en [README](../README.md); no se acredita integración de una UI externa. Estado vigente: [estado del proyecto](../../ProyectMD/estado-proyecto.md).
+
 ## Datos para Hermes CRM
 
 Este contrato describe una futura lectura autenticada del CRM; no añade un dashboard ni publica un endpoint nuevo. El reporte SQL de 30 días (`scripts/undercode-pilot-report.sql`) entrega sus agregados actuales. Para un endpoint, conservar la autorización existente de conversaciones (`ADMIN` o `SALES_AGENT`) y la misma semántica:

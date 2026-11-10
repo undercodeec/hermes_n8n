@@ -1,5 +1,7 @@
 # Hermes CRM First Deployment Design
 
+> **Diseño histórico.** Describe intención, no prueba despliegue ni aceptación. [Estado vigente](../../../ProyectMD/estado-proyecto.md).
+
 **Date:** 2026-09-21
 
 **Branch:** `feat/hermes-conversation-engine`
