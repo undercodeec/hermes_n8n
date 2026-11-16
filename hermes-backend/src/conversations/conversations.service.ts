@@ -44,6 +44,13 @@ const OPEN_TASK_STATUSES: TaskStatus[] = [
   TaskStatus.PENDING,
   TaskStatus.IN_PROGRESS,
 ];
+// Defense in depth: retain public CRM projections and never fetch User secrets.
+const PUBLIC_AGENT_SELECT = {
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+} satisfies Prisma.UserSelect;
 @Injectable()
 export class ConversationsService {
   constructor(
@@ -133,6 +140,16 @@ export class ConversationsService {
   }
 
   async findAll(query: QueryConversationsDto) {
+    // Ranking, hydration, reply window and attribution share a read-only snapshot.
+    return this.prisma.$transaction((tx) => this.findAllInSnapshot(query, tx), {
+      isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead,
+    });
+  }
+
+  private async findAllInSnapshot(
+    query: QueryConversationsDto,
+    prisma: Prisma.TransactionClient,
+  ) {
     const skip = (query.page - 1) * query.limit;
     const where: Prisma.ConversationWhereInput = {};
 
@@ -197,29 +214,56 @@ export class ConversationsService {
       ];
     }
 
-    const [conversations, total] = await Promise.all([
-      this.prisma.conversation.findMany({
-        where,
-        skip,
-        take: query.limit,
-        orderBy: { updatedAt: 'desc' },
-        include: {
-          contact: true,
-          state: true,
-          lead: true,
-          messages: { orderBy: { createdAt: 'desc' }, take: 1 },
-          handoffs: {
-            where: { status: { in: OPEN_HANDOFF_STATUSES } },
-            orderBy: { createdAt: 'desc' },
-            take: 1,
-            include: { assignedAgent: true },
+    // Keep Prisma's complete filter semantics (including pilot origin). Only IDs
+    // cross this boundary; latest-message lookup and page ranking stay in SQL.
+    const candidates = await prisma.conversation.findMany({
+      where,
+      select: { id: true },
+    });
+    const total = candidates.length;
+    // One bound text[] avoids the PostgreSQL parameter-count limit for large
+    // candidate sets. Existing (conversationId, createdAt) index supports LIMIT 1.
+    const rankedPage =
+      skip < total
+        ? await prisma.$queryRaw<Array<{ id: string }>>(Prisma.sql`
+          SELECT candidate.id
+          FROM unnest(${candidates.map((candidate) => candidate.id)}::text[]) AS candidate(id)
+          LEFT JOIN LATERAL (
+            SELECT "createdAt" FROM messages
+            WHERE "conversationId" = candidate.id
+            ORDER BY "createdAt" DESC LIMIT 1
+          ) latest ON true
+          ORDER BY latest."createdAt" DESC NULLS LAST, candidate.id COLLATE "C" ASC
+          OFFSET ${skip} LIMIT ${query.limit}
+        `)
+        : [];
+    const pageIds = rankedPage.map((conversation) => conversation.id);
+    const conversations = pageIds.length
+      ? await prisma.conversation.findMany({
+          where: { id: { in: pageIds } },
+          include: {
+            contact: true,
+            state: true,
+            lead: true,
+            messages: {
+              orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+              take: 1,
+            },
+            handoffs: {
+              where: { status: { in: OPEN_HANDOFF_STATUSES } },
+              orderBy: { createdAt: 'desc' },
+              take: 1,
+              include: { assignedAgent: { select: PUBLIC_AGENT_SELECT } },
+            },
+            tasks: this.hermesReviewTaskQuery(),
+            _count: { select: { messages: true } },
           },
-          tasks: this.hermesReviewTaskQuery(),
-          _count: { select: { messages: true } },
-        },
-      }),
-      this.prisma.conversation.count({ where }),
-    ]);
+        })
+      : [];
+    const pageOrder = new Map(pageIds.map((id, index) => [id, index]));
+    conversations.sort(
+      (left, right) => pageOrder.get(left.id)! - pageOrder.get(right.id)!,
+    );
 
     const conversationIds = conversations.map(
       (conversation) => conversation.id,
@@ -227,7 +271,7 @@ export class ConversationsService {
     const lastInbound =
       conversationIds.length === 0
         ? []
-        : await this.prisma.message.groupBy({
+        : await prisma.message.groupBy({
             by: ['conversationId'],
             where: {
               conversationId: { in: conversationIds },
@@ -238,46 +282,42 @@ export class ConversationsService {
     const lastInboundByConversation = new Map(
       lastInbound.map((item) => [item.conversationId, item._max.createdAt]),
     );
-    const attributions = await readAttributions(this.prisma, conversations);
+    // Legacy helper is typed as PrismaService but only uses $queryRaw; the
+    // transaction client provides that operation within the same snapshot.
+    const attributions = await readAttributions(
+      prisma as PrismaService,
+      conversations,
+    );
 
-    const data = conversations
-      .map((conversation) => {
-        const { metadata, tasks, ...safeConversation } = conversation;
-        return {
-          ...safeConversation,
-          contact: projectCrmContact(conversation.contact),
-          state: projectCrmState(conversation.state),
-          lead: conversation.lead
-            ? projectCrmLead(
-                conversation.lead,
-                attributions.get(conversation.id),
-              )
-            : null,
-          attribution: attributions.get(conversation.id),
-          handoffs: (conversation.handoffs || []).map(projectCrmHandoff),
-          messages: conversation.messages.map((message) =>
-            this.safeMessage(message),
-          ),
-          hermesIncident: this.hermesIncident(metadata),
-          hermesReviewTask: this.hermesReviewTask(
-            tasks.find((task) => task.type === TaskType.GENERAL),
-          ),
-          paymentReviewTask:
-            tasks.find((task) => task.type === TaskType.PAYMENT_VERIFICATION) ??
-            null,
-          isPriority:
-            conversation.handoffs.length > 0 ||
-            tasks.some((task) => task.type === TaskType.PAYMENT_VERIFICATION),
-          replyWindow: this.replyWindow(
-            lastInboundByConversation.get(conversation.id) ?? null,
-          ),
-        };
-      })
-      .sort(
-        (left, right) =>
-          Number(right.isPriority) - Number(left.isPriority) ||
-          right.updatedAt.getTime() - left.updatedAt.getTime(),
-      );
+    const data = conversations.map((conversation) => {
+      const { metadata, tasks, ...safeConversation } = conversation;
+      return {
+        ...safeConversation,
+        contact: projectCrmContact(conversation.contact),
+        state: projectCrmState(conversation.state),
+        lead: conversation.lead
+          ? projectCrmLead(conversation.lead, attributions.get(conversation.id))
+          : null,
+        attribution: attributions.get(conversation.id),
+        handoffs: (conversation.handoffs || []).map(projectCrmHandoff),
+        messages: conversation.messages.map((message) =>
+          this.safeMessage(message),
+        ),
+        hermesIncident: this.hermesIncident(metadata),
+        hermesReviewTask: this.hermesReviewTask(
+          tasks.find((task) => task.type === TaskType.GENERAL),
+        ),
+        paymentReviewTask:
+          tasks.find((task) => task.type === TaskType.PAYMENT_VERIFICATION) ??
+          null,
+        isPriority:
+          conversation.handoffs.length > 0 ||
+          tasks.some((task) => task.type === TaskType.PAYMENT_VERIFICATION),
+        replyWindow: this.replyWindow(
+          lastInboundByConversation.get(conversation.id) ?? null,
+        ),
+      };
+    });
 
     return {
       data,
@@ -299,7 +339,7 @@ export class ConversationsService {
           messages: { orderBy: { createdAt: 'desc' }, take: 50 },
           handoffs: {
             orderBy: { createdAt: 'desc' },
-            include: { assignedAgent: true },
+            include: { assignedAgent: { select: PUBLIC_AGENT_SELECT } },
           },
           tasks: this.hermesReviewTaskQuery(),
         },
