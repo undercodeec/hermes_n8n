@@ -1,0 +1,37 @@
+name: Hermes mobile G0 (synthetic only)
+
+on:
+  pull_request:
+    paths:
+      - 'hermes-mobile/**'
+      - '.github/workflows/hermes-mobile-g0.yml'
+  push:
+    branches:
+      - 'pilot/a7-d12-monitor-only-20261026'
+    paths:
+      - 'hermes-mobile/**'
+      - '.github/workflows/hermes-mobile-g0.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: hermes-mobile
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: hermes-mobile/package-lock.json
+      - run: npm ci --no-audit --no-fund
+      - run: npm run check
+      - run: npx expo install --check
+      - run: npx expo export --platform all --output-dir dist
