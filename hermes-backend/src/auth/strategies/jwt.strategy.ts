@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../../prisma/prisma.service';
+import { mobileJwtKey } from '../mobile-jwt-key';
 
 export interface JwtPayload {
   sub: string;
@@ -18,10 +19,24 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
   ) {
+    const webSecret = configService.getOrThrow<string>('JWT_SECRET');
+    const mobileSecret = mobileJwtKey(webSecret);
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: configService.getOrThrow<string>('JWT_SECRET'),
+      // Select the verification key using an untrusted hint only. Passport-JWT
+      // verifies the signature with the selected key BEFORE validate() is called.
+      secretOrKeyProvider: (_request, rawToken: string, done) => {
+        if (!rawToken || rawToken.length > 8192) return done(new Error('Invalid token'));
+        try {
+          const parts = rawToken.split('.');
+          if (parts.length !== 3) return done(new Error('Invalid token'));
+          const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as unknown;
+          if (!claims || typeof claims !== 'object') return done(new Error('Invalid token'));
+          const mobile = (claims as Record<string, unknown>).typ === 'mobile';
+          return done(null, mobile ? mobileSecret : webSecret);
+        } catch { return done(new Error('Invalid token')); }
+      },
     });
   }
 

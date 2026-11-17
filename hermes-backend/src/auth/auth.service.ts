@@ -12,6 +12,7 @@ import { Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
+import { mobileJwtKey } from './mobile-jwt-key';
 
 @Injectable()
 export class AuthService {
@@ -309,7 +310,10 @@ export class AuthService {
           sid: id,
           typ: 'mobile',
         },
-        { expiresIn: '5m' },
+        {
+          expiresIn: '5m',
+          secret: mobileJwtKey(this.configService.getOrThrow<string>('JWT_SECRET')),
+        },
       ),
       refreshToken: `${id}.${secret}`,
       expiresAt,

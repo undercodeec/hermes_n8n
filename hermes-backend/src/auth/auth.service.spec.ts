@@ -235,7 +235,7 @@ describe('CRM mobile sessions and shared proof replay', () => {
     const initial = await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
     expect(jwt.sign).toHaveBeenCalledWith(
       expect.objectContaining({ sid: sessionId, typ: 'mobile' }),
-      { expiresIn: '5m' },
+      expect.objectContaining({ expiresIn: '5m', secret: expect.any(String) }),
     );
     const expiresAt = session.expiresAt.getTime();
     const attempts = await Promise.allSettled([
