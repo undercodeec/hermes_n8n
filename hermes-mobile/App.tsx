@@ -1,5 +1,5 @@
 import { useEffect, useReducer, useState } from 'react';
-import { AppState, Image, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import { AppState, Image, KeyboardAvoidingView, Platform, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Feather } from '@expo/vector-icons';
 import { canCompose, demoReducer, initialState, visibleChats } from './src/demo';
@@ -50,28 +50,28 @@ function DemoLogin({ onEnter }: { onEnter: () => void }) {
 
 export default function App() {
   const [state, dispatch] = useReducer(demoReducer, initialState);
+  const [unreadOnly, setUnreadOnly] = useState(false);
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (status) => { if (status === 'active') dispatch({ type: 'FOREGROUND' }); });
     return () => subscription.remove();
   }, []);
   const selected = state.chats.find((chat) => chat.id === state.selectedId);
-  const chats = visibleChats(state);
+  const chats = visibleChats(state).filter((chat) => !unreadOnly || chat.unread > 0);
   const canWrite = canCompose(state);
   return <SafeAreaView style={styles.root}>
     <StatusBar barStyle="dark-content" />
     {!state.signedIn ? <DemoLogin onEnter={() => dispatch({ type: 'LOGIN' })} /> : <>
       {state.notice ? <Pressable accessibilityRole="button" accessibilityLabel="Descartar aviso" onPress={() => dispatch({ type: 'CLEAR_NOTICE' })} style={crm.notice}><Text style={crm.noticeText}>{state.notice}  ×</Text></Pressable> : null}
       {!state.online ? <View style={crm.offline}><Text style={crm.offlineText}>Sin conexión simulada · acciones deshabilitadas</Text></View> : null}
-      {selected ? <>
+      {selected ? <KeyboardAvoidingView style={crm.root} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={crm.chatHeader}>
-          <Pressable accessibilityRole="button" accessibilityLabel="Volver a conversaciones" onPress={() => dispatch({ type: 'BACK' })} style={crm.iconButton}><Feather name="arrow-left" size={19} color="#536078" /></Pressable>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver a conversaciones" onPress={() => dispatch({ type: 'BACK' })} style={crm.chatBack}><Feather name="arrow-left" size={22} color="#536078" /></Pressable>
           <View style={crm.avatar}><Text style={crm.avatarText}>{selected.name.slice(-1)}</Text></View>
           <View style={crm.chatIdentity}><Text style={crm.name} numberOfLines={1}>{selected.name}</Text><Text style={crm.helper}>Contacto ficticio · {selected.topic}</Text></View>
-          <Text style={crm.badge}>{selected.control === 'hermes' ? 'Hermes activo' : 'Humano'}</Text>
+          <View style={crm.chatStatus}><Text style={crm.chatStatusText}>{selected.control === 'hermes' ? 'Hermes' : 'Humano'}</Text></View>
         </View>
         <View style={crm.handoff}>
-          <View style={[crm.row, { gap: 9 }]}><Feather name="shield" size={18} color="#B06A32" /><Text style={crm.handoffTitle}>{selected.control === 'hermes' ? 'Hermes atiende esta conversación' : 'Atención humana simulada'}</Text></View>
-          <Text style={crm.handoffCopy}>{selected.control === 'hermes' ? 'Tome el control para practicar una respuesta en la demostración.' : 'Solo una simulación visual: no cambia la atención del CRM real.'}</Text>
+          <View style={[crm.row, { gap: 7, flex: 1 }]}><Feather name="shield" size={16} color="#B06A32" /><Text style={crm.handoffTitle}>{selected.control === 'hermes' ? 'Hermes atiende' : 'Control humano · demo'}</Text></View>
           <Pressable accessibilityRole="button" accessibilityState={{ disabled: !state.online }} disabled={!state.online} style={[crm.handoffButton, !state.online && crm.disabled]} onPress={() => dispatch({ type: selected.control === 'hermes' ? 'TAKE_CONTROL' : 'RETURN_CONTROL' })}><Text style={crm.handoffButtonText}>{selected.control === 'hermes' ? 'Tomar control humano' : 'Devolver a Hermes'}</Text></Pressable>
         </View>
         <ScrollView style={crm.root} contentContainerStyle={crm.history} keyboardShouldPersistTaps="handled">
@@ -86,26 +86,29 @@ export default function App() {
           <View style={crm.row}><TextInput accessibilityLabel="Escribir respuesta ficticia" placeholder={canWrite ? 'Escribe una respuesta como operador…' : 'Respuesta manual no disponible'} placeholderTextColor="#9AA2AE" editable={canWrite} multiline value={state.draft} onChangeText={(text) => dispatch({ type: 'DRAFT', text })} style={crm.composerInput} />
             <Pressable accessibilityRole="button" accessibilityLabel="Agregar respuesta ficticia" accessibilityState={{ disabled: !canWrite || !state.draft.trim() }} disabled={!canWrite || !state.draft.trim()} onPress={() => dispatch({ type: 'SEND_DEMO' })} style={[crm.send, (!canWrite || !state.draft.trim()) && crm.disabled]}><Feather name="send" size={18} color="#FFFFFF" /></Pressable></View>
         </View>
-      </> : <>
+      </KeyboardAvoidingView> : <>
         <View style={crm.header}>
-          <View style={crm.brandRow}><Image source={require('./assets/hermes-crm-logo.png')} style={crm.logo} resizeMode="contain" accessibilityLabel="Hermes CRM" /><Text style={crm.demoTag}>DEMO · SIN DATOS REALES</Text></View>
-          <View style={crm.titleRow}><View><Text style={crm.eyebrow}>WHATSAPP</Text><Text style={crm.title}>Inbox</Text></View><Pressable accessibilityRole="button" accessibilityLabel={state.online ? 'Simular desconexión' : 'Simular reconexión'} onPress={() => dispatch({ type: 'NETWORK', online: !state.online })} style={crm.iconButton}><Feather name={state.online ? 'wifi' : 'wifi-off'} size={18} color="#667185" /></Pressable></View>
+          <View style={crm.brandRow}><Image source={require('./assets/hermes-crm-logo.png')} style={crm.logo} resizeMode="contain" accessibilityLabel="Hermes CRM" /><Text style={crm.demoTag}>DEMO</Text></View>
+          <View style={crm.titleRow}><Text style={crm.title}>Chats</Text><View style={[crm.row, { gap: 8 }]}><Pressable accessibilityRole="button" accessibilityLabel={state.online ? 'Simular desconexión' : 'Simular reconexión'} onPress={() => dispatch({ type: 'NETWORK', online: !state.online })} style={crm.iconButton}><Feather name={state.online ? 'wifi' : 'wifi-off'} size={19} color="#667185" /></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Cerrar demostración" onPress={() => { setUnreadOnly(false); dispatch({ type: 'LOGOUT' }); }} style={crm.iconButton}><Feather name="log-out" size={19} color="#667185" /></Pressable></View></View>
         </View>
         <View style={crm.filters}>
           <View style={crm.search}><Feather name="search" size={17} color="#96A0B0" /><TextInput accessibilityLabel="Buscar conversaciones ficticias" placeholder="Buscar contacto…" placeholderTextColor="#9AA4B3" value={state.search} onChangeText={(text) => dispatch({ type: 'SEARCH', text })} style={crm.searchInput} /></View>
-          <View style={crm.filterRow}>{([{ label: 'Todos', value: 'todos' }, { label: 'Hermes activo', value: 'hermes' }, { label: 'Control humano', value: 'humano' }] as const).map((filter) => <Pressable key={filter.value} accessibilityRole="button" accessibilityState={{ selected: state.controlFilter === filter.value }} onPress={() => dispatch({ type: 'CONTROL_FILTER', value: filter.value })} style={[crm.filter, state.controlFilter === filter.value && crm.filterActive]}><Text style={[crm.filterText, state.controlFilter === filter.value && crm.filterActiveText]}>{filter.label}</Text></Pressable>)}
-            <Pressable accessibilityRole="button" accessibilityState={{ selected: state.priorityFilter === 'alta' }} onPress={() => dispatch({ type: 'PRIORITY_FILTER', value: state.priorityFilter === 'alta' ? 'todas' : 'alta' })} style={[crm.filter, state.priorityFilter === 'alta' && crm.filterActive]}><Text style={[crm.filterText, state.priorityFilter === 'alta' && crm.filterActiveText]}>⚑ Prioridad</Text></Pressable></View>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={crm.filterRow}>
+            <Pressable accessibilityRole="button" accessibilityState={{ selected: !unreadOnly && state.controlFilter === 'todos' && state.priorityFilter === 'todas' }} onPress={() => { setUnreadOnly(false); dispatch({ type: 'CONTROL_FILTER', value: 'todos' }); dispatch({ type: 'PRIORITY_FILTER', value: 'todas' }); }} style={[crm.filter, !unreadOnly && state.controlFilter === 'todos' && state.priorityFilter === 'todas' && crm.filterActive]}><Text style={crm.filterText}>Todos</Text></Pressable>
+            <Pressable accessibilityRole="button" accessibilityState={{ selected: unreadOnly }} onPress={() => setUnreadOnly(!unreadOnly)} style={[crm.filter, unreadOnly && crm.filterActive]}><Text style={crm.filterText}>No leídos</Text></Pressable>
+            {([{ label: 'Hermes', value: 'hermes' }, { label: 'Atención humana', value: 'humano' }] as const).map((filter) => <Pressable key={filter.value} accessibilityRole="button" accessibilityState={{ selected: state.controlFilter === filter.value }} onPress={() => { setUnreadOnly(false); dispatch({ type: 'CONTROL_FILTER', value: filter.value }); }} style={[crm.filter, state.controlFilter === filter.value && crm.filterActive]}><Text style={crm.filterText}>{filter.label}</Text></Pressable>)}
+            <Pressable accessibilityRole="button" accessibilityState={{ selected: state.priorityFilter === 'alta' }} onPress={() => dispatch({ type: 'PRIORITY_FILTER', value: state.priorityFilter === 'alta' ? 'todas' : 'alta' })} style={[crm.filter, state.priorityFilter === 'alta' && crm.filterActive]}><Text style={crm.filterText}>Prioridad</Text></Pressable>
+          </ScrollView>
         </View>
         <Text style={crm.listMeta}>{chats.length} conversaciones · datos ficticios</Text>
         <ScrollView style={crm.list} keyboardShouldPersistTaps="handled">
           {chats.length ? chats.map((chat) => <Pressable key={chat.id} accessibilityRole="button" accessibilityLabel={`Abrir conversación ficticia de ${chat.name}`} onPress={() => dispatch({ type: 'OPEN', id: chat.id })} style={crm.conversation}>
             <View style={crm.avatar}><Text style={crm.avatarText}>{chat.name.slice(-1)}</Text></View>
             <View style={crm.conversationContent}><View style={crm.between}><Text style={crm.name} numberOfLines={1}>{chat.name}</Text><Text style={crm.time}>{chat.messages.at(-1)?.time}</Text></View>
-              <Text style={crm.preview} numberOfLines={1}>{chat.messages.at(-1)?.text}</Text>
+              <View style={crm.between}><Text style={[crm.preview, { flex: 1 }]} numberOfLines={1}>{chat.messages.at(-1)?.text}</Text>{chat.unread > 0 ? <Text style={crm.unreadBadge}>{chat.unread}</Text> : null}</View>
               <View style={[crm.row, { gap: 6 }]}><Feather name={chat.control === 'humano' ? 'user-check' : 'cpu'} size={13} color="#7B8497" /><Text style={crm.status}>{chat.control === 'humano' ? 'Atención humana' : 'Hermes activo'}{chat.priority === 'alta' ? ' · Prioridad' : ''}</Text></View></View>
           </Pressable>) : <Text style={crm.empty}>No hay conversaciones para los filtros elegidos.</Text>}
         </ScrollView>
-        <View style={crm.footer}><Button label="Cerrar demostración" quiet onPress={() => dispatch({ type: 'LOGOUT' })} /></View>
       </>}
     </>}
   </SafeAreaView>;

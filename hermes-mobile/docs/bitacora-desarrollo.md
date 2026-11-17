@@ -34,6 +34,10 @@ Este registro distingue código, validación, publicación Git, instalación y d
 
 **Validación local:** `npm run check` pasó con 9 pruebas y typecheck; `npx expo install --check` y `npx expo export --platform all` pasaron. No se han certificado dispositivos físicos, accesibilidad, interfaz frente a Web real ni envío; solicitar revisión visual al propietario. El seguimiento Git corresponde al mismo PR de la interfaz; consultar su estado efectivo antes de afirmar integración.
 
+## 17/11/2026 — Experiencia de mensajería móvil
+
+Por solicitud del propietario, se ajustó el prototipo hacia una experiencia de mensajería familiar: encabezado de chats, búsqueda y filtros horizontales, avatares y contador de mensajes no leídos, detalle a pantalla completa y compositor redondeado. Se mantienen los colores y la identidad Hermes. Los nombres, mensajes y estados siguen siendo ficticios; no se muestran confirmaciones de entrega real. El filtro de no leídos solo afecta los ejemplos locales. Se requiere revisión visual del propietario y pruebas físicas, incluida la interacción con teclado y accesibilidad en Android/iOS.
+
 ## Riesgos y siguientes puertas
 
 1. Antes de usar datos reales: definir y verificar sesiones revocables por dispositivo, permisos por recurso, proyecciones, eventos autorizados y minimizados, y deduplicación/reconciliación de respuestas. El prototipo actual no implementa esos controles.
