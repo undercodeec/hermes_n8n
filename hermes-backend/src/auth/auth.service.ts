@@ -6,16 +6,16 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
-import { createHmac, randomBytes, timingSafeEqual } from 'crypto';
+import { createHash, createHmac, randomBytes, timingSafeEqual } from 'crypto';
 import { ConfigService } from '@nestjs/config';
-import { UserRole } from '@prisma/client';
+import { Prisma, UserRole } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 
 @Injectable()
 export class AuthService {
-  private readonly consumedCrmProofs = new Map<string, number>();
+  private readonly mobileIdleMs = 30 * 60 * 1000;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -90,34 +90,26 @@ export class AuthService {
 
   async loginWithCrmProof(proof: string) {
     const payload = this.verifyCrmProof(proof);
-    const now = Math.floor(Date.now() / 1000);
-
-    for (const [jti, expiresAt] of this.consumedCrmProofs) {
-      if (expiresAt <= now) this.consumedCrmProofs.delete(jti);
-    }
-    if (this.consumedCrmProofs.has(payload.jti)) {
-      throw new UnauthorizedException('La prueba de acceso ya fue utilizada');
-    }
-    this.consumedCrmProofs.set(payload.jti, payload.exp);
-
     const generatedPassword = await bcrypt.hash(
       randomBytes(32).toString('hex'),
       12,
     );
-    const user = await this.prisma.user.upsert({
-      where: { email: payload.sub },
-      update: {
-        name: 'Gerencia Undercodeec',
-        role: UserRole.ADMIN,
-        isActive: true,
-      },
-      create: {
-        email: payload.sub,
-        password: generatedPassword,
-        name: 'Gerencia Undercodeec',
-        role: UserRole.ADMIN,
-      },
-    });
+    const user = await this.consumeProof(payload, (tx) =>
+      tx.user.upsert({
+        where: { email: payload.sub },
+        update: {
+          name: 'Gerencia Undercodeec',
+          role: UserRole.ADMIN,
+          isActive: true,
+        },
+        create: {
+          email: payload.sub,
+          password: generatedPassword,
+          name: 'Gerencia Undercodeec',
+          role: UserRole.ADMIN,
+        },
+      }),
+    );
 
     return {
       user: {
@@ -128,6 +120,177 @@ export class AuthService {
       },
       accessToken: this.generateToken(user.id, user.email, user.role),
     };
+  }
+
+  async loginMobileWithCrmProof(proof: string) {
+    const payload = this.verifyCrmProof(proof);
+    const password = await bcrypt.hash(randomBytes(32).toString('hex'), 12);
+    const refreshSecret = randomBytes(32).toString('base64url');
+    const refreshHash = this.hashRefresh(refreshSecret);
+    const result = await this.consumeProof(payload, async (tx) => {
+      // Never update an existing account's role or active status from mobile.
+      const user = await tx.user.upsert({
+        where: { email: payload.sub },
+        update: {},
+        create: {
+          email: payload.sub,
+          password,
+          name: 'Gerencia Undercodeec',
+          role: UserRole.ADMIN,
+        },
+      });
+      if (!user.isActive)
+        throw new UnauthorizedException('Usuario desactivado');
+      if (user.role !== UserRole.ADMIN)
+        throw new UnauthorizedException('Usuario no autorizado');
+      const session = await tx.mobileSession.create({
+        data: {
+          userId: user.id,
+          refreshHash,
+          expiresAt: new Date(Date.now() + this.mobileIdleMs),
+        },
+      });
+      return { user, session };
+    });
+    return this.mobileTokens(
+      result.user,
+      result.session.id,
+      refreshSecret,
+      result.session.expiresAt,
+    );
+  }
+
+  private async consumeProof<T>(
+    payload: CrmProofPayload,
+    action: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await tx.consumedCrmProof.create({
+          data: { jti: payload.jti, expiresAt: new Date(payload.exp * 1000) },
+        });
+        // A proof expiring while the transaction waited for a DB lock is not valid.
+        if (payload.exp <= Math.floor(Date.now() / 1000))
+          this.invalidCrmProof();
+        return action(tx);
+      });
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === 'P2002'
+      ) {
+        throw new UnauthorizedException('La prueba de acceso ya fue utilizada');
+      }
+      throw error;
+    }
+  }
+
+  async refreshMobile(refreshToken: string) {
+    const { id, hash } = this.parseRefresh(refreshToken);
+    const newSecret = randomBytes(32).toString('base64url');
+    const result = await this.prisma.$transaction(async (tx) => {
+      const session = await tx.mobileSession.findUnique({
+        where: { id },
+        include: { user: true },
+      });
+      const now = new Date();
+      if (
+        !session ||
+        session.revokedAt ||
+        session.expiresAt <= now ||
+        !session.user.isActive ||
+        session.user.role !== UserRole.ADMIN
+      ) {
+        throw new UnauthorizedException('Sesión móvil vencida o revocada');
+      }
+      // Compare-and-swap: exactly one concurrent refresh can consume a token.
+      const updated = await tx.mobileSession.updateMany({
+        where: {
+          id,
+          refreshHash: hash,
+          revokedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { refreshHash: this.hashRefresh(newSecret) },
+      });
+      if (updated.count !== 1)
+        throw new UnauthorizedException('Refresh token ya utilizado');
+      return session;
+    });
+    return this.mobileTokens(result.user, id, newSecret, result.expiresAt);
+  }
+
+  async checkMobile(userId: string, sessionId: string) {
+    const session = await this.prisma.mobileSession.findFirst({
+      where: {
+        id: sessionId,
+        userId,
+        revokedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      select: { expiresAt: true },
+    });
+    if (!session)
+      throw new UnauthorizedException('Sesión móvil vencida o revocada');
+    return { active: true, expiresAt: session.expiresAt };
+  }
+
+  async mobileActivity(userId: string, sessionId: string) {
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + this.mobileIdleMs);
+    const updated = await this.prisma.mobileSession.updateMany({
+      where: { id: sessionId, userId, revokedAt: null, expiresAt: { gt: now } },
+      data: { expiresAt },
+    });
+    if (updated.count !== 1)
+      throw new UnauthorizedException('Sesión móvil vencida o revocada');
+    return { active: true, expiresAt };
+  }
+
+  async logoutMobile(userId: string, sessionId: string) {
+    await this.prisma.mobileSession.updateMany({
+      where: { id: sessionId, userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return { revoked: true };
+  }
+
+  private mobileTokens(
+    user: { id: string; email: string; name: string; role: UserRole },
+    id: string,
+    secret: string,
+    expiresAt: Date,
+  ) {
+    return {
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        role: user.role,
+      },
+      accessToken: this.jwtService.sign(
+        {
+          sub: user.id,
+          email: user.email,
+          role: user.role,
+          sid: id,
+          typ: 'mobile',
+        },
+        { expiresIn: '5m' },
+      ),
+      refreshToken: `${id}.${secret}`,
+      expiresAt,
+    };
+  }
+
+  private hashRefresh(secret: string) {
+    return createHash('sha256').update(secret).digest('hex');
+  }
+
+  private parseRefresh(token: string) {
+    const match = /^([0-9a-f-]{36})\.([A-Za-z0-9_-]{43})$/.exec(token);
+    if (!match) throw new UnauthorizedException('Refresh token inválido');
+    return { id: match[1], hash: this.hashRefresh(match[2]) };
   }
 
   async getProfile(userId: string) {

@@ -17,6 +17,8 @@ import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { CrmProofDto } from './dto/crm-proof.dto';
+import { MobileRefreshDto } from './dto/mobile-refresh.dto';
+import { MobileAuthGuard } from './mobile-auth.guard';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -60,6 +62,42 @@ export class AuthController {
   })
   async loginWithCrmProof(@Body() dto: CrmProofDto) {
     return this.authService.loginWithCrmProof(dto.proof);
+  }
+
+  @Post('mobile/crm-proof')
+  @HttpCode(HttpStatus.OK)
+  async mobileCrmProof(@Body() dto: CrmProofDto) {
+    return this.authService.loginMobileWithCrmProof(dto.proof);
+  }
+
+  @Post('mobile/refresh')
+  @HttpCode(HttpStatus.OK)
+  async mobileRefresh(@Body() dto: MobileRefreshDto) {
+    return this.authService.refreshMobile(dto.refreshToken);
+  }
+
+  @Get('mobile/session')
+  @UseGuards(MobileAuthGuard)
+  @ApiBearerAuth()
+  async mobileSession(@CurrentUser() user: { id: string; sessionId: string }) {
+    return this.authService.checkMobile(user.id, user.sessionId);
+  }
+
+  // Call only on actual user interaction; never from background polling/profile/refresh.
+  @Post('mobile/activity')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(MobileAuthGuard)
+  @ApiBearerAuth()
+  async mobileActivity(@CurrentUser() user: { id: string; sessionId: string }) {
+    return this.authService.mobileActivity(user.id, user.sessionId);
+  }
+
+  @Post('mobile/logout')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(MobileAuthGuard)
+  @ApiBearerAuth()
+  async mobileLogout(@CurrentUser() user: { id: string; sessionId: string }) {
+    return this.authService.logoutMobile(user.id, user.sessionId);
   }
 
   @Get('profile')
