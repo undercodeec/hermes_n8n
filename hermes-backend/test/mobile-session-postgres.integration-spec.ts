@@ -176,4 +176,14 @@ run('mobile G2 against disposable PostgreSQL', () => {
     expect((await prisma.mobileSession.count({ where: { user: { email }, revokedAt: null } }))).toBe(1);
     await expect(service.refreshMobile(second.refreshToken)).rejects.toThrow();
   });
+
+  it('serializes web revocation with a simultaneous new mobile login', async () => {
+    const account = await prisma.user.findUniqueOrThrow({ where: { email } });
+    const attempts = await Promise.allSettled([
+      service.loginMobileWithCrmProof(proof('hermes-crm-mobile')),
+      service.revokeAllMobileForOperator(account.id, email),
+    ]);
+    expect(attempts.every((result) => result.status === 'fulfilled')).toBe(true);
+    expect((await prisma.mobileSession.count({ where: { user: { email }, revokedAt: null } }))).toBeLessThanOrEqual(1);
+  });
 });

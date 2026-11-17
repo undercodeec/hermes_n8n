@@ -145,6 +145,8 @@ export class AuthService {
       // Serialize new phone logins for this operator even when they carry
       // different valid proofs. Last committed login is the only active phone.
       await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${user.id} FOR UPDATE`;
+      if (payload.exp <= Math.floor(Date.now() / 1000))
+        this.invalidCrmProof();
       const current = await tx.user.findUnique({ where: { id: user.id } });
       if (!current?.isActive || current.role !== UserRole.ADMIN)
         throw new UnauthorizedException('Usuario no autorizado o inactivo');
@@ -270,9 +272,18 @@ export class AuthService {
       .trim().toLowerCase();
     if (email.trim().toLowerCase() !== operatorEmail)
       throw new UnauthorizedException('Operador no autorizado');
-    const result = await this.prisma.mobileSession.updateMany({
-      where: { userId, revokedAt: null },
-      data: { revokedAt: new Date() },
+    const result = await this.prisma.$transaction(async (tx) => {
+      // Use the same per-operator lock as mobile login so a revocation cannot
+      // miss a newly created session in a concurrent transaction.
+      await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR UPDATE`;
+      const account = await tx.user.findUnique({ where: { id: userId } });
+      if (!account?.isActive || account.role !== UserRole.ADMIN ||
+          account.email.trim().toLowerCase() !== operatorEmail)
+        throw new UnauthorizedException('Operador no autorizado');
+      return tx.mobileSession.updateMany({
+        where: { userId, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
     });
     return { revokedSessions: result.count };
   }

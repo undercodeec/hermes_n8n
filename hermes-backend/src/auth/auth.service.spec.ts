@@ -191,6 +191,16 @@ describe('CRM mobile sessions and shared proof replay', () => {
     });
   });
 
+  it('rejects a mobile proof that expires while waiting for the operator lock', async () => {
+    const waitingProof = proof({ aud: 'hermes-crm-mobile', exp: Math.floor(Date.now() / 1000) + 1 });
+    db.$queryRaw.mockImplementationOnce(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1100));
+      return [{ id: user.id }];
+    });
+    await expect(auth.loginMobileWithCrmProof(waitingProof)).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(db.mobileSession.create).not.toHaveBeenCalled();
+  });
+
   it('rejects invalid signatures and expired proofs before persistence', async () => {
     await expect(
       auth.loginMobileWithCrmProof(`${proof({ aud: 'hermes-crm-mobile' })}x`),
@@ -279,10 +289,25 @@ describe('CRM mobile sessions and shared proof replay', () => {
     ).resolves.toMatchObject({ id: user.id });
   });
 
+  it('allows 29 minutes idle but rejects at the exact 30-minute server deadline', async () => {
+    const initial = await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
+    const expiry = session.expiresAt.getTime();
+    jest.useFakeTimers({ now: expiry - 60_000 });
+    try {
+      await expect(auth.checkMobile(user.id, sessionId)).resolves.toMatchObject({ active: true });
+      jest.setSystemTime(expiry);
+      await expect(auth.checkMobile(user.id, sessionId)).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(auth.refreshMobile(initial.refreshToken)).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(auth.mobileActivity(user.id, sessionId)).rejects.toBeInstanceOf(UnauthorizedException);
+    } finally { jest.useRealTimers(); }
+  });
+
   it('revokes lost phone sessions only for the configured web operator', async () => {
     await expect(auth.revokeAllMobileForOperator(user.id, 'other@example.invalid')).rejects.toBeInstanceOf(UnauthorizedException);
     expect(db.mobileSession.updateMany).not.toHaveBeenCalled();
     await auth.revokeAllMobileForOperator(user.id, email);
+    expect(db.$queryRaw).toHaveBeenCalled();
+    expect(db.$transaction).toHaveBeenCalled();
     expect(db.mobileSession.updateMany).toHaveBeenCalledWith({
       where: { userId: user.id, revokedAt: null },
       data: { revokedAt: expect.any(Date) },
