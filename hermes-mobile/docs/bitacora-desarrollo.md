@@ -36,7 +36,11 @@ Este registro distingue código, validación, publicación Git, instalación y d
 
 ## 17/11/2026 — Experiencia de mensajería móvil
 
-Por solicitud del propietario, se ajustó el prototipo hacia una experiencia de mensajería familiar: encabezado de chats, búsqueda y filtros horizontales, avatares y contador de mensajes no leídos, detalle a pantalla completa y compositor redondeado. Se mantienen los colores y la identidad Hermes. Los nombres, mensajes y estados siguen siendo ficticios; no se muestran confirmaciones de entrega real. El filtro de no leídos solo afecta los ejemplos locales. Se requiere revisión visual del propietario y pruebas físicas, incluida la interacción con teclado y accesibilidad en Android/iOS.
+Por solicitud del propietario, se ajustó el prototipo hacia una experiencia de mensajería familiar: encabezado de chats, búsqueda y filtros horizontales, avatares y contador de mensajes no leídos, detalle a pantalla completa y compositor redondeado. Se mantienen los colores y la identidad Hermes. Los nombres, mensajes y estados siguen siendo ficticios; no se muestran confirmaciones de entrega real. El filtro de no leídos solo afecta los ejemplos locales. Permanecen pendientes pruebas físicas adicionales, incluida la interacción con teclado y accesibilidad en Android/iOS.
+
+**Aprobación de producto:** el propietario confirmó «aprovado diseño» tras revisar la vista móvil en el teléfono Android de prueba. La aprobación cubre la dirección visual del prototipo, no acredita pruebas completas de accesibilidad, todos los tamaños de pantalla, iOS ni funcionalidad real. El prototipo sigue usando datos ficticios y Expo Go.
+
+**Validación del cambio:** `npm run check` aprobó typecheck y 9 pruebas; `npx expo export --platform all` generó bundles JavaScript para Android y iOS. CI de PR #26 aprobó sobre el cambio visual. La integración de este registro se verifica por el estado efectivo del PR; no implica APK/IPA, publicación de tienda ni despliegue de backend.
 
 ## Riesgos y siguientes puertas
 
