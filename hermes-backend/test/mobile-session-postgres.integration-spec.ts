@@ -153,4 +153,13 @@ run('mobile G2 against disposable PostgreSQL', () => {
       service.checkMobile(expiring.userId, expiring.id),
     ).rejects.toThrow();
   });
+
+  it('web operator can revoke all phone sessions without revoking web access', async () => {
+    const mobile = await service.loginMobileWithCrmProof(proof('hermes-crm-mobile'));
+    const account = await prisma.user.findUniqueOrThrow({ where: { email } });
+    const revoked = await service.revokeAllMobileForOperator(account.id, email);
+    expect(revoked.revokedSessions).toBeGreaterThanOrEqual(1);
+    await expect(service.refreshMobile(mobile.refreshToken)).rejects.toThrow();
+    await expect(service.loginWithCrmProof(proof('hermes-crm'))).resolves.toHaveProperty('accessToken');
+  });
 });

@@ -100,6 +100,16 @@ export class AuthController {
     return this.authService.logoutMobile(user.id, user.sessionId);
   }
 
+  // Existing web operator can revoke lost phones without ending the web session.
+  @Post('mobile/revoke-all')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles(UserRole.ADMIN)
+  @ApiBearerAuth()
+  async revokeAllMobile(@CurrentUser() user: { id: string; email: string }) {
+    return this.authService.revokeAllMobileForOperator(user.id, user.email);
+  }
+
   @Get('profile')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()

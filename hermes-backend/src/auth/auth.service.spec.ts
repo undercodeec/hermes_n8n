@@ -268,4 +268,14 @@ describe('CRM mobile sessions and shared proof replay', () => {
       strategy.validate({ sub: user.id, email, role: 'ADMIN' }),
     ).resolves.toMatchObject({ id: user.id });
   });
+
+  it('revokes lost phone sessions only for the configured web operator', async () => {
+    await expect(auth.revokeAllMobileForOperator(user.id, 'other@example.invalid')).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(db.mobileSession.updateMany).not.toHaveBeenCalled();
+    await auth.revokeAllMobileForOperator(user.id, email);
+    expect(db.mobileSession.updateMany).toHaveBeenCalledWith({
+      where: { userId: user.id, revokedAt: null },
+      data: { revokedAt: expect.any(Date) },
+    });
+  });
 });

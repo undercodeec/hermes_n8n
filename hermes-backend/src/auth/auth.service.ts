@@ -254,6 +254,19 @@ export class AuthService {
     return { revoked: true };
   }
 
+  async revokeAllMobileForOperator(userId: string, email: string) {
+    const operatorEmail = this.configService
+      .get<string>('CRM_OPERATOR_EMAIL', 'gerencia@undercodeec.com')
+      .trim().toLowerCase();
+    if (email.trim().toLowerCase() !== operatorEmail)
+      throw new UnauthorizedException('Operador no autorizado');
+    const result = await this.prisma.mobileSession.updateMany({
+      where: { userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return { revokedSessions: result.count };
+  }
+
   private mobileTokens(
     user: { id: string; email: string; name: string; role: UserRole },
     id: string,
