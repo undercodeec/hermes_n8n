@@ -21,3 +21,5 @@ Antes de conectar una API: contrato piloto verificado con usuarios sintéticos, 
 **No** ejecutar contra producción ni distribuir a usuarios finales. El diseño y la accesibilidad necesitan evaluación con operadores y dispositivos reales.
 
 La [bitácora de desarrollo](docs/bitacora-desarrollo.md) registra las decisiones, pruebas, riesgos y pendientes del prototipo.
+
+El [plan G1 de acceso y sesión](docs/plan-g1-acceso-sesion-2026-11-17.md) documenta las decisiones del propietario para reutilizar el acceso actual de un solo operador y cerrar la sesión móvil tras 30 minutos de inactividad; es diseño, no implementación.
