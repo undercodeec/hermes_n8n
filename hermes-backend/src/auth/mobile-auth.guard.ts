@@ -7,6 +7,7 @@ import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 
 @Injectable()
 export class MobileAuthGuard extends JwtAuthGuard {
+  protected acceptsMobileToken(): boolean { return true; }
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const allowed = await super.canActivate(context);
     const user = context

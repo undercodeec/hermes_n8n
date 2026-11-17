@@ -146,15 +146,13 @@ describe('CRM mobile sessions and shared proof replay', () => {
     jest.clearAllMocks();
   });
 
-  it('shares durable jti between web and mobile and preserves web reactivation', async () => {
-    storedUser.isActive = false;
+  it('shares durable jti between web and mobile without reactivating an operator', async () => {
     const webProof = proof();
     await auth.loginWithCrmProof(webProof);
-    expect(storedUser.isActive).toBe(true);
     await expect(auth.loginMobileWithCrmProof(webProof)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
-    const mobileProof = proof();
+    const mobileProof = proof({ aud: 'hermes-crm-mobile' });
     await auth.loginMobileWithCrmProof(mobileProof);
     await expect(auth.loginWithCrmProof(mobileProof)).rejects.toBeInstanceOf(
       UnauthorizedException,
@@ -162,9 +160,19 @@ describe('CRM mobile sessions and shared proof replay', () => {
     expect(consumed.size).toBe(2);
   });
 
+  it('does not reactivate a disabled web user or promote a demoted operator', async () => {
+    storedUser.isActive = false;
+    await expect(auth.loginWithCrmProof(proof())).rejects.toBeInstanceOf(UnauthorizedException);
+    storedUser.isActive = true;
+    storedUser.role = UserRole.SALES_AGENT;
+    await expect(auth.loginWithCrmProof(proof())).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(storedUser.role).toBe(UserRole.SALES_AGENT);
+    expect(consumed.size).toBe(0);
+  });
+
   it('rejects disabled mobile user without consuming proof or activating user', async () => {
     storedUser.isActive = false;
-    const signed = proof();
+    const signed = proof({ aud: 'hermes-crm-mobile' });
     await expect(auth.loginMobileWithCrmProof(signed)).rejects.toBeInstanceOf(
       UnauthorizedException,
     );
@@ -175,19 +183,19 @@ describe('CRM mobile sessions and shared proof replay', () => {
 
   it('rejects invalid signatures and expired proofs before persistence', async () => {
     await expect(
-      auth.loginMobileWithCrmProof(`${proof()}x`),
+      auth.loginMobileWithCrmProof(`${proof({ aud: 'hermes-crm-mobile' })}x`),
     ).rejects.toBeInstanceOf(UnauthorizedException);
     await expect(
-      auth.loginMobileWithCrmProof(proof({ exp: 1 })),
+      auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile', exp: 1 })),
     ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(db.consumedCrmProof.create).not.toHaveBeenCalled();
   });
 
   it('only one concurrent web/mobile exchange can consume a signed proof', async () => {
-    const signed = proof();
+    const jti = `same-id-across-audiences-${++sequence}`;
     const results = await Promise.allSettled([
-      auth.loginWithCrmProof(signed),
-      auth.loginMobileWithCrmProof(signed),
+      auth.loginWithCrmProof(proof({ jti })),
+      auth.loginMobileWithCrmProof(proof({ jti, aud: 'hermes-crm-mobile' })),
     ]);
     expect(results.filter((item) => item.status === 'fulfilled')).toHaveLength(
       1,
@@ -197,8 +205,14 @@ describe('CRM mobile sessions and shared proof replay', () => {
     );
   });
 
+  it('requires separate web and mobile proof audiences', async () => {
+    await expect(auth.loginMobileWithCrmProof(proof())).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.loginWithCrmProof(proof({ aud: 'hermes-crm-mobile' }))).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(db.consumedCrmProof.create).not.toHaveBeenCalled();
+  });
+
   it('rotates refresh via CAS, rejects replay and does not extend idle window', async () => {
-    const initial = await auth.loginMobileWithCrmProof(proof());
+    const initial = await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
     expect(jwt.sign).toHaveBeenCalledWith(
       expect.objectContaining({ sid: sessionId, typ: 'mobile' }),
       { expiresIn: '5m' },
@@ -228,7 +242,7 @@ describe('CRM mobile sessions and shared proof replay', () => {
   });
 
   it('rejects expired session on refresh, activity, check and JWT validation', async () => {
-    const initial = await auth.loginMobileWithCrmProof(proof());
+    const initial = await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
     session.expiresAt = new Date(Date.now() - 1);
     await expect(
       auth.refreshMobile(initial.refreshToken),

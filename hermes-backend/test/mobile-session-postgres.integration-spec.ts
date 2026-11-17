@@ -41,17 +41,16 @@ run('mobile G2 against disposable PostgreSQL', () => {
   const strategy = new JwtStrategy(config as never, prisma as never);
   const jtis: string[] = [];
 
-  function proof() {
+  function proof(audience: 'hermes-crm' | 'hermes-crm-mobile' = 'hermes-crm', jti = randomUUID()) {
     const header = Buffer.from(
       JSON.stringify({ alg: 'HS256', typ: 'JWT' }),
     ).toString('base64url');
-    const jti = randomUUID();
-    jtis.push(jti);
+    if (!jtis.includes(jti)) jtis.push(jti);
     const now = Math.floor(Date.now() / 1000);
     const body = Buffer.from(
       JSON.stringify({
         iss: 'undercodeec-admin',
-        aud: 'hermes-crm',
+        aud: audience,
         sub: email,
         role: 'ADMIN',
         jti,
@@ -69,11 +68,11 @@ run('mobile G2 against disposable PostgreSQL', () => {
     await prisma.$disconnect();
   });
 
-  it('one winner across web/mobile; disabled mobile stays disabled; web still reactivates', async () => {
-    const shared = proof();
+  it('one winner across web/mobile; disabled operator stays disabled on both', async () => {
+    const sharedJti = randomUUID();
     const results = await Promise.allSettled([
-      service.loginWithCrmProof(shared),
-      service.loginMobileWithCrmProof(shared),
+      service.loginWithCrmProof(proof('hermes-crm', sharedJti)),
+      service.loginMobileWithCrmProof(proof('hermes-crm-mobile', sharedJti)),
     ]);
     expect(
       results.filter((result) => result.status === 'fulfilled'),
@@ -86,21 +85,22 @@ run('mobile G2 against disposable PostgreSQL', () => {
     ).toBe(1);
 
     await prisma.user.update({ where: { email }, data: { isActive: false } });
-    const inactiveProof = proof();
+    const inactiveJti = randomUUID();
     await expect(
-      service.loginMobileWithCrmProof(inactiveProof),
+      service.loginMobileWithCrmProof(proof('hermes-crm-mobile', inactiveJti)),
     ).rejects.toThrow();
     expect(
       await prisma.consumedCrmProof.count({ where: { jti: jtis[1] } }),
     ).toBe(0);
-    await service.loginWithCrmProof(inactiveProof);
+    await expect(service.loginWithCrmProof(proof('hermes-crm', inactiveJti))).rejects.toThrow();
     expect(
       (await prisma.user.findUniqueOrThrow({ where: { email } })).isActive,
-    ).toBe(true);
+    ).toBe(false);
+    await prisma.user.update({ where: { email }, data: { isActive: true } });
   });
 
   it('refresh CAS allows exactly one winner; idle expiry and logout revoke JWT', async () => {
-    const login = await service.loginMobileWithCrmProof(proof());
+    const login = await service.loginMobileWithCrmProof(proof('hermes-crm-mobile'));
     const session = await prisma.mobileSession.findFirstOrThrow({
       where: { user: { email }, revokedAt: null },
       orderBy: { createdAt: 'desc' },
@@ -137,7 +137,7 @@ run('mobile G2 against disposable PostgreSQL', () => {
     await service.logoutMobile(session.userId, session.id);
     await expect(strategy.validate(claims)).rejects.toThrow();
 
-    const second = await service.loginMobileWithCrmProof(proof());
+    const second = await service.loginMobileWithCrmProof(proof('hermes-crm-mobile'));
     const expiring = await prisma.mobileSession.findFirstOrThrow({
       where: { user: { email }, revokedAt: null },
     });

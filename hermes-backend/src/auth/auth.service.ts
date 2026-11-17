@@ -94,22 +94,21 @@ export class AuthService {
       randomBytes(32).toString('hex'),
       12,
     );
-    const user = await this.consumeProof(payload, (tx) =>
-      tx.user.upsert({
+    const user = await this.consumeProof(payload, async (tx) => {
+      const account = await tx.user.upsert({
         where: { email: payload.sub },
-        update: {
-          name: 'Gerencia Undercodeec',
-          role: UserRole.ADMIN,
-          isActive: true,
-        },
+        update: {},
         create: {
           email: payload.sub,
           password: generatedPassword,
           name: 'Gerencia Undercodeec',
           role: UserRole.ADMIN,
         },
-      }),
-    );
+      });
+      if (!account.isActive || account.role !== UserRole.ADMIN)
+        throw new UnauthorizedException('Usuario no autorizado o inactivo');
+      return account;
+    });
 
     return {
       user: {
@@ -123,7 +122,7 @@ export class AuthService {
   }
 
   async loginMobileWithCrmProof(proof: string) {
-    const payload = this.verifyCrmProof(proof);
+    const payload = this.verifyCrmProof(proof, 'hermes-crm-mobile');
     const password = await bcrypt.hash(randomBytes(32).toString('hex'), 12);
     const refreshSecret = randomBytes(32).toString('base64url');
     const refreshHash = this.hashRefresh(refreshSecret);
@@ -320,7 +319,7 @@ export class AuthService {
     });
   }
 
-  private verifyCrmProof(proof: string): CrmProofPayload {
+  private verifyCrmProof(proof: string, audience: 'hermes-crm' | 'hermes-crm-mobile' = 'hermes-crm'): CrmProofPayload {
     const secret = this.configService.get<string>('CRM_HERMES_PROOF_SECRET');
     const operatorEmail = this.configService
       .get<string>('CRM_OPERATOR_EMAIL', 'gerencia@undercodeec.com')
@@ -364,7 +363,7 @@ export class AuthService {
       header.alg !== 'HS256' ||
       header.typ !== 'JWT' ||
       payload.iss !== 'undercodeec-admin' ||
-      payload.aud !== 'hermes-crm' ||
+      payload.aud !== audience ||
       payload.role !== 'ADMIN' ||
       email !== operatorEmail ||
       typeof payload.jti !== 'string' ||
@@ -380,7 +379,7 @@ export class AuthService {
 
     return {
       iss: 'undercodeec-admin',
-      aud: 'hermes-crm',
+      aud: audience,
       sub: email,
       role: 'ADMIN',
       jti: payload.jti,
@@ -406,7 +405,7 @@ export class AuthService {
 
 interface CrmProofPayload {
   iss: 'undercodeec-admin';
-  aud: 'hermes-crm';
+  aud: 'hermes-crm' | 'hermes-crm-mobile';
   sub: string;
   role: 'ADMIN';
   jti: string;
