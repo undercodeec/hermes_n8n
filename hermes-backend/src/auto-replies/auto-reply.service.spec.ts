@@ -273,6 +273,7 @@ describe('AutoReplyService', () => {
       conversationReview: { create: jest.fn() },
       learningEvidence: { create: jest.fn() },
       message: {
+        findFirst: jest.fn().mockResolvedValue(null),
         findUnique: jest.fn().mockResolvedValue(inbound),
         findMany: jest.fn().mockImplementation(async (args) => {
           if (args.where?.metadata?.path?.[0] === 'pilotOrigin')
@@ -1181,6 +1182,71 @@ describe('AutoReplyService', () => {
     expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
   });
 
+  describe('F3 greeting repacking', () => {
+    const job = {
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      inboundMessageId: 'inbound-recovery',
+    };
+    const budget = () => ({
+      maxParts: 1,
+      upperBoundUsd: 0.2,
+      validUntil: new Date(Date.now() + 60_000).toISOString(),
+      serviceWindowExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    const reply = 'Detalle '.repeat(62) + 'Detalle.';
+
+    it('delivers the complete 521-character greeted answer once within the reservation', async () => {
+      expect(reply).toHaveLength(504);
+      const harness = setupProcessHarness({ hermesResponse: { response: reply } });
+      const reservation = budget();
+      harness.engine.respond.mockResolvedValue({
+        ...toEngineResult({ response: reply }), f3CapsBudget: reservation,
+      });
+      await harness.service.process(job);
+      expect(harness.deliveries.prepareBatch).toHaveBeenCalledTimes(1);
+      const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
+      expect(parts).toHaveLength(1);
+      expect(parts[0].content).toBe(`Hola, con gusto. ${reply}`);
+      expect(parts[0].content).toHaveLength(521);
+      expect(parts[0].metadata.f3CapsBudget).toEqual(reservation);
+      expect(harness.deliveries.deliverPreparedBatch).toHaveBeenCalledTimes(1);
+      expect(harness.meta.sendTextMessage).toHaveBeenCalledTimes(1);
+      expect(harness.deliveries.recordSuppressedInference).not.toHaveBeenCalled();
+    });
+
+    it('suppresses when the greeted answer cannot fit the physical limit', async () => {
+      const longReply = 'Detalle '.repeat(123) + 'Fin.';
+      const harness = setupProcessHarness({ hermesResponse: { response: longReply } });
+      const get = harness.config.get as jest.Mock;
+      const originalGet = get.getMockImplementation()!;
+      get.mockImplementation((key: string, ...args: unknown[]) =>
+        key === 'AI_MESSAGE_SPLIT_THRESHOLD' ? 1000 : originalGet(key, ...args),
+      );
+      harness.engine.respond.mockResolvedValue({
+        ...toEngineResult({ response: longReply }), f3CapsBudget: budget(),
+      });
+      await harness.service.process(job);
+      expect(harness.deliveries.recordSuppressedInference).toHaveBeenCalledWith(
+        expect.objectContaining({ reasonCode: 'COST_CAP_NOT_ENFORCEABLE' }),
+      );
+      expect(harness.deliveries.prepareBatch).not.toHaveBeenCalled();
+      expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
+    });
+
+    it('propagates delivery exceptions without retrying or sending again', async () => {
+      const harness = setupProcessHarness({ hermesResponse: { response: reply } });
+      harness.engine.respond.mockResolvedValue({
+        ...toEngineResult({ response: reply }), f3CapsBudget: budget(),
+      });
+      harness.deliveries.deliverPreparedBatch.mockRejectedValueOnce(new Error('delivery failed'));
+      await expect(harness.service.process(job)).rejects.toThrow('delivery failed');
+      expect(harness.deliveries.prepareBatch).toHaveBeenCalledTimes(1);
+      expect(harness.deliveries.deliverPreparedBatch).toHaveBeenCalledTimes(1);
+      expect(harness.meta.sendTextMessage).not.toHaveBeenCalled();
+    });
+  });
+
   it.each(['gemini_direct', 'nous_hermes'] as const)(
     'keeps the %s turn, output and delivery identical with shadow only',
     async (engineId) => {
@@ -1367,7 +1433,7 @@ describe('AutoReplyService', () => {
       ).toBeUndefined();
       expect(
         harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
-      ).toBe('Le ayudo.');
+      ).toBe('Hola, con gusto. Le ayudo.');
       expect(
         harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].metadata
           .learningExposed,
@@ -1403,7 +1469,7 @@ describe('AutoReplyService', () => {
     expect(harness.engine.respond).toHaveBeenCalledTimes(1);
     expect(
       harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
-    ).toBe('Le ayudo.');
+    ).toBe('Hola, con gusto. Le ayudo.');
   });
 
   it('continues the conversation when the retrieval selector throws', async () => {
@@ -2069,7 +2135,7 @@ describe('AutoReplyService', () => {
       await harness.service.process(job);
       const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
       expect(parts).toHaveLength(2);
-      expect(parts[0].content).toHaveLength(518);
+      expect(parts[0].content).toHaveLength(518 + 'Hola, con gusto. '.length);
       expect(parts[0].content).toMatch(/USD$/);
       expect(parts[1].content).toBe('360 IVA incluido.');
       expect(currentProfile.pendingQuestions).toEqual(
@@ -2226,7 +2292,7 @@ describe('AutoReplyService', () => {
         harness.deliveries.prepareBatch.mock.calls[0][0].parts.map(
           (part: { content: string }) => part.content,
         ),
-      ).toEqual(parts);
+      ).toEqual([`Hola, con gusto. ${parts[0]}`, ...parts.slice(1)]);
       expect(
         harness.leads.recordCommercialProfileFromConversation,
       ).toHaveBeenLastCalledWith(
@@ -3051,7 +3117,7 @@ describe('AutoReplyService', () => {
     );
   });
 
-  it('personalizes an initial greeting and removes a corporate welcome without fixing the whole reply', async () => {
+  it('preserves an initial greeting and corporate welcome verbatim', async () => {
     const harness = setupProcessHarness({
       inboundContent: 'Buenas tardes',
       hermesResponse: {
@@ -3069,7 +3135,7 @@ describe('AutoReplyService', () => {
       parts: Array<{ content: string }>;
     };
     expect(prepared.parts[0].content).toBe(
-      'Buenas tardes, estimada Ana. ¿En qué podemos ayudarle con su proyecto hoy?',
+      'Buenas tardes. Bienvenido a Undercodeec, ¿en qué podemos ayudarle con su proyecto hoy?',
     );
   });
 
@@ -3109,7 +3175,7 @@ describe('AutoReplyService', () => {
     );
   });
 
-  it('greets a first mixed greeting and service enquiry with the CRM name once', async () => {
+  it('greets a first mixed greeting and service enquiry without inserting the CRM name', async () => {
     const harness = setupProcessHarness({
       inboundContent: 'Hola, quiero información sobre una página web.',
       contactName: 'Yaupi Gómez',
@@ -3125,11 +3191,11 @@ describe('AutoReplyService', () => {
     });
     const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
     expect(parts).toHaveLength(1);
-    expect(parts[0].content).toMatch(/^Hola, Yaupi\. Una página web/u);
-    expect(parts[0].content.match(/\bYaupi\b/gu) ?? []).toHaveLength(1);
+    expect(parts[0].content).toMatch(/^Hola, con gusto\. Una página web/u);
+    expect(parts[0].content.match(/\bYaupi\b/gu) ?? []).toHaveLength(0);
   });
 
-  it('does not duplicate an inverted greeting when naming the contact', async () => {
+  it('preserves an inverted greeting without duplication', async () => {
     const harness = setupProcessHarness({
       inboundContent: '¡Hola! Quiero información sobre una página web.',
       hermesResponse: {
@@ -3144,11 +3210,11 @@ describe('AutoReplyService', () => {
     });
     const answer = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
       .content as string;
-    expect(answer).toMatch(/^Hola, estimada Ana\. Podemos/u);
+    expect(answer).toBe('\u00a1Hola! Podemos presentar su negocio en una p\u00e1gina web. \u00bfQu\u00e9 desea mostrar?');
     expect(answer).not.toMatch(/Hola.*¡Hola/iu);
   });
 
-  it('changes only the first Nous WhatsApp part when personalizing the greeting', async () => {
+  it('preserves every Nous WhatsApp part when the first is already greeted', async () => {
     const parts = [
       'Hola. Con gusto le explico las opciones.',
       'Una página web presenta sus servicios.',
@@ -3174,13 +3240,13 @@ describe('AutoReplyService', () => {
         (part: { content: string }) => part.content,
       ),
     ).toEqual([
-      'Hola, estimado Carlos. Con gusto le explico las opciones.',
+      parts[0],
       parts[1],
       parts[2],
     ]);
   });
 
-  it('keeps a service answer while removing the corporate welcome', async () => {
+  it('prefixes a greeting while preserving the corporate welcome and service answer', async () => {
     const harness = setupProcessHarness({
       inboundContent: 'Necesito una página web',
       hermesResponse: {
@@ -3198,7 +3264,7 @@ describe('AutoReplyService', () => {
       parts: Array<{ content: string }>;
     };
     expect(prepared.parts[0].content).toBe(
-      'Podemos crear su sitio web. ¿A qué se dedica su negocio?',
+      'Hola, con gusto. Bienvenido a Undercodeec. Podemos crear su sitio web. ¿A qué se dedica su negocio?',
     );
   });
 
@@ -3693,7 +3759,7 @@ describe('AutoReplyService', () => {
     });
     const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
     expect(parts).toHaveLength(1);
-    expect(parts[0].content).toMatch(/^Con gusto le comparto los detalles/u);
+    expect(parts[0].content).toMatch(/^Hola, con gusto\. Con gusto le comparto los detalles/u);
     expect(parts[0].content).toContain(
       '🛠️ *1 año de soporte técnico posterior a la entrega*',
     );
@@ -3921,7 +3987,7 @@ describe('AutoReplyService', () => {
     },
   );
 
-  it('removes an artificial title already present in a generated greeting', async () => {
+  it('preserves an artificial title already present in a generated greeting', async () => {
     const harness = setupProcessHarness({
       contactName: 'MRS',
       inboundContent: 'Hola, quiero información de una landing',
@@ -3937,8 +4003,7 @@ describe('AutoReplyService', () => {
     });
     const answer = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
       .content as string;
-    expect(answer).toMatch(/^Hola\./u);
-    expect(answer).not.toMatch(/\bMRS\b/iu);
+    expect(answer).toBe('Hola, MRS. Una landing presenta su negocio y facilita el contacto.');
   });
 
   it('does not store a currency-derived market as a confirmed project market', async () => {
@@ -4143,6 +4208,80 @@ describe('AutoReplyService', () => {
     },
   );
 
+  it.each(['STOP', 'Hay una emergencia'])('does not decorate a sensitive reply with an active promotion: %s', async (message) => {
+    const promotion: AuthorizedOffer = {
+      ...testOffer('Black Friday — Landing Page', '80.00', 'LANDING_PAGE'),
+      marketScope: 'GLOBAL', market: undefined, taxMode: undefined, taxLabel: undefined,
+      policyVersion: BLACK_FRIDAY_LANDING_POLICY_VERSION, promotion: true,
+      scope: 'Landing de una sola sección con WhatsApp y formulario',
+    };
+    (authority.snapshot as jest.Mock).mockResolvedValueOnce({
+      marketSource: 'UNKNOWN', relevantServiceCodes: ['LANDING_PAGE'], offers: [promotion],
+      recommendedOfferId: promotion.id, needsMarketClarification: false,
+    });
+    const harness = setupProcessHarness({
+      inboundContent: message, inboundCreatedAt: campaignTime(-3),
+      inboundMetadata: { pilotOrigin: 'meta_ad', pilotOriginEvidence: 'meta_referral_ad', pilotAd: { sourceId: '52581450998031' } },
+      campaignConfig: { HERMES_BLACK_FRIDAY_AD_SOURCE_IDS: '52581450998031', HERMES_BLACK_FRIDAY_CAMPAIGN_STARTS_AT: '', HERMES_BLACK_FRIDAY_CAMPAIGN_ENDS_AT: '' },
+      hermesResponse: { response: 'Entiendo su solicitud.' },
+    });
+    await harness.service.process({ conversationId: 'conversation-1', contactId: 'contact-1', inboundMessageId: 'inbound-recovery' });
+    const delivered = harness.deliveries.prepareBatch.mock.calls[0]?.[0].parts.map((part: {content: string}) => part.content).join(' ');
+    expect(delivered).toBeDefined();
+    expect(delivered).not.toMatch(/^(?:Hola|Buenas|Buenos)/iu);
+    expect(delivered).not.toMatch(/Black Friday|USD\s*\$?80/iu);
+  });
+
+  it('greets a later normal multipart Nous reply exactly once without changing subsequent parts', async () => {
+    const parts = ['Podemos continuar con su proyecto.', 'La segunda parte conserva el detalle.', '¿Cuál prefiere?'];
+    const harness = setupProcessHarness({
+      inboundContent: '¿Y ahora?',
+      historyMessages: [{ id: 'prior-assistant', direction: MessageDirection.OUTBOUND, content: 'Ya revisamos su proyecto.', createdAt: new Date('2026-09-20T18:00:00Z'), rawPayload: null, metadata: {} }],
+      hermesResponse: { response: parts.join(' ') },
+    });
+    harness.engine.respond.mockResolvedValue({ ...toEngineResult({ response: parts.join(' ') }), engine: 'nous_hermes', replyParts: parts });
+    await harness.service.process({ conversationId: 'conversation-1', contactId: 'contact-1', inboundMessageId: 'inbound-recovery' });
+    const sent = harness.deliveries.prepareBatch.mock.calls[0][0].parts.map((part: { content: string }) => part.content);
+    expect(sent).toEqual(['Hola, con gusto. Podemos continuar con su proyecto.', parts[1], parts[2]]);
+    expect(sent.join(' ').match(/\bHola\b/gu)).toHaveLength(1);
+  });
+
+  it('preserves later normal parts verbatim, including repeated greetings', async () => {
+    const parts = ['Podemos continuar.', 'Hola, Ana. La segunda parte conserva el detalle.', 'Hola.', '¿Cuál prefiere?'];
+    const harness = setupProcessHarness({ inboundContent: '¿Y ahora?', hermesResponse: { response: parts.join(' ') } });
+    harness.engine.respond.mockResolvedValue({ ...toEngineResult({ response: parts.join(' ') }), engine: 'nous_hermes', replyParts: parts });
+    await harness.service.process({ conversationId: 'conversation-1', contactId: 'contact-1', inboundMessageId: 'inbound-recovery' });
+    const sent = harness.deliveries.prepareBatch.mock.calls[0][0].parts.map((part: { content: string }) => part.content);
+    expect(sent).toEqual(['Hola, con gusto. Podemos continuar.', ...parts.slice(1)]);
+  });
+
+  it.each([
+    'Hola, estimada María. Su precio es 80.',
+    'Hola, estimado José. https://ejemplo.test/jose?a=1&b=2',
+    'Hola, María, la asesora, lo contactará.',
+    'Hola, Ana, la asesora, lo contactará.',
+    'Hola. Ana, la asesora, lo contactará.',
+    'Hola. Estimada María, la asesora, lo contactará.',
+    'Hola, estimada inversión. La proyección mejora.',
+    'Hola, estimada María López. Su precio es 80.',
+    'Hola, Maria, nuestra asesora, le enviara el contrato.',
+    'Hola, María, mi colega, enviará el contrato.',
+    'Hola, Carlos, tu asesor, llamó.',
+    'Hola, Ana, nuestra nueva asesora, llamó.',
+    'Hola, Rita, excellente conseillère, vous contactera.',
+    'Hola, Maria, our adviser, will send the contract.',
+    'Hola, José, su asesor de ventas, dejó https://ejemplo.test/contrato?a=1&b=2.',
+    'Hola, Ana: nuestra asesora enviará el contrato.',
+    'Hola, Carlos le contará a María los detalles.',
+  ])('preserves repeated Nous part verbatim: %s', async (repeated) => {
+    const parts = ['Podemos continuar.', repeated, 'Final.'];
+    const harness = setupProcessHarness({ inboundContent: '¿Y ahora?', hermesResponse: { response: parts.join(' ') } });
+    harness.engine.respond.mockResolvedValue({ ...toEngineResult({ response: parts.join(' ') }), engine: 'nous_hermes', replyParts: parts });
+    await harness.service.process({ conversationId: 'conversation-1', contactId: 'contact-1', inboundMessageId: 'inbound-recovery' });
+    const sent = harness.deliveries.prepareBatch.mock.calls[0][0].parts.map((part: { content: string }) => part.content);
+    expect(sent).toEqual(['Hola, con gusto. Podemos continuar.', repeated, 'Final.']);
+  });
+
   it('keeps a recent verified campaign on the next turn without repeating the price', async () => {
     const promotion: AuthorizedOffer = {
       ...testOffer('Black Friday — Landing Page', '80.00', 'LANDING_PAGE'),
@@ -4218,7 +4357,8 @@ describe('AutoReplyService', () => {
     const delivered = harness.deliveries.prepareBatch.mock.calls[0][0].parts[0]
       .content as string;
     expect(delivered).toMatch(/barbería.*WhatsApp/iu);
-    expect(delivered).not.toMatch(/80|^Hola/iu);
+    expect(delivered).toMatch(/^Hola/iu);
+    expect(delivered).not.toMatch(/80/iu);
   });
 
   it('follows a campaign lead who changes the request to an online store', async () => {
@@ -4270,7 +4410,8 @@ describe('AutoReplyService', () => {
     const parts = harness.deliveries.prepareBatch.mock.calls[0][0].parts;
     expect(parts).toHaveLength(1);
     expect(parts[0].content).toMatch(/tienda online.*catálogo/iu);
-    expect(parts[0].content).not.toMatch(/Black Friday|USD\s*80|^Hola/iu);
+    expect(parts[0].content).toMatch(/^Hola/iu);
+    expect(parts[0].content).not.toMatch(/Black Friday|USD\s*80/iu);
   });
 
   it('lists all ten authorized scope items when a campaign lead asks what is included', async () => {
@@ -4956,7 +5097,7 @@ describe('AutoReplyService', () => {
     const prepared = harness.deliveries.prepareBatch.mock.calls[0][0] as {
       parts: Array<{ content: string; metadata?: { voiceMediaId?: string } }>;
     };
-    expect(prepared.parts[0].content).toBe('Podemos crear su sitio web.');
+    expect(prepared.parts[0].content).toBe('Hola, con gusto. Podemos crear su sitio web.');
     expect(prepared.parts[0].metadata?.voiceMediaId).toBeUndefined();
     expect(harness.deliveries.deliverPreparedBatch).toHaveBeenCalled();
   });
@@ -5061,7 +5202,7 @@ describe('AutoReplyService', () => {
     const prepared = harness.deliveries.prepareBatch.mock.calls[0][0] as {
       parts: Array<{ content: string; metadata?: { voiceMediaId?: string } }>;
     };
-    expect(prepared.parts[0].content).toBe('Podemos crear su sitio web.');
+    expect(prepared.parts[0].content).toBe('Hola, con gusto. Podemos crear su sitio web.');
     expect(prepared.parts[0].metadata?.voiceMediaId).toBeUndefined();
     expect(warn).toHaveBeenCalledWith(
       expect.stringContaining('"event":"voice_media_upload_failed"'),
@@ -5652,7 +5793,7 @@ describe('AutoReplyService', () => {
       (call) => call[1] as string,
     );
     expect(sent).toEqual([
-      'Para las lavadoras, Landing Básica USD $250 o Plan de Lanzamiento USD $360.',
+      'Hola, con gusto. Para las lavadoras, Landing Básica USD $250 o Plan de Lanzamiento USD $360.',
       'Para los zapatos, Tienda de Lanzamiento USD $550.',
       'El plazo debe confirmarse según el alcance.',
     ]);
@@ -5914,7 +6055,7 @@ describe('AutoReplyService', () => {
     });
     expect(
       harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
-    ).toBe('Claro, puedo ayudarle con su sitio web.');
+    ).toBe('Hola, con gusto. Claro, puedo ayudarle con su sitio web.');
     expect(
       harness.leads.recordCommercialProfileFromConversation,
     ).toHaveBeenCalledWith(
@@ -6034,7 +6175,7 @@ describe('AutoReplyService', () => {
       expect(post).toHaveBeenCalledTimes(1);
       expect(
         harness.deliveries.prepareBatch.mock.calls[0][0].parts[0].content,
-      ).toBe('Podemos ayudarle con su sitio web.');
+      ).toBe('Hola, con gusto. Podemos ayudarle con su sitio web.');
       expect(harness.deliveries.deliverPreparedBatch).toHaveBeenCalledTimes(1);
       expect(
         harness.leads.recordCommercialProfileFromConversation,
@@ -6590,6 +6731,7 @@ describe('AutoReplyService', () => {
     };
     const prisma = {
       message: {
+        findFirst: jest.fn().mockResolvedValue(null),
         findUnique: jest.fn().mockResolvedValue(inbound),
         findMany: jest
           .fn()
@@ -6688,6 +6830,7 @@ describe('AutoReplyService', () => {
     const callOrder: string[] = [];
     const prisma = {
       message: {
+        findFirst: jest.fn().mockResolvedValue(null),
         findUnique: jest.fn().mockResolvedValue(inbound),
         findMany: jest
           .fn()
@@ -6783,6 +6926,7 @@ describe('AutoReplyService', () => {
     };
     const prisma = {
       message: {
+        findFirst: jest.fn().mockResolvedValue(null),
         findUnique: jest.fn().mockResolvedValue(inbound),
         findMany: jest
           .fn()
@@ -6929,6 +7073,7 @@ describe('AutoReplyService', () => {
     const messageCreate = jest.fn().mockResolvedValue({ id: 'outbound' });
     const prisma = {
       message: {
+        findFirst: jest.fn().mockResolvedValue(null),
         findUnique: jest.fn().mockResolvedValue(inbound),
         findMany: jest
           .fn()
@@ -7012,7 +7157,7 @@ describe('AutoReplyService', () => {
     expect(sentParts.length).toBeLessThanOrEqual(9);
     expect(messageCreate).toHaveBeenCalledTimes(sentParts.length);
     expect(sentParts.every((part) => part.length <= 1000)).toBe(true);
-    expect(sentParts.join(' ')).toBe(longResponse);
+    expect(sentParts.join(' ')).toBe(`Hola, con gusto. ${longResponse}`);
   });
   describe('F3 retrieval rollback at the turn boundary', () => {
     const job = {

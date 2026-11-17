@@ -16,6 +16,7 @@ export class DirectGeminiEngine implements ConversationEngine {
   async respond(input: ConversationTurnInput): Promise<ConversationTurnResult> {
     const response = await this.hermes.generateResponse({
       contactName: input.approvedContext.contactName,
+      firstReply: input.firstReply,
       messageContent: input.customerMessage,
       conversationHistory: input.approvedContext.recentMessages.map(
         ({ role, text }) => ({ role, content: text }),
