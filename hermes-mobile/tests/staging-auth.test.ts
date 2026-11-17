@@ -43,16 +43,16 @@ test('OTP proof goes only to Hermes; no admin token is stored', async () => {
   assert.equal(values.size, 1);
 });
 
-test('restoring validates with server; refresh and status do not send activity', async () => {
+test('restoring validates with server; refresh and session check do not send activity', async () => {
   const { store } = fakeStorage();
   await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'saved');
   const calls: string[] = [];
-  const transport: Transport = async (url) => {
-    calls.push(url);
+  const transport: Transport = async (url, init) => {
+    calls.push(`${init.method} ${url}`);
     return url.endsWith('/refresh') ? result({ accessToken: 'access', refreshToken: 'rotated' }) : result({ active: true });
   };
   await new StagingAuth(config, store, transport).validate();
-  assert.deepEqual(calls.map((url) => url.split('/').at(-1)), ['refresh', 'status']);
+  assert.deepEqual(calls.map((url) => `${url.split(' ')[0]} ${url.split('/').at(-1)}`), ['POST refresh', 'GET session']);
 });
 
 test('expired refresh fails closed and cannot restore a screen', async () => {
@@ -108,4 +108,37 @@ test('logout fails closed if protected storage cannot delete the secret', async 
   await auth.validate();
   await assert.rejects(auth.logout(), /storage failure/);
   assert.equal(values.size, 1);
+});
+
+test('late mobile proof exchange cannot recreate session after clear', async () => {
+  const { store, values } = fakeStorage();
+  let release!: (value: Response) => void;
+  let requested!: () => void;
+  const started = new Promise<void>((resolve) => { requested = resolve; });
+  const auth = new StagingAuth(config, store, async (url) => {
+    if (url.endsWith('/verify-code')) return result({ proof: 'one-use' });
+    return new Promise<Response>((resolve) => { release = resolve; requested(); });
+  });
+  const ongoing = auth.verifyCode('user@example.invalid', '00000042');
+  await started;
+  await auth.clear();
+  release(result({ accessToken: 'late-access', refreshToken: 'stale-refresh' }));
+  await assert.rejects(ongoing, SessionExpired);
+  assert.equal(values.size, 0);
+});
+
+test('a late session status cannot validate a cleared session', async () => {
+  const { store } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'old');
+  let release!: (value: Response) => void;
+  let requested!: () => void;
+  const started = new Promise<void>((resolve) => { requested = resolve; });
+  const auth = new StagingAuth(config, store, async (url) => url.endsWith('/refresh')
+    ? result({ accessToken: 'access', refreshToken: 'rotated' })
+    : new Promise<Response>((resolve) => { release = resolve; requested(); }));
+  const ongoing = auth.validate();
+  await started;
+  await auth.clear();
+  release(result({ active: true }));
+  await assert.rejects(ongoing, SessionExpired);
 });

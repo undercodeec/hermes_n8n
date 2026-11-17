@@ -67,13 +67,16 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
 
   const activity = () => {
     if (phase !== 'ready' || !foreground.current || !auth || pending.current) return;
+    const current = revision.current;
     pending.current = true;
-    void auth.activity().then(() => { lastInteraction.current = Date.now(); })
+    void auth.activity().then(() => { if (current === revision.current && foreground.current) lastInteraction.current = Date.now(); })
       .catch(async (failure) => {
-        const current = revision.current;
+        if (current !== revision.current) return;
+        revision.current++;
         setPhase('locked');
-        if (failure instanceof SessionExpired) { await auth.clear(); if (current === revision.current) setPhase('request'); }
-        if (current === revision.current) setError(failure instanceof NetworkUnavailable ? failure.message : 'La sesión requiere una nueva validación.');
+        const locked = revision.current;
+        if (failure instanceof SessionExpired) { await auth.clear(); if (locked === revision.current) setPhase('request'); }
+        if (locked === revision.current) setError(failure instanceof NetworkUnavailable ? failure.message : 'La sesión requiere una nueva validación.');
       }).finally(() => { pending.current = false; });
   };
 

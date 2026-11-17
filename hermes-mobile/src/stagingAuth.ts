@@ -29,12 +29,12 @@ export class StagingAuth {
   private storageQueue: Promise<unknown> = Promise.resolve();
   constructor(private readonly config: AuthConfig, private readonly storage: Storage, private readonly transport: Transport = fetch) {}
 
-  private async post(base: string, path: string, data: object, token?: string) {
+  private async request(base: string, path: string, method: 'GET' | 'POST', data?: object, token?: string) {
     let response: Response;
     try {
       response = await this.transport(`${base}${path}`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
-        body: JSON.stringify(data),
+        method, headers: { ...(data ? { 'Content-Type': 'application/json' } : {}), ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+        ...(data ? { body: JSON.stringify(data) } : {}),
       });
     } catch { throw new NetworkUnavailable(); }
     if (response.status === 401 || response.status === 403) throw new SessionExpired();
@@ -42,16 +42,22 @@ export class StagingAuth {
     try { return await response.json() as Record<string, unknown>; } catch { throw new Error('Respuesta de autenticación no válida.'); }
   }
 
+  private post(base: string, path: string, data: object, token?: string) { return this.request(base, path, 'POST', data, token); }
+  private get(base: string, path: string, token: string) { return this.request(base, path, 'GET', undefined, token); }
+
   async requestCode(email: string) {
     await this.post(this.config.adminBase, '/api/crm/auth/request-code', { email: email.trim() });
   }
 
   async verifyCode(email: string, code: string) {
+    const generation = this.generation;
     if (!/^\d{8}$/.test(code)) throw new Error('Ingrese los ocho dígitos del código.');
     const verified = await this.post(this.config.adminBase, '/api/crm/auth/mobile/verify-code', { email: email.trim(), code });
+    if (generation !== this.generation) throw new SessionExpired();
     if (typeof verified.proof !== 'string') throw new Error('Respuesta de autenticación no válida.');
     const session = await this.post(this.config.hermesBase, '/api/auth/mobile/crm-proof', { proof: verified.proof });
-    await this.save(session, this.generation);
+    if (generation !== this.generation) throw new SessionExpired();
+    await this.save(session, generation);
   }
 
   private async save(result: Record<string, unknown>, generation: number) {
@@ -80,31 +86,41 @@ export class StagingAuth {
   }
 
   async validate() {
+    const generation = this.generation;
     if (!this.accessToken) await this.refresh();
+    if (generation !== this.generation) throw new SessionExpired();
     try {
-      const status = await this.post(this.config.hermesBase, '/api/auth/mobile/status', {}, this.accessToken!);
+      const status = await this.get(this.config.hermesBase, '/api/auth/mobile/session', this.accessToken!);
+      if (generation !== this.generation) throw new SessionExpired();
       if (status.active !== true) throw new SessionExpired();
     } catch (error) {
       if (!(error instanceof SessionExpired)) throw error;
+      if (generation !== this.generation) throw error;
       // An access token may expire without ending the session. The server validates
       // the inactivity window before allowing refresh; refresh never extends it.
       await this.refresh();
-      const status = await this.post(this.config.hermesBase, '/api/auth/mobile/status', {}, this.accessToken!);
+      const status = await this.get(this.config.hermesBase, '/api/auth/mobile/session', this.accessToken!);
+      if (generation !== this.generation) throw new SessionExpired();
       if (status.active !== true) throw new SessionExpired();
     }
   }
 
   async activity() {
+    const generation = this.generation;
     const now = Date.now();
     if (now - this.lastActivitySent < 15_000) return;
     await this.validate();
+    if (generation !== this.generation) throw new SessionExpired();
     await this.post(this.config.hermesBase, '/api/auth/mobile/activity', {}, this.accessToken!);
+    if (generation !== this.generation) throw new SessionExpired();
     this.lastActivitySent = now;
   }
 
   async logout() {
     try {
-      if (this.accessToken) await this.post(this.config.hermesBase, '/api/auth/mobile/logout', {}, this.accessToken);
+      // A short access JWT may have elapsed; refreshing here does NOT renew idle time.
+      await this.validate();
+      await this.post(this.config.hermesBase, '/api/auth/mobile/logout', {}, this.accessToken!);
     } finally { await this.clear(); }
   }
 
