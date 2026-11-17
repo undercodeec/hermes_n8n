@@ -138,8 +138,8 @@ run('mobile G2 against disposable PostgreSQL', () => {
     await expect(strategy.validate(claims)).rejects.toThrow();
 
     const second = await service.loginMobileWithCrmProof(proof('hermes-crm-mobile'));
-    const expiring = await prisma.mobileSession.findFirstOrThrow({
-      where: { user: { email }, revokedAt: null },
+    const expiring = await prisma.mobileSession.findUniqueOrThrow({
+      where: { id: second.refreshToken.split('.')[0] },
     });
     await prisma.mobileSession.update({
       where: { id: expiring.id },
