@@ -26,6 +26,14 @@ Este registro distingue código, validación, publicación Git, instalación y d
 
 **Estado Git:** cambios de esta etapa en el PR #26; consultar el estado y SHA efectivos del PR antes de afirmar integración. Una imagen, commit o PR no demuestran instalación en tienda ni despliegue productivo.
 
+## 17/11/2026 — Inbox adaptado del CRM web
+
+**Decisión:** por solicitud del propietario, la bandeja y el detalle deben conservar la identidad visual del CRM web, adaptando la interacción a una pantalla de teléfono. La referencia es una lectura estática local del JSX y CSS de `/admin/crm/inbox`, no una comparación de píxeles ni una certificación de la versión web desplegada.
+
+**Prototipo:** lista con logo, búsqueda local, filtros de control y prioridad; detalle con cabecera, franja de atención humana, historial de ejemplo y compositor. La conversación abre en una pantalla propia y permite volver a la lista. Tomar/devolver control y agregar mensajes son operaciones ficticias en memoria, sin conectividad ni efecto en el CRM; escribir requiere control humano simulado y conexión simulada. El toggle de red es una simulación, no prueba de conectividad real. No se incluyen como capacidades reales paginación, adjuntos, asignación, permisos ni ventana Meta.
+
+**Validación local:** `npm run check` pasó con 9 pruebas y typecheck; `npx expo install --check` y `npx expo export --platform all` pasaron. No se han certificado dispositivos físicos, accesibilidad, interfaz frente a Web real ni envío; solicitar revisión visual al propietario. El seguimiento Git corresponde al mismo PR de la interfaz; consultar su estado efectivo antes de afirmar integración.
+
 ## Riesgos y siguientes puertas
 
 1. Antes de usar datos reales: definir y verificar sesiones revocables por dispositivo, permisos por recurso, proyecciones, eventos autorizados y minimizados, y deduplicación/reconciliación de respuestas. El prototipo actual no implementa esos controles.

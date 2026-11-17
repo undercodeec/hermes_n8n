@@ -2,7 +2,8 @@ import { useEffect, useReducer, useState } from 'react';
 import { AppState, Image, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { Feather } from '@expo/vector-icons';
-import { demoReducer, initialState } from './src/demo';
+import { canCompose, demoReducer, initialState, visibleChats } from './src/demo';
+import { crm } from './src/crmStyles';
 
 const ink = '#162636';
 const muted = '#627383';
@@ -54,49 +55,57 @@ export default function App() {
     return () => subscription.remove();
   }, []);
   const selected = state.chats.find((chat) => chat.id === state.selectedId);
+  const chats = visibleChats(state);
+  const canWrite = canCompose(state);
   return <SafeAreaView style={styles.root}>
     <StatusBar barStyle="dark-content" />
-    {state.signedIn ? <View style={styles.top}>
-      <Text style={styles.brand}>HERMES <Text style={styles.brandLight}>/ CRM</Text></Text>
-      <Text style={styles.pill}>PROTOTIPO · SIN RED</Text>
-    </View> : null}
     {!state.signedIn ? <DemoLogin onEnter={() => dispatch({ type: 'LOGIN' })} /> : <>
-      <View style={styles.toolbar}>
-        <Text style={styles.connection}>{state.online ? '●  En línea (simulado)' : '●  Sin conexión (simulado)'}</Text>
-        <Button quiet label={state.online ? 'Simular sin conexión' : 'Simular reconexión'} onPress={() => dispatch({ type: 'NETWORK', online: !state.online })} />
-      </View>
-      {state.notice ? <Pressable accessibilityRole="button" accessibilityLabel="Descartar aviso" onPress={() => dispatch({ type: 'CLEAR_NOTICE' })} style={styles.notice}><Text style={styles.noticeText}>{state.notice}  ×</Text></Pressable> : null}
+      {state.notice ? <Pressable accessibilityRole="button" accessibilityLabel="Descartar aviso" onPress={() => dispatch({ type: 'CLEAR_NOTICE' })} style={crm.notice}><Text style={crm.noticeText}>{state.notice}  ×</Text></Pressable> : null}
+      {!state.online ? <View style={crm.offline}><Text style={crm.offlineText}>Sin conexión simulada · acciones deshabilitadas</Text></View> : null}
       {selected ? <>
-        <View style={styles.sectionHeader}>
-          <Button label="Volver al Inbox" quiet onPress={() => dispatch({ type: 'BACK' })} />
-          <Text style={styles.eyebrow}>CONVERSACIÓN FICTICIA</Text>
-          <Text style={styles.title}>{selected.name}</Text>
-          <Text style={styles.subtitle}>{selected.topic} · {selected.stage}</Text>
+        <View style={crm.chatHeader}>
+          <Pressable accessibilityRole="button" accessibilityLabel="Volver a conversaciones" onPress={() => dispatch({ type: 'BACK' })} style={crm.iconButton}><Feather name="arrow-left" size={19} color="#536078" /></Pressable>
+          <View style={crm.avatar}><Text style={crm.avatarText}>{selected.name.slice(-1)}</Text></View>
+          <View style={crm.chatIdentity}><Text style={crm.name} numberOfLines={1}>{selected.name}</Text><Text style={crm.helper}>Contacto ficticio · {selected.topic}</Text></View>
+          <Text style={crm.badge}>{selected.control === 'hermes' ? 'Hermes activo' : 'Humano'}</Text>
         </View>
-        <ScrollView style={styles.feed} contentContainerStyle={styles.feedContent} keyboardShouldPersistTaps="handled">
-          {selected.messages.map((message) => <View key={message.id} style={[styles.bubble, message.kind === 'agent' && styles.agentBubble]}>
-            <Text style={styles.messageAuthor}>{message.kind === 'agent' ? 'Equipo · DEMO' : selected.name} · {message.time}</Text>
-            <Text style={styles.message}>{message.text}</Text>
+        <View style={crm.handoff}>
+          <View style={[crm.row, { gap: 9 }]}><Feather name="shield" size={18} color="#B06A32" /><Text style={crm.handoffTitle}>{selected.control === 'hermes' ? 'Hermes atiende esta conversación' : 'Atención humana simulada'}</Text></View>
+          <Text style={crm.handoffCopy}>{selected.control === 'hermes' ? 'Tome el control para practicar una respuesta en la demostración.' : 'Solo una simulación visual: no cambia la atención del CRM real.'}</Text>
+          <Pressable accessibilityRole="button" accessibilityState={{ disabled: !state.online }} disabled={!state.online} style={[crm.handoffButton, !state.online && crm.disabled]} onPress={() => dispatch({ type: selected.control === 'hermes' ? 'TAKE_CONTROL' : 'RETURN_CONTROL' })}><Text style={crm.handoffButtonText}>{selected.control === 'hermes' ? 'Tomar control humano' : 'Devolver a Hermes'}</Text></Pressable>
+        </View>
+        <ScrollView style={crm.root} contentContainerStyle={crm.history} keyboardShouldPersistTaps="handled">
+          <Text style={crm.day}>Historial de ejemplo</Text>
+          {selected.messages.map((message) => <View key={message.id} style={[crm.bubble, message.kind === 'agent' && crm.agentBubble, message.kind === 'hermes' && crm.hermesBubble]}>
+            <Text style={[crm.messageAuthor, message.kind === 'agent' && crm.agentAuthor]}>{message.kind === 'agent' ? 'Operador · DEMO' : message.kind === 'hermes' ? 'Hermes · DEMO' : 'Cliente · DEMO'}</Text>
+            <Text style={crm.message}>{message.text}</Text><Text style={crm.messageTime}>{message.time}</Text>
           </View>)}
         </ScrollView>
-        <View style={styles.composer}>
-          <Text style={styles.label}>RESPUESTA LOCAL · NO SE ENVÍA</Text>
-          <TextInput accessibilityLabel="Escribir respuesta ficticia" placeholder={state.online ? 'Escriba una respuesta de prueba…' : 'No disponible sin conexión'} placeholderTextColor={muted} editable={state.online} multiline value={state.draft} onChangeText={(text) => dispatch({ type: 'DRAFT', text })} style={styles.input} />
-          <Button label="Agregar respuesta ficticia" disabled={!state.online || !state.draft.trim()} onPress={() => dispatch({ type: 'SEND_DEMO' })} />
+        <View style={crm.composer}>
+          <Text style={crm.composerHint}>{!state.online ? 'Sin conexión simulada. No se puede responder.' : canWrite ? 'Respuesta de prueba · no se envía a WhatsApp' : 'La respuesta manual requiere tomar el control humano.'}</Text>
+          <View style={crm.row}><TextInput accessibilityLabel="Escribir respuesta ficticia" placeholder={canWrite ? 'Escribe una respuesta como operador…' : 'Respuesta manual no disponible'} placeholderTextColor="#9AA2AE" editable={canWrite} multiline value={state.draft} onChangeText={(text) => dispatch({ type: 'DRAFT', text })} style={crm.composerInput} />
+            <Pressable accessibilityRole="button" accessibilityLabel="Agregar respuesta ficticia" accessibilityState={{ disabled: !canWrite || !state.draft.trim() }} disabled={!canWrite || !state.draft.trim()} onPress={() => dispatch({ type: 'SEND_DEMO' })} style={[crm.send, (!canWrite || !state.draft.trim()) && crm.disabled]}><Feather name="send" size={18} color="#FFFFFF" /></Pressable></View>
         </View>
       </> : <>
-        <ScrollView style={styles.feed} contentContainerStyle={styles.list}>
-          <Text style={styles.eyebrow}>BUEN DÍA, EQUIPO</Text>
-          <Text style={styles.heading}>Bandeja de entrada</Text>
-          <Text style={styles.body}>Conversaciones de ejemplo. Sin datos de clientes reales.</Text>
-          {state.chats.map((chat) => <Pressable key={chat.id} accessibilityRole="button" accessibilityLabel={`Abrir conversación ficticia de ${chat.name}`} onPress={() => dispatch({ type: 'OPEN', id: chat.id })} style={styles.chatCard}>
-            <View style={styles.chatTop}><Text style={styles.cardTitle}>{chat.name}</Text>{chat.unread ? <Text style={styles.count}>{chat.unread}</Text> : null}</View>
-            <Text style={styles.subtitle}>{chat.topic}</Text>
-            <Text style={styles.preview} numberOfLines={1}>{chat.messages.at(-1)?.text}</Text>
-            <Text style={styles.stage}>{chat.stage}  ↗</Text>
-          </Pressable>)}
-          <Button label="Cerrar demostración" quiet onPress={() => dispatch({ type: 'LOGOUT' })} />
+        <View style={crm.header}>
+          <View style={crm.brandRow}><Image source={require('./assets/hermes-crm-logo.png')} style={crm.logo} resizeMode="contain" accessibilityLabel="Hermes CRM" /><Text style={crm.demoTag}>DEMO · SIN DATOS REALES</Text></View>
+          <View style={crm.titleRow}><View><Text style={crm.eyebrow}>WHATSAPP</Text><Text style={crm.title}>Inbox</Text></View><Pressable accessibilityRole="button" accessibilityLabel={state.online ? 'Simular desconexión' : 'Simular reconexión'} onPress={() => dispatch({ type: 'NETWORK', online: !state.online })} style={crm.iconButton}><Feather name={state.online ? 'wifi' : 'wifi-off'} size={18} color="#667185" /></Pressable></View>
+        </View>
+        <View style={crm.filters}>
+          <View style={crm.search}><Feather name="search" size={17} color="#96A0B0" /><TextInput accessibilityLabel="Buscar conversaciones ficticias" placeholder="Buscar contacto…" placeholderTextColor="#9AA4B3" value={state.search} onChangeText={(text) => dispatch({ type: 'SEARCH', text })} style={crm.searchInput} /></View>
+          <View style={crm.filterRow}>{([{ label: 'Todos', value: 'todos' }, { label: 'Hermes activo', value: 'hermes' }, { label: 'Control humano', value: 'humano' }] as const).map((filter) => <Pressable key={filter.value} accessibilityRole="button" accessibilityState={{ selected: state.controlFilter === filter.value }} onPress={() => dispatch({ type: 'CONTROL_FILTER', value: filter.value })} style={[crm.filter, state.controlFilter === filter.value && crm.filterActive]}><Text style={[crm.filterText, state.controlFilter === filter.value && crm.filterActiveText]}>{filter.label}</Text></Pressable>)}
+            <Pressable accessibilityRole="button" accessibilityState={{ selected: state.priorityFilter === 'alta' }} onPress={() => dispatch({ type: 'PRIORITY_FILTER', value: state.priorityFilter === 'alta' ? 'todas' : 'alta' })} style={[crm.filter, state.priorityFilter === 'alta' && crm.filterActive]}><Text style={[crm.filterText, state.priorityFilter === 'alta' && crm.filterActiveText]}>⚑ Prioridad</Text></Pressable></View>
+        </View>
+        <Text style={crm.listMeta}>{chats.length} conversaciones · datos ficticios</Text>
+        <ScrollView style={crm.list} keyboardShouldPersistTaps="handled">
+          {chats.length ? chats.map((chat) => <Pressable key={chat.id} accessibilityRole="button" accessibilityLabel={`Abrir conversación ficticia de ${chat.name}`} onPress={() => dispatch({ type: 'OPEN', id: chat.id })} style={crm.conversation}>
+            <View style={crm.avatar}><Text style={crm.avatarText}>{chat.name.slice(-1)}</Text></View>
+            <View style={crm.conversationContent}><View style={crm.between}><Text style={crm.name} numberOfLines={1}>{chat.name}</Text><Text style={crm.time}>{chat.messages.at(-1)?.time}</Text></View>
+              <Text style={crm.preview} numberOfLines={1}>{chat.messages.at(-1)?.text}</Text>
+              <View style={[crm.row, { gap: 6 }]}><Feather name={chat.control === 'humano' ? 'user-check' : 'cpu'} size={13} color="#7B8497" /><Text style={crm.status}>{chat.control === 'humano' ? 'Atención humana' : 'Hermes activo'}{chat.priority === 'alta' ? ' · Prioridad' : ''}</Text></View></View>
+          </Pressable>) : <Text style={crm.empty}>No hay conversaciones para los filtros elegidos.</Text>}
         </ScrollView>
+        <View style={crm.footer}><Button label="Cerrar demostración" quiet onPress={() => dispatch({ type: 'LOGOUT' })} /></View>
       </>}
     </>}
   </SafeAreaView>;
