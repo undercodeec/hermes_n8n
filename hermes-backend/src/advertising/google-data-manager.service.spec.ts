@@ -234,6 +234,28 @@ describe('GoogleDataManagerService', () => {
     );
   });
 
+  it('omits conversion value and currency for a valueless first purchase', async () => {
+    const { service, prisma, job } = readyJob(true);
+    prisma.advertisingSyncJob.findUnique.mockResolvedValue({
+      ...job,
+      conversion: {
+        ...job.conversion,
+        eventType: AdvertisingEventType.CONTRACT_WON,
+        value: null,
+        currency: null,
+        commercialReference: null,
+      },
+    });
+    Object.defineProperty(service, 'accessToken', {
+      value: jest.fn().mockResolvedValue('synthetic'),
+    });
+    const post = jest.spyOn(axios, 'post').mockResolvedValue({ data: {} });
+    await service.ingest(job.id);
+    const body = post.mock.calls[0][1] as { events: Record<string, unknown>[] };
+    expect(body.events[0]).not.toHaveProperty('conversionValue');
+    expect(body.events[0]).not.toHaveProperty('currency');
+  });
+
   it('hashes the existing international WhatsApp phone only with the user-data flag', async () => {
     const { service, prisma, job, settings } = readyJob(true);
     const contact = {

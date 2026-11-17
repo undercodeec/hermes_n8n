@@ -16,7 +16,7 @@ describe('Confirmed meeting CRM policy', () => {
     'NEGOTIATION',
     'WON',
     'LOST',
-  ])('never degrades %s', async (stage) => {
+  ])('does not automatically qualify %s', async (stage) => {
     const tx = {
       $executeRaw: jest.fn(),
       lead: {
@@ -57,12 +57,9 @@ describe('Confirmed meeting CRM policy', () => {
         status: 'CONFIRMED',
       } as Meeting,
     );
-    expect(tx.lead.update).toHaveBeenCalledTimes(
-      ['NEW', 'CONTACTED'].includes(stage) ? 1 : 0,
-    );
-    expect(tx.advertisingConversion.create).toHaveBeenCalledTimes(
-      ['NEW', 'CONTACTED'].includes(stage) ? 1 : 0,
-    );
+    expect(tx.lead.update).not.toHaveBeenCalled();
+    expect(tx.advertisingConversion.create).not.toHaveBeenCalled();
+    expect(tx.advertisingSyncJob.upsert).not.toHaveBeenCalled();
   });
   it('creates appointment task and updates same task on cancellation', async () => {
     const tx = {

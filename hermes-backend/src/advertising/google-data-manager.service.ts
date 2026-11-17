@@ -128,12 +128,15 @@ export class GoogleDataManagerService {
     }
     if (
       job.conversion.eventType === AdvertisingEventType.CONTRACT_WON &&
-      (job.conversion.value === null ||
-        !Number.isFinite(Number(job.conversion.value)) ||
-        Number(job.conversion.value) <= 0 ||
-        !job.conversion.currency ||
-        !/^[A-Z]{3}$/.test(job.conversion.currency) ||
-        !job.conversion.commercialReference?.trim())
+      ((job.conversion.value === null &&
+        (job.conversion.currency !== null ||
+          job.conversion.commercialReference !== null)) ||
+        (job.conversion.value !== null &&
+          (!Number.isFinite(Number(job.conversion.value)) ||
+            Number(job.conversion.value) <= 0 ||
+            !job.conversion.currency ||
+            !/^[A-Z]{3}$/.test(job.conversion.currency) ||
+            !job.conversion.commercialReference?.trim())))
     ) {
       await this.notEligible(job.id, 'Invalid CONTRACT_WON commercial value');
       throw new GoogleSyncError(

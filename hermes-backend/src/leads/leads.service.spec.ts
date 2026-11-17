@@ -93,6 +93,66 @@ describe('LeadsService', () => {
     expect(tx.lead.update).not.toHaveBeenCalled();
   });
 
+  it.each([
+    'INSTRUCTIONS_PREPARED',
+    'INSTRUCTIONS_SENT',
+    'PROOF_RECEIVED',
+    'UNDER_REVIEW',
+  ])(
+    'no permite salir de PAYMENT_PENDING con transferencia activa %s',
+    async (status) => {
+      tx.lead.findUnique.mockResolvedValue({
+        id: 'lead-payment',
+        contactId: 'contact-1',
+        stage: LeadStage.PAYMENT_PENDING,
+      });
+      tx.transferPayment.findFirst.mockResolvedValueOnce({
+        id: 'transfer-1',
+        status,
+      });
+      await expect(
+        service.update('lead-payment', { stage: LeadStage.LOST }, 'operator-1'),
+      ).rejects.toThrow('transferencia debe aprobarse desde Inbox');
+      expect(tx.lead.update).not.toHaveBeenCalled();
+      expect(tx.advertisingConversion.upsert).not.toHaveBeenCalled();
+    },
+  );
+
+  it('permite salir de PAYMENT_PENDING si no queda transferencia activa', async () => {
+    tx.lead.findUnique.mockResolvedValue({
+      id: 'lead-payment',
+      contactId: 'contact-1',
+      stage: LeadStage.PAYMENT_PENDING,
+    });
+    tx.transferPayment.findFirst.mockResolvedValueOnce(null);
+    tx.lead.update.mockResolvedValue({
+      id: 'lead-payment',
+      contactId: 'contact-1',
+      stage: LeadStage.LOST,
+      lostReason: 'Synthetic',
+    });
+    tx.advertisingConversion.upsert.mockResolvedValue({ id: 'lost-event' });
+    await service.update(
+      'lead-payment',
+      { stage: LeadStage.LOST, lostReason: 'Synthetic' },
+      'operator-1',
+    );
+    expect(tx.lead.update).toHaveBeenCalledTimes(1);
+    expect(tx.advertisingSyncJob.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('no permite salir de PAYMENT_REVIEW por actualización manual', async () => {
+    tx.lead.findUnique.mockResolvedValue({
+      id: 'lead-payment',
+      contactId: 'contact-1',
+      stage: LeadStage.PAYMENT_REVIEW,
+    });
+    await expect(
+      service.update('lead-payment', { stage: LeadStage.LOST }, 'operator-1'),
+    ).rejects.toThrow('validación del pago');
+    expect(tx.lead.update).not.toHaveBeenCalled();
+  });
+
   it('crea exactamente un lead NEW para la primera conversación', async () => {
     tx.lead.findFirst.mockResolvedValue(null);
     tx.lead.create.mockResolvedValue({
@@ -132,7 +192,7 @@ describe('LeadsService', () => {
     expect(events.emit).not.toHaveBeenCalled();
   });
 
-  it('promueve el mismo lead a QUALIFIED y amplía el evento para Telegram', async () => {
+  it('enriquece el lead sin calificarlo automáticamente', async () => {
     const existing = {
       id: 'lead-1',
       contactId: 'contact-1',
@@ -142,7 +202,7 @@ describe('LeadsService', () => {
     };
     const qualified = {
       ...existing,
-      stage: LeadStage.QUALIFIED,
+      stage: LeadStage.NEW,
       productOfInterest: 'Hermes',
       closeProbability: null,
     };
@@ -165,31 +225,18 @@ describe('LeadsService', () => {
       },
     });
 
-    expect(lead.stage).toBe(LeadStage.QUALIFIED);
+    expect(lead.stage).toBe(LeadStage.NEW);
     expect(tx.lead.create).not.toHaveBeenCalled();
-    expect(tx.advertisingConversion.create).toHaveBeenCalledWith({
-      data: expect.objectContaining({
-        leadId: 'lead-1',
-        eventType: 'LEAD_QUALIFIED',
-        source: 'CRM_QUALIFICATION_RULES',
-      }),
-    });
-    expect(tx.advertisingSyncJob.upsert).toHaveBeenCalledWith({
-      where: { conversionId: 'conversion-1' },
-      create: expect.objectContaining({
-        conversionId: 'conversion-1',
-        status: 'PENDING',
-      }),
-      update: {},
-    });
-    expect(events.emit).toHaveBeenCalledWith(
-      'lead.qualified',
+    expect(tx.lead.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        leadId: 'lead-1',
-        contactName: 'Ada',
-        waId: '593999999999',
-        crmUrl: 'https://admincrm.undercodeec.com/leads/lead-1',
+        data: expect.not.objectContaining({ stage: expect.anything() }),
       }),
+    );
+    expect(tx.advertisingConversion.create).not.toHaveBeenCalled();
+    expect(tx.advertisingSyncJob.upsert).not.toHaveBeenCalled();
+    expect(events.emit).not.toHaveBeenCalledWith(
+      'lead.qualified',
+      expect.anything(),
     );
   });
 
@@ -291,20 +338,65 @@ describe('LeadsService', () => {
     );
   });
 
-  it('rejects a WON stage change without amount, currency and contract reference', async () => {
+  it('records a qualified first purchase without fictional amount', async () => {
     tx.lead.findUnique.mockResolvedValue({
       id: 'lead-1',
       contactId: 'contact-1',
-      stage: LeadStage.PROPOSAL,
+      stage: LeadStage.QUALIFIED,
       contractedAmount: null,
       commercialCurrency: null,
       contractReference: null,
     });
-    await expect(
-      service.update('lead-1', { stage: LeadStage.WON }, 'operator-1'),
-    ).rejects.toThrow();
-    expect(tx.lead.update).not.toHaveBeenCalled();
+    tx.lead.update.mockResolvedValue({
+      id: 'lead-1',
+      contactId: 'contact-1',
+      stage: LeadStage.WON,
+      contractedAmount: null,
+      commercialCurrency: null,
+      contractReference: null,
+    });
+    tx.advertisingConversion.upsert.mockResolvedValue({
+      id: 'conversion-won',
+      value: null,
+      currency: null,
+      commercialReference: null,
+    });
+    await service.update('lead-1', { stage: LeadStage.WON }, 'operator-1');
+    expect(tx.advertisingConversion.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({
+          value: null,
+          currency: null,
+          commercialReference: null,
+        }),
+      }),
+    );
+    expect(tx.advertisingSyncJob.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not create a second conversion for a later lead', async () => {
+    tx.lead.findUnique.mockResolvedValue({
+      id: 'lead-2',
+      contactId: 'contact-1',
+      stage: LeadStage.QUALIFIED,
+      contractedAmount: null,
+      commercialCurrency: null,
+      contractReference: null,
+    });
+    tx.lead.update.mockResolvedValue({
+      id: 'lead-2',
+      contactId: 'contact-1',
+      stage: LeadStage.WON,
+      contractedAmount: null,
+      commercialCurrency: null,
+      contractReference: null,
+    });
+    tx.advertisingConversion.findFirst.mockResolvedValueOnce({
+      leadId: 'lead-1',
+    });
+    await service.update('lead-2', { stage: LeadStage.WON }, 'operator-1');
     expect(tx.advertisingConversion.upsert).not.toHaveBeenCalled();
+    expect(tx.advertisingSyncJob.upsert).not.toHaveBeenCalled();
   });
 
   it('commits a verified CONTRACT_WON milestone with a complete WON transition', async () => {
