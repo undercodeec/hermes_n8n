@@ -1,4 +1,4 @@
-/** A courtesy formula for a message, never a statement about a person's identity. */
+/** Courtesy wording only: a name is not evidence of a person's gender identity. */
 export type CustomerSalutationKind =
   | 'MASCULINE'
   | 'FEMININE'
@@ -12,165 +12,127 @@ export type CustomerSalutation = {
   source: 'EXPLICIT' | 'NAME' | 'ORGANIZATION' | 'UNKNOWN';
 };
 
-// Deliberately small: an unlisted or cross-market ambiguous name stays neutral.
-const masculine = new Set([
-  'carlos',
-  'juan',
-  'jose',
-  'josé',
-  'luis',
-  'pedro',
-  'miguel',
-  'manuel',
-  'antonio',
-  'diego',
-  'andres',
-  'andrés',
-  'francisco',
-]);
-const feminine = new Set([
-  'maria',
-  'maría',
-  'valentina',
-  'ana',
-  'lucia',
-  'lucía',
-  'carmen',
-  'isabel',
-  'sofia',
-  'sofía',
-  'paula',
-  'laura',
-  'elena',
-]);
-const invalid =
-  /^(?:mr|mrs|sr|sra|cliente|contacto|unknown|desconocido|usuario|undercodeec)$/iu;
 const organization =
-  /\b(?:barber[ií]a|peluquer[ií]a|sal[oó]n|est[eé]tica|spa|restaurante|tienda|taller|distribuidora|comercial|agencia|consultora|cl[ií]nica|estudio|servicios|empresa|compa[nñ][ií]a|c[ií]a\.?\s*ltda\.?|s\.?\s*l\.?|s\.?\s*a\.?\s*s\.?)\b/iu;
-const personalName =
-  /^[\p{L}\p{M}][\p{L}\p{M}'-]{0,39}(?:\s+[\p{L}\p{M}][\p{L}\p{M}'-]{0,39}){0,4}$/u;
+  /\b(?:barber[ií]a|peluquer[ií]a|sal[oó]n|est[eé]tica|spa|restaurante|tienda|boutique|shop|store|taller|distribuidora|comercial|agencia|consultora|cl[ií]nica|estudio|studio|servicios|empresa|compa[nñ][ií]a|marketing|tech|digital|media|solutions|consulting|agency|ltda|s\.?\s*a\.?\s*s\.?|s\.?\s*a\.?|s\.?\s*l\.?)\b/iu;
+const placeholder =
+  /^(?:mr|mrs|sr|sra|señor|señora|cliente|contacto|usuario|unknown|desconocido|undercodeec|admin|soporte|ventas|test|prueba)$/iu;
+const nameShape =
+  /^[\p{L}\p{M}]+(?:['-][\p{L}\p{M}]+)?(?: [\p{L}\p{M}]+(?:['-][\p{L}\p{M}]+)?){0,3}$/u;
 
-/** Only direct requests for a form of address count as an explicit preference. */
+/** undefined = no request; null = explicit refusal (never infer from a name). */
+export type ExplicitSalutationPreference =
+  | 'estimado'
+  | 'estimada'
+  | null
+  | undefined;
+
+/** Reads only direct requests for a form of address. Latest request wins. */
 export function explicitSalutationPreference(
   messages: string[],
-): 'estimado' | 'estimada' | undefined {
+): ExplicitSalutationPreference {
   for (const message of [...messages].reverse()) {
-    const match = message.match(
-      /\b(?:prefiero|prefier[oa]|ll[aá]meme|d[ií]game|tr[aá]teme|dir[ií]jase\s+a\s+m[ií])\b[^.!?\n]{0,65}\b(estimad[oa])\b/iu,
-    );
-    if (
-      match &&
-      !/\bno\b/iu.test(match[0]) &&
-      !/\bno\s*$/iu.test(
-        message.slice(Math.max(0, (match.index ?? 0) - 8), match.index),
-      )
-    )
-      return match[1].toLocaleLowerCase('es') as 'estimado' | 'estimada';
+    // Grouped turns prefix *each* line, not just the first. Treat each marked
+    // turn independently while preserving unmarked multiline quotations/context.
+    const turns: string[] = [];
+    for (const line of message.split(/\r?\n/u)) {
+      const marker = /^\[Mensaje \d+, [A-Z_]+\][ \t]+/u.exec(line);
+      if (marker || !turns.length)
+        turns.push(line.slice(marker?.[0].length ?? 0));
+      else turns[turns.length - 1] += `\n${line}`;
+    }
+    for (const turn of turns.reverse()) {
+      // Do not attribute quoted or third-party text to this customer.
+      if (/["“”«»]/u.test(turn)) continue;
+      const clauses = turn.split(/\r?\n+|(?<=[.!?])\s+(?=\p{Lu})/u);
+      for (let i = clauses.length - 1; i >= 0; i--) {
+        const raw = clauses[i];
+        if (i > 0 && /:\s*$/u.test(clauses[i - 1])) continue;
+        const clause = raw
+          .trim()
+          .replace(
+            /^(?:(?:hola|buenos d[ií]as|buenas(?: tardes| noches)?|por favor)[,!.:; ]+)+/iu,
+            '',
+          )
+          .trim();
+        // A refusal is a decision too: never fall back to an earlier opt-in.
+        if (
+          /^(?:no (?:prefiero|quiero) que me (?:diga[n]?|digas|llame[n]?|llames|trate[n]?|trates)|no me (?:diga[n]?|digas|llame[n]?|llames|trate[n]?|trates)(?: de)?|prefiero que no me (?:diga[n]?|digas|llame[n]?|llames|trate[n]?|trates)(?: de)?|deje(?:n)? de (?:llamarme|decirme|tratarme)(?: de)?)\s+estimad[oa](?:,?\s+(?:por favor|(?:muchas\s+)?gracias))?[.!?]?$/iu.test(
+            clause,
+          )
+        )
+          return null;
+        const request =
+          /^(?:prefiero (?:que (?:me|se) (?:llames?|llamen|digas?|diga[n]?|trates?|trate[n]?)|ser|el trato de)|ll[aá]meme|d[ií]game|tr[aá]teme|dir[ií]jase a m[ií])\s+(?:de\s+)?(estimad[oa])(?:,?\s+por favor)?[.!?]?$/iu.exec(
+            clause,
+          );
+        if (request)
+          return request[1].toLocaleLowerCase('es') as 'estimado' | 'estimada';
+      }
+    }
   }
   return undefined;
 }
 
 export function resolveCustomerSalutation(
   contactName: string | null | undefined,
-  explicitPreference?: 'estimado' | 'estimada',
+  explicitPreference?: ExplicitSalutationPreference,
 ): CustomerSalutation {
   const name = contactName?.trim().replace(/\s+/gu, ' ') ?? '';
-  const isOrganization = organization.test(name);
-  const valid =
-    name.length <= 100 &&
-    personalName.test(name) &&
-    !name.split(' ').some((part) => invalid.test(part)) &&
-    !/\d/u.test(name);
-  const firstName = valid && !isOrganization ? name.split(' ')[0] : undefined;
-  if (explicitPreference) {
+  if (organization.test(name))
+    return { kind: 'ORGANIZATION', source: 'ORGANIZATION' };
+  // A string containing a URL, handle, number, punctuation, or a title is not
+  // reliably a person's name. Keep it out of the generated greeting as well.
+  if (
+    name.length > 80 ||
+    !nameShape.test(name) ||
+    name.split(' ').some((part) => placeholder.test(part)) ||
+    name
+      .split(' ')
+      .slice(1)
+      .some((part) => !/^\p{Lu}/u.test(part))
+  ) {
+    return explicitPreference
+      ? {
+          kind: explicitPreference === 'estimado' ? 'MASCULINE' : 'FEMININE',
+          treatment: explicitPreference,
+          source: 'EXPLICIT',
+        }
+      : { kind: 'UNKNOWN', source: 'UNKNOWN' };
+  }
+  const firstName = name.split(' ')[0];
+  if (explicitPreference === null)
+    return { kind: 'UNKNOWN', firstName, source: 'EXPLICIT' };
+  if (explicitPreference)
     return {
       kind: explicitPreference === 'estimado' ? 'MASCULINE' : 'FEMININE',
-      ...(firstName ? { firstName } : {}),
+      firstName,
       treatment: explicitPreference,
       source: 'EXPLICIT',
-    };
-  }
-  if (isOrganization) return { kind: 'ORGANIZATION', source: 'ORGANIZATION' };
-  if (!firstName) return { kind: 'UNKNOWN', source: 'UNKNOWN' };
-  const normalized = firstName.toLocaleLowerCase('es');
-  if (masculine.has(normalized))
-    return {
-      kind: 'MASCULINE',
-      firstName,
-      treatment: 'estimado',
-      source: 'NAME',
-    };
-  if (feminine.has(normalized))
-    return {
-      kind: 'FEMININE',
-      firstName,
-      treatment: 'estimada',
-      source: 'NAME',
     };
   return { kind: 'UNKNOWN', firstName, source: 'UNKNOWN' };
 }
 
 const opening =
-  /^(?:¡\s*)?(Hola|Buenas(?:\s+(?:tardes|noches))?|Buenos\s+d[ií]as|Buen\s+d[ií]a)\b/iu;
-const formalAddress = /^estimad[oa](?:\s+[\p{L}\p{M}'-]+){0,3}\s*[.,!:;]\s*/iu;
+  /^[¡¿\s]*(?:hola|hello|hi|hey|saludos|qu[eé]\s+tal|buenas(?:\s+(?:tardes|noches))?|buenos\s+d[ií]as|buen\s+d[ií]a|estimad[oa])(?=[\s,.!:;¡!¿?]|$)/iu;
 
-/** Repairs only the leading address, preserving the commercial content after it. */
+export function isSensitiveGreetingTurn(customerMessage: string, reply: string): boolean {
+  return /\b(?:stop|baja|no (?:me |nos )?(?:escriba\w*|contacte\w*|respond\w*)|no (?:quiero|deseo) recibir m[aá]s mensajes|elimin(?:e|en|ar) (?:mis|nuestros) datos|no volveremos a escribir|emergencia|urgencia|peligro|suicid\w*|amenaza\w*|incidente de seguridad)\b/iu.test(`${customerMessage}\n${reply}`);
+}
+
+/** Preserve existing greetings verbatim; only prefix a missing greeting. */
 export function polishCustomerGreeting(input: {
   reply: string;
   customerMessage: string;
   firstReply: boolean;
   salutation: CustomerSalutation;
   contactName?: string;
+  greetNormally?: boolean;
+  safetyMessage?: string;
 }): string {
-  const reply = input.reply.trim();
-  if (!reply) return reply;
-  const startsWithGreeting = opening.test(reply);
-  const startsWithFormal = formalAddress.test(reply);
-  const customerGreeted = opening.test(input.customerMessage.trim());
-  if (
-    !startsWithGreeting &&
-    !startsWithFormal &&
-    !(input.firstReply && customerGreeted)
-  )
-    return reply;
-
-  // Later turns may correspond to a new greeting, but never repeat a formal title.
-  const greeting = startsWithGreeting ? reply.match(opening)![1] : 'Hola';
-  let rest = startsWithGreeting ? reply.replace(opening, '') : reply;
-  rest = rest.replace(/^[\s,.!¡:;]+/u, '');
-  const addressName = input.salutation.firstName;
-  const escapedName = addressName?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const rawName = input.contactName?.trim();
-  const escapedRawName = rawName?.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  for (let i = 0; i < 3; i++) {
-    const previous = rest;
-    rest = rest.replace(formalAddress, '');
-    if (escapedName)
-      rest = rest.replace(
-        new RegExp(`^${escapedName}\\s*[.,!:;]\\s*`, 'iu'),
-        '',
-      );
-    if (escapedRawName && escapedRawName !== escapedName)
-      rest = rest.replace(
-        new RegExp(`^${escapedRawName}\\s*[.,!:;]\\s*`, 'iu'),
-        '',
-      );
-    rest = rest.replace(
-      /^(?:mr|mrs|sr|sra|cliente|unknown)\s*[.,!:;]\s*/iu,
-      '',
-    );
-    rest = rest.replace(opening, '').replace(/^[\s,.!¡:;]+/u, '');
-    if (rest === previous) break;
-  }
-  rest = rest.replace(/^\p{Ll}/u, (letter) => letter.toLocaleUpperCase('es'));
-  // Do not put a greeting in a technical or operational response with no opening.
-  if (!input.firstReply && startsWithFormal && !startsWithGreeting) return rest;
-  const address = input.firstReply
-    ? input.salutation.treatment
-      ? `, ${input.salutation.treatment}${addressName ? ` ${addressName}` : ''}`
-      : addressName
-        ? `, ${addressName}`
-        : ''
-    : '';
-  return `${greeting}${address}. ${rest}`.trim();
+  const { reply } = input;
+  if (!reply || isSensitiveGreetingTurn(input.safetyMessage ?? input.customerMessage, reply)) return reply;
+  if (opening.test(reply)) return reply;
+  const customerOpening = input.customerMessage.replace(/^\[Mensaje \d+, [A-Z_]+\][ \t]*/u, '').trimStart();
+  if (!input.greetNormally && !opening.test(customerOpening)) return reply;
+  return `Hola, con gusto. ${reply}`;
 }

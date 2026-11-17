@@ -1166,7 +1166,7 @@ describe('HermesService commercial contract', () => {
     expect(result.commercialProfile?.recommendedPlan).toBeUndefined();
   });
 
-  it('removes a corporate welcome from an otherwise natural greeting', async () => {
+  it('preserves a corporate welcome in an otherwise natural greeting', async () => {
     const welcome = JSON.stringify({
       response:
         'Buenos días. Bienvenido a UnderCodeEC. ¿En qué podemos ayudarle?',
@@ -1185,7 +1185,7 @@ describe('HermesService commercial contract', () => {
 
     expect(post).toHaveBeenCalledTimes(1);
     expect(result.response).toBe(
-      'Buenos días, Christopher. ¿En qué podemos ayudarle?',
+      'Buenos días. Bienvenido a UnderCodeEC. ¿En qué podemos ayudarle?',
     );
   });
 
@@ -1230,7 +1230,7 @@ describe('HermesService commercial contract', () => {
     });
 
     expect(result.response).toBe(
-      'Hola, Christopher. Con gusto le ayudamos con su sitio web. ¿A qué se dedica su negocio?',
+      'Hola, con gusto. Con gusto le ayudamos con su sitio web. ¿A qué se dedica su negocio?',
     );
   });
 

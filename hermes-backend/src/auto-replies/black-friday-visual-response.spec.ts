@@ -57,8 +57,8 @@ describe('Black Friday visual response', () => {
   });
 
   it.each([
-    ['2026-11-07T09:19:00.000Z', 'Carlos', 'Buenos días, estimado Carlos.'],
-    ['2026-11-07T17:00:00.000Z', 'María', 'Buenas tardes, estimada María.'],
+    ['2026-11-07T09:19:00.000Z', 'Carlos', 'Buenos días, Carlos.'],
+    ['2026-11-07T17:00:00.000Z', 'María', 'Buenas tardes, María.'],
     ['2026-11-08T00:00:00.000Z', null, 'Buenas noches.'],
     ['2026-11-07T17:00:00.000Z', 'Empresa Turística', 'Buenas tardes.'],
     ['2026-11-07T09:19:00.000Z', 'Alex', 'Buenos días, Alex.'],
