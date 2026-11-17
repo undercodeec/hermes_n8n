@@ -4,6 +4,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { Feather } from '@expo/vector-icons';
 import { canCompose, demoReducer, initialState, visibleChats } from './src/demo';
 import { crm } from './src/crmStyles';
+import { StagingShell } from './src/StagingShell';
 
 const ink = '#162636';
 const muted = '#627383';
@@ -48,17 +49,17 @@ function DemoLogin({ onEnter }: { onEnter: () => void }) {
   </LinearGradient>;
 }
 
-export default function App() {
-  const [state, dispatch] = useReducer(demoReducer, initialState);
+export function DemoApp({ authenticated = false, onLogout, onActivity }: { authenticated?: boolean; onLogout?: () => void; onActivity?: () => void }) {
+  const [state, dispatch] = useReducer(demoReducer, authenticated ? { ...initialState, signedIn: true } : initialState);
   const [unreadOnly, setUnreadOnly] = useState(false);
   useEffect(() => {
-    const subscription = AppState.addEventListener('change', (status) => { if (status === 'active') dispatch({ type: 'FOREGROUND' }); });
+    const subscription = AppState.addEventListener('change', (status) => { if (status === 'active' && !authenticated) dispatch({ type: 'FOREGROUND' }); });
     return () => subscription.remove();
-  }, []);
+  }, [authenticated]);
   const selected = state.chats.find((chat) => chat.id === state.selectedId);
   const chats = visibleChats(state).filter((chat) => !unreadOnly || chat.unread > 0);
   const canWrite = canCompose(state);
-  return <SafeAreaView style={styles.root}>
+  return <SafeAreaView style={styles.root} onTouchStart={onActivity}>
     <StatusBar barStyle="dark-content" />
     {!state.signedIn ? <DemoLogin onEnter={() => dispatch({ type: 'LOGIN' })} /> : <>
       {state.notice ? <Pressable accessibilityRole="button" accessibilityLabel="Descartar aviso" onPress={() => dispatch({ type: 'CLEAR_NOTICE' })} style={crm.notice}><Text style={crm.noticeText}>{state.notice}  ×</Text></Pressable> : null}
@@ -88,8 +89,8 @@ export default function App() {
         </View>
       </KeyboardAvoidingView> : <>
         <View style={crm.header}>
-          <View style={crm.brandRow}><Image source={require('./assets/hermes-crm-logo.png')} style={crm.logo} resizeMode="contain" accessibilityLabel="Hermes CRM" /><Text style={crm.demoTag}>DEMO</Text></View>
-          <View style={crm.titleRow}><Text style={crm.title}>Chats</Text><View style={[crm.row, { gap: 8 }]}><Pressable accessibilityRole="button" accessibilityLabel={state.online ? 'Simular desconexión' : 'Simular reconexión'} onPress={() => dispatch({ type: 'NETWORK', online: !state.online })} style={crm.iconButton}><Feather name={state.online ? 'wifi' : 'wifi-off'} size={19} color="#667185" /></Pressable><Pressable accessibilityRole="button" accessibilityLabel="Cerrar demostración" onPress={() => { setUnreadOnly(false); dispatch({ type: 'LOGOUT' }); }} style={crm.iconButton}><Feather name="log-out" size={19} color="#667185" /></Pressable></View></View>
+          <View style={crm.brandRow}><Image source={require('./assets/hermes-crm-logo.png')} style={crm.logo} resizeMode="contain" accessibilityLabel="Hermes CRM" /><Text style={crm.demoTag}>DATOS FICTICIOS</Text></View>
+          <View style={crm.titleRow}><Text style={crm.title}>Chats</Text><View style={[crm.row, { gap: 8 }]}><Pressable accessibilityRole="button" accessibilityLabel={state.online ? 'Simular desconexión' : 'Simular reconexión'} onPress={() => dispatch({ type: 'NETWORK', online: !state.online })} style={crm.iconButton}><Feather name={state.online ? 'wifi' : 'wifi-off'} size={19} color="#667185" /></Pressable><Pressable accessibilityRole="button" accessibilityLabel={authenticated ? 'Cerrar sesión móvil' : 'Cerrar demostración'} onPress={() => { setUnreadOnly(false); if (onLogout) onLogout(); else dispatch({ type: 'LOGOUT' }); }} style={crm.iconButton}><Feather name="log-out" size={19} color="#667185" /></Pressable></View></View>
         </View>
         <View style={crm.filters}>
           <View style={crm.search}><Feather name="search" size={17} color="#96A0B0" /><TextInput accessibilityLabel="Buscar conversaciones ficticias" placeholder="Buscar contacto…" placeholderTextColor="#9AA4B3" value={state.search} onChangeText={(text) => dispatch({ type: 'SEARCH', text })} style={crm.searchInput} /></View>
@@ -130,3 +131,9 @@ const styles = StyleSheet.create({
   sectionHeader: { paddingHorizontal: 20, paddingTop: 4, paddingBottom: 12, gap: 7 }, title: { color: ink, fontSize: 23, fontWeight: '800' }, feedContent: { padding: 18, paddingBottom: 25, gap: 12 }, bubble: { backgroundColor: 'white', padding: 15, borderRadius: 14, maxWidth: '86%', alignSelf: 'flex-start', borderWidth: 1, borderColor: '#E1E6E2' }, agentBubble: { backgroundColor: '#DAEEE7', alignSelf: 'flex-end', borderColor: '#C8E3D9' }, messageAuthor: { color: muted, fontSize: 10, fontWeight: '700', marginBottom: 7 }, message: { color: ink, fontSize: 14, lineHeight: 21 },
   composer: { backgroundColor: 'white', padding: 15, gap: 9, borderTopWidth: 1, borderColor: '#DEE6E0' }, input: { borderWidth: 1, borderColor: '#CFDBD5', borderRadius: 10, padding: 12, color: ink, maxHeight: 100, minHeight: 48, textAlignVertical: 'top' },
 });
+
+export default function App() {
+  return process.env.EXPO_PUBLIC_MOBILE_AUTH_MODE === 'staging'
+    ? <StagingShell renderDemo={(logout, activity) => <DemoApp authenticated onLogout={logout} onActivity={activity} /> } />
+    : <DemoApp />;
+}
