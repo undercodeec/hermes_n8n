@@ -1,5 +1,7 @@
-import { useEffect, useReducer } from 'react';
-import { AppState, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import { useEffect, useReducer, useState } from 'react';
+import { AppState, Image, Pressable, SafeAreaView, ScrollView, StatusBar, StyleSheet, Text, TextInput, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { Feather } from '@expo/vector-icons';
 import { demoReducer, initialState } from './src/demo';
 
 const ink = '#162636';
@@ -12,6 +14,39 @@ function Button({ label, onPress, quiet = false, disabled = false }: { label: st
   </Pressable>;
 }
 
+function DemoLogin({ onEnter }: { onEnter: () => void }) {
+  const [step, setStep] = useState<'request' | 'verify'>('request');
+  return <LinearGradient colors={['#F8FAFF', '#F0F4FC', '#F8FAFF']} style={styles.loginBackground}>
+    <ScrollView contentContainerStyle={styles.loginScroll} keyboardShouldPersistTaps="handled">
+      <View style={styles.loginCard}>
+        <Image source={require('./assets/hermes-crm-logo.png')} style={styles.loginLogo} resizeMode="contain" accessibilityLabel="Hermes CRM" />
+        <Text style={styles.loginEyebrow}>ACCESO PRIVADO</Text>
+        <Text style={styles.loginTitle}>Acceso de gerencia</Text>
+        <View style={styles.loginRule} />
+        <View style={styles.demoBanner}>
+          <Feather name="info" size={16} color="#5364BA" />
+          <Text style={styles.demoBannerText}>Vista de demostración. No ingrese datos reales; no se enviará ningún código.</Text>
+        </View>
+        <Text style={styles.loginLabel}>{step === 'request' ? 'Correo de acceso' : 'Código recibido por correo'}</Text>
+        <View style={styles.loginInput}>
+          <Feather name={step === 'request' ? 'mail' : 'key'} size={18} color="#8793AB" />
+          <TextInput accessibilityLabel={step === 'request' ? 'Correo ficticio de ejemplo, no editable' : 'Código ficticio de ejemplo, no editable'} editable={false} value={step === 'request' ? 'agente@example.invalid' : '00000000'} style={styles.loginInputText} />
+        </View>
+        <Pressable accessibilityRole="button" accessibilityLabel={step === 'request' ? 'Simular envío de código de acceso' : 'Entrar a la demostración del CRM'} onPress={() => step === 'request' ? setStep('verify') : onEnter()}>
+          <LinearGradient colors={['#3F7BFF', '#6A63FF']} start={{ x: 0, y: 0 }} end={{ x: 1, y: 0 }} style={styles.loginPrimary}>
+            <Text style={styles.loginPrimaryText}>{step === 'request' ? 'Enviar código de acceso' : 'Entrar al CRM'}</Text><Feather name="arrow-right" size={18} color="#FFFFFF" />
+          </LinearGradient>
+        </Pressable>
+        {step === 'verify' ? <Pressable accessibilityRole="button" onPress={() => setStep('request')} style={styles.loginSecondary}><Text style={styles.loginSecondaryText}>Solicitar un nuevo código</Text></Pressable> : null}
+        <View style={styles.securityDivider}><View style={styles.securityLine} /><Feather name="lock" size={14} color="#7D88A4" /><View style={styles.securityLine} /></View>
+        <Text style={styles.securityNote}>Solo los correos autorizados pueden recibir un código de acceso.</Text>
+        <Text style={styles.demoFootnote}>Esta maqueta no valida acceso ni procesa credenciales.</Text>
+      </View>
+      <Text style={styles.loginFooter}>HERMES CRM · VISTA DE PRUEBA</Text>
+    </ScrollView>
+  </LinearGradient>;
+}
+
 export default function App() {
   const [state, dispatch] = useReducer(demoReducer, initialState);
   useEffect(() => {
@@ -21,21 +56,11 @@ export default function App() {
   const selected = state.chats.find((chat) => chat.id === state.selectedId);
   return <SafeAreaView style={styles.root}>
     <StatusBar barStyle="dark-content" />
-    <View style={styles.top}>
+    {state.signedIn ? <View style={styles.top}>
       <Text style={styles.brand}>HERMES <Text style={styles.brandLight}>/ CRM</Text></Text>
       <Text style={styles.pill}>PROTOTIPO · SIN RED</Text>
-    </View>
-    {!state.signedIn ? <View style={styles.login}>
-      <Text style={styles.eyebrow}>ACCESO DE PRUEBA</Text>
-      <Text style={styles.heading}>Su equipo, al tanto de cada conversación.</Text>
-      <Text style={styles.body}>Explore el Inbox con datos inventados. No se solicitarán credenciales ni se contactará al servidor.</Text>
-      <View style={styles.card}>
-        <Text style={styles.label}>OPERADOR FICTICIO</Text>
-        <Text style={styles.cardTitle}>Agente de demostración</Text>
-        <Text style={styles.body}>El acceso es simulado. Sin sesión, token ni permisos reales.</Text>
-        <Button label="Entrar a la demostración" onPress={() => dispatch({ type: 'LOGIN' })} />
-      </View>
-    </View> : <>
+    </View> : null}
+    {!state.signedIn ? <DemoLogin onEnter={() => dispatch({ type: 'LOGIN' })} /> : <>
       <View style={styles.toolbar}>
         <Text style={styles.connection}>{state.online ? '●  En línea (simulado)' : '●  Sin conexión (simulado)'}</Text>
         <Button quiet label={state.online ? 'Simular sin conexión' : 'Simular reconexión'} onPress={() => dispatch({ type: 'NETWORK', online: !state.online })} />
@@ -78,6 +103,11 @@ export default function App() {
 }
 
 const styles = StyleSheet.create({
+  loginBackground: { flex: 1 }, loginScroll: { flexGrow: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 22, paddingVertical: 36 },
+  loginCard: { width: '100%', maxWidth: 468, backgroundColor: '#FFFFFF', borderRadius: 27, paddingHorizontal: 30, paddingVertical: 34, borderWidth: 1, borderColor: '#DCE4F7', shadowColor: '#435390', shadowOffset: { width: 0, height: 20 }, shadowOpacity: 0.12, shadowRadius: 28, elevation: 5 },
+  loginLogo: { width: 176, height: 42, alignSelf: 'flex-start', marginBottom: 31 }, loginEyebrow: { color: '#625DE3', fontSize: 10, fontWeight: '800', letterSpacing: 1.6, marginBottom: 13 }, loginTitle: { color: '#11183D', fontSize: 28, lineHeight: 34, letterSpacing: -1.1, fontWeight: '800' }, loginRule: { height: 1, backgroundColor: '#E3E8F6', marginTop: 24, marginBottom: 23 },
+  demoBanner: { flexDirection: 'row', gap: 9, alignItems: 'flex-start', backgroundColor: '#F1F5FF', borderColor: '#DBE4FB', borderWidth: 1, borderRadius: 10, padding: 12, marginBottom: 24 }, demoBannerText: { color: '#53648A', fontSize: 12, lineHeight: 18, flex: 1 }, loginLabel: { color: '#374262', fontSize: 12, fontWeight: '700', marginBottom: 9 }, loginInput: { height: 54, paddingHorizontal: 16, flexDirection: 'row', alignItems: 'center', gap: 11, borderWidth: 1, borderColor: '#D6DDF3', borderRadius: 13, backgroundColor: '#FFFFFF', marginBottom: 19 }, loginInputText: { flex: 1, color: '#6A7793', fontSize: 14, padding: 0 },
+  loginPrimary: { minHeight: 54, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 11, borderRadius: 14 }, loginPrimaryText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 }, loginSecondary: { minHeight: 44, alignItems: 'center', justifyContent: 'center', borderColor: '#D8DDF1', borderWidth: 1, borderRadius: 12, backgroundColor: '#FAFBFF', marginTop: 12 }, loginSecondaryText: { color: '#5C63C9', fontSize: 12, fontWeight: '700' }, securityDivider: { flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 27 }, securityLine: { flex: 1, height: 1, backgroundColor: '#E4E8F4' }, securityNote: { color: '#77839B', fontSize: 11, textAlign: 'center', lineHeight: 17, marginTop: 13 }, demoFootnote: { color: '#9AA5B9', fontSize: 10, textAlign: 'center', marginTop: 12 }, loginFooter: { color: '#929DB7', fontSize: 10, letterSpacing: 1.2, marginTop: 26 },
   root: { flex: 1, backgroundColor: '#F4F4EF' }, top: { paddingHorizontal: 22, paddingTop: 14, paddingBottom: 16, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', borderBottomWidth: 1, borderColor: '#DEE4DF' },
   brand: { color: ink, fontSize: 20, fontWeight: '900', letterSpacing: 1.3 }, brandLight: { fontWeight: '400' }, pill: { backgroundColor: '#E9E3D5', color: '#685732', borderRadius: 20, paddingHorizontal: 9, paddingVertical: 6, fontSize: 9, fontWeight: '800' },
   login: { flex: 1, paddingHorizontal: 26, justifyContent: 'center', gap: 14 }, eyebrow: { color: accent, fontSize: 11, fontWeight: '800', letterSpacing: 2 }, heading: { color: ink, fontSize: 33, lineHeight: 39, fontWeight: '800', marginTop: 8 }, body: { color: muted, fontSize: 15, lineHeight: 22, marginTop: 6 },

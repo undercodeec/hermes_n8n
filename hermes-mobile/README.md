@@ -4,7 +4,7 @@ Prototipo **sin conexión al CRM** para evaluar la navegación de una futura app
 
 ## Alcance
 
-- Acceso simulado sin formulario de credenciales; Inbox y chats **inventados**.
+- Acceso simulado con la identidad visual del CRM web: correo y código ficticios no editables, sin solicitud ni validación real; Inbox y chats **inventados**.
 - Composición y respuesta **solo en memoria**: el botón no realiza solicitudes HTTP ni envía WhatsApp.
 - Interruptor de red simulado: bloquea redacción y vacía borradores al desconectar; aviso de reconciliación ficticia al volver al primer plano. No es detección real de red ni sincronización.
 - Cierre de la demo limpia el estado en memoria. No hay sesiones, tokens, almacenamiento de mensajes, SSE, push, métricas, API ni permisos reales.
