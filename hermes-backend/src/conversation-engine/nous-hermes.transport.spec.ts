@@ -468,7 +468,7 @@ describe('NousHermesTransport', () => {
     },
   );
 
-  it('sends a controlled treatment and corrects an unsupported Nous greeting in the first part', async () => {
+  it('sends neutral treatment and preserves an unsupported Nous greeting in the first part', async () => {
     post.mockResolvedValue({
       data: {
         model: 'hermes-agent',
@@ -498,7 +498,7 @@ describe('NousHermesTransport', () => {
     });
     const result = await configuredTransport().execute(input);
     expect(result.replyParts).toEqual([
-      'Hola, estimado Carlos. Con gusto le explico.',
+      'Hola, estimada Carlos. Con gusto le explico.',
       'Una web presenta sus servicios.',
       '¿A qué se dedica su negocio?',
     ]);
@@ -510,8 +510,9 @@ describe('NousHermesTransport', () => {
       approvedState: { salutation: { kind: string; treatment: string } };
     };
     expect(state.approvedState.salutation).toMatchObject({
-      kind: 'MASCULINE',
-      treatment: 'estimado',
+      kind: 'UNKNOWN',
+      firstName: 'Carlos',
+      source: 'UNKNOWN',
     });
   });
 

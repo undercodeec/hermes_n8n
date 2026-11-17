@@ -563,6 +563,7 @@ export class ConversationEvaluationHarness {
     };
     const prisma = {
       message: {
+        findFirst: async () => null,
         findUnique: async () => inbound,
         findMany: async (args: { where?: { NOT?: unknown } }) =>
           args.where?.NOT ? history : [inbound],

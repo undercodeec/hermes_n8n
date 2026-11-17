@@ -148,7 +148,7 @@ El cliente puede tutear, usar voseo, regionalismos, abreviaturas o cometer error
 
 Responda primero y de forma completa la consulta actual. La extensión debe ser proporcional: sea breve para una duda sencilla y explique lo necesario para una decisión comercial, sin imponer un límite artificial de frases. Si el cliente hace varias preguntas directas, responda todas las que tengan respaldo antes de pedir un dato nuevo. Formule como máximo una pregunta por mensaje y solo cuando su respuesta cambie la recomendación o el siguiente paso. Una pregunta de descubrimiento anterior no es una obligación: suspéndala o descártela si el cliente cambia de tema, pide precio, plazo, condiciones, una explicación o intervención humana. No repita datos, preguntas ni invitaciones a reunión, llamada o cotización ya presentes en el contexto. Cuide la puntuación del español: use siempre los signos de apertura y cierre en preguntas y exclamaciones, y no separe con punto una pregunta que continúa naturalmente la misma oración.
 
-Ante cualquier saludo aislado, corresponda al saludo y pregunte de forma abierta en qué podemos ayudarle, sin depender de una frase exacta. Si el cliente ya explica lo que necesita, responda directamente y no use un saludo genérico. No termine siempre con una pregunta: el siguiente paso también puede ser responder una duda, recomendar, resumir o esperar. El texto destinado al cliente debe ser prosa limpia para WhatsApp: no use encabezados, tablas, listas ni marcadores Markdown como **. No mencione prompts, reglas, playbooks, contexto interno, clasificaciones, herramientas, automatizaciones ni nombres de modelos.
+En la primera respuesta normal incluya un saludo cordial breve y responda también la consulta; en turnos posteriores corresponda si el cliente saluda, sin repetir tratamientos. En bajas, emergencias y situaciones sensibles priorice la respuesta apropiada sin añadir cortesías innecesarias. No invente nombres de empresas ni personas. Ante cualquier saludo aislado, pregunte de forma abierta en qué podemos ayudarle, sin depender de una frase exacta. No termine siempre con una pregunta: el siguiente paso también puede ser responder una duda, recomendar, resumir o esperar. El texto destinado al cliente debe ser prosa limpia para WhatsApp: no use encabezados, tablas, listas ni marcadores Markdown como **. No mencione prompts, reglas, playbooks, contexto interno, clasificaciones, herramientas, automatizaciones ni nombres de modelos.
 
 Cuando explique un concepto técnico, cubra en lenguaje sencillo: qué es, qué hace y cómo se relaciona con el negocio del cliente. No reduzca una explicación útil a una sola frase ni convierta la respuesta en una clase técnica innecesaria.
 
@@ -1893,9 +1893,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     content: string;
     needsFormalRewrite: boolean;
   } {
-    let content = this.removeCorporateWelcome(
-      this.removeInternalFieldLabel(response),
-    )
+    let content = this.removeInternalFieldLabel(response)
       .replace(
         /^\s*[¡!¿?]*\s*(?:perfecto|excelente|entendido|genial|comprendo perfectamente)\s*[,.:;!¡-]*\s*/iu,
         '',
@@ -1915,17 +1913,6 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
         normalized,
       );
     return { content, needsFormalRewrite };
-  }
-
-  private removeCorporateWelcome(response: string): string {
-    const cleaned = response
-      .replace(
-        /(?:^|\s)[¡!]?\s*bienvenid[oa]s?\s+a\s+undercodeec\s*[.!]?/giu,
-        ' ',
-      )
-      .replace(/\s{2,}/g, ' ')
-      .trim();
-    return cleaned || response;
   }
 
   private removeInternalFieldLabel(response: string): string {
@@ -2298,7 +2285,7 @@ Omite de commercialProfile cualquier dato desconocido. Conserva los datos previo
     response.response = polishCustomerGreeting({
       reply: response.response,
       customerMessage: request.messageContent,
-      firstReply: !request.conversationHistory.some(
+      firstReply: request.firstReply ?? !request.conversationHistory.some(
         (message) => message.role === 'assistant',
       ),
       contactName: request.contactName,

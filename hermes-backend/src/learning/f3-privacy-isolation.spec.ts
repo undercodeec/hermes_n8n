@@ -149,7 +149,10 @@ function turnFor(
 }
 
 describe('F3 privacy isolation from learning retrieval', () => {
-  afterEach(() => jest.restoreAllMocks());
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.useRealTimers();
+  });
 
   it('redacts synthetic private address and source marker in reviewer text', () => {
     const redacted = sanitizeReviewInput(
@@ -231,6 +234,9 @@ describe('F3 privacy isolation from learning retrieval', () => {
   it.each(['gemini_direct', 'nous_hermes'] as const)(
     '%s request for contact B contains only generalized learning and B context',
     async (engineId) => {
+      // Retrieval uses the system clock, unlike the pure selector tests above.
+      // Keep this fixture within its fixed validity window.
+      jest.useFakeTimers().setSystemTime(now);
       const { retrieval, findMany } = selectedFromForeignSource();
       const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
       const selected = await retrieval.select({

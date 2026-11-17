@@ -54,6 +54,7 @@ import {
 import { resolveVerifiedBlackFridayAd } from '../hermes/verified-ad-campaign';
 import {
   explicitSalutationPreference,
+  isSensitiveGreetingTurn,
   polishCustomerGreeting,
   resolveCustomerSalutation,
 } from '../hermes/customer-salutation';
@@ -565,6 +566,12 @@ export class AutoReplyService {
       data.conversationId,
       turnMessages?.map((message) => message.id) ?? [inbound.id],
     );
+    const firstReply =
+      !context.recentMessages.some((message) => message.role === 'assistant') &&
+      !(await this.prisma.message.findFirst({
+        where: { conversationId: data.conversationId, direction: MessageDirection.OUTBOUND },
+        select: { id: true },
+      }));
     const receivedAt =
       this.providerTimestamp(inbound.rawPayload) ?? inbound.createdAt;
     const verifiedAdCampaign = resolveVerifiedBlackFridayAd({
@@ -1058,8 +1065,9 @@ export class AutoReplyService {
           }
         : {}),
       customerMessage,
+      firstReply,
       approvedContext: {
-        contactName: conversation.contact.name || 'Cliente',
+        contactName: resolveCustomerSalutation(conversation.contact.name).firstName || 'Cliente',
         recentMessages: context.recentMessages.map(({ role, content }) => ({
           role,
           text: content,
@@ -1532,20 +1540,18 @@ export class AutoReplyService {
       });
     }
     const replyBeforeGreeting = response.response;
+    const currentTurnContents = (turnMessages?.length
+      ? turnMessages.map((message) => message.content || '')
+      : [inbound.content || '']).map(redactPaymentMessageForAi);
     const greetingInput = {
-      customerMessage:
-        turnMessages?.length === 1
-          ? turnMessages[0].content || ''
-          : turnMessages
-            ? ''
-            : inbound.content || '',
+      customerMessage: currentTurnContents.at(-1) || '',
       contactName: conversation.contact.name || '',
-      firstReply: !context.recentMessages.some(
-        (message) => message.role === 'assistant',
-      ),
+      firstReply,
+      greetNormally: !response.diagnostic,
+      safetyMessage: `${currentTurnContents.join('\n')}\n${replyBeforeGreeting}`,
       customerHistory: context.recentMessages
         .filter((message) => message.role === 'user')
-        .map((message) => message.content),
+        .map((message) => message.content).concat(currentTurnContents.slice(0, -1)),
     };
     response.response = this.polishInitialGreeting({
       reply: response.response,
@@ -1960,16 +1966,32 @@ export class AutoReplyService {
       !response.diagnostic &&
       greetedParts?.length &&
       response.response ===
-        this.polishInitialGreeting({
-          reply: replyBeforeGreeting,
-          ...greetingInput,
-        })
+        this.polishInitialGreeting({ reply: replyBeforeGreeting, ...greetingInput })
         ? greetedParts
         : [response.response]);
     // Detail parts already passed the 1000-character bound and carry approved
     // paragraph breaks. The generic splitter collapses consecutive newlines.
-    const messageParts =
+    const greetingOnlyChange =
+      !packageParts && !detailParts && conversationalParts.length === 1 &&
+      response.response === this.polishInitialGreeting({ reply: replyBeforeGreeting, ...greetingInput });
+    const originalParts = greetingOnlyChange
+      ? splitWhatsAppMessage(replyBeforeGreeting, this.positiveInteger('AI_MESSAGE_SPLIT_THRESHOLD', 520))
+      : undefined;
+    const firstGreetedPart = originalParts?.length
+      ? this.polishInitialGreeting({ reply: originalParts[0], ...greetingInput })
+      : undefined;
+    let messageParts =
       detailParts ??
+      (originalParts && originalParts.length > 1 && firstGreetedPart &&
+      [firstGreetedPart, ...originalParts.slice(1)].join(' ') === response.response.replace(/\s+/gu, ' ').trim()
+        ? [
+            ...splitWhatsAppMessage(
+              firstGreetedPart,
+              1000,
+            ),
+            ...originalParts.slice(1),
+          ]
+        : undefined) ??
       conversationalParts.flatMap((part) =>
         splitWhatsAppMessage(
           part,
@@ -1978,6 +2000,46 @@ export class AutoReplyService {
             : this.positiveInteger('AI_MESSAGE_SPLIT_THRESHOLD', 520),
         ),
       );
+    // Some deterministic commercial branches replace the earlier polished
+    // response. Apply the same greeting to the actual first delivered part.
+    if (!response.diagnostic && !shouldHandoff && messageParts.length) {
+      const first = this.polishInitialGreeting({
+        reply: messageParts[0],
+        ...greetingInput,
+        safetyMessage: `${greetingInput.safetyMessage}\n${messageParts.join('\n')}`,
+      });
+      if (first !== messageParts[0]) {
+        messageParts = [
+          ...(first.length <= 1000 ? [first] : splitWhatsAppMessage(first, 1000)),
+          ...messageParts.slice(1),
+        ];
+      }
+    }
+    // A greeting can push an otherwise affordable reply over the preferred
+    // threshold. Repack only that case, without changing the F3 reservation
+    // or the physical WhatsApp limit. Keep the normal suppression on failure.
+    if (
+      engineResult.f3CapsBudget &&
+      originalParts &&
+      originalParts.length <= engineResult.f3CapsBudget.maxParts &&
+      messageParts.length > engineResult.f3CapsBudget.maxParts &&
+      messageParts.join(' ').replace(/\s+/gu, ' ').trim() ===
+        response.response.replace(/\s+/gu, ' ').trim()
+    ) {
+      try {
+        const repacked = splitWhatsAppMessage(response.response, 1000);
+        if (
+          repacked.length <= engineResult.f3CapsBudget.maxParts &&
+          repacked.length <= 9 &&
+          repacked.every((part) => part.length <= 1000) &&
+          repacked.join(' ') === response.response.replace(/\s+/gu, ' ').trim()
+        ) {
+          messageParts = repacked;
+        }
+      } catch {
+        // The existing cost-cap suppression below remains authoritative.
+      }
+    }
     if (
       engineResult.f3CapsBudget &&
       (messageParts.length > engineResult.f3CapsBudget.maxParts ||
@@ -2780,28 +2842,16 @@ export class AutoReplyService {
     contactName: string;
     firstReply: boolean;
     customerHistory?: string[];
+    greetNormally?: boolean;
+    safetyMessage?: string;
   }): string {
-    let reply = input.reply
-      .replace(
-        /^(Hola|Buenas(?:\s+(?:tardes|noches))?|Buenos\s+d[ií]as),\s*(?:mr|mrs|sr|sra|cliente|unknown)\s*[.!]/iu,
-        '$1.',
-      )
-      .replace(
-        /\bbienvenid[oa]s?\s+a\s+under\s*code\s*ec\b\s*[,;.!]?\s*/giu,
-        '',
-      )
-      .replace(/\s{2,}/gu, ' ')
-      .replace(
-        /([.!]\s+)¿?(en qué|a qué|cómo|cuál|cuándo)/giu,
-        (_match, prefix: string, question: string) =>
-          `${prefix}¿${question[0].toLocaleUpperCase('es')}${question.slice(1)}`,
-      )
-      .trim();
-    if (!reply) reply = '¿En qué podemos ayudarle?';
+    if (isSensitiveGreetingTurn(input.safetyMessage ?? input.customerMessage, input.reply)) return input.reply;
     return polishCustomerGreeting({
-      reply,
+      reply: input.reply,
       customerMessage: input.customerMessage,
       firstReply: input.firstReply,
+      greetNormally: input.greetNormally,
+      safetyMessage: input.safetyMessage,
       contactName: input.contactName,
       salutation: resolveCustomerSalutation(
         input.contactName,

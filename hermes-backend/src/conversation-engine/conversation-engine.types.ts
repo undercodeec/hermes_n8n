@@ -22,6 +22,7 @@ export type ApprovedConversationMessage = {
 };
 
 export interface ConversationTurnInput {
+  firstReply?: boolean;
   /** Internal CRM identifier. Never use a phone number or e-mail here. */
   conversationId: string;
   /** Pinned on conversation creation for a controlled pilot; never derived from customer text. */

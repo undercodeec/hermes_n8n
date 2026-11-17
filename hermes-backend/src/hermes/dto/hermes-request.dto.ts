@@ -79,6 +79,7 @@ export class HermesRequestDto {
   contactName: string;
   messageContent: string;
   conversationHistory: { role: string; content: string }[];
+  firstReply?: boolean;
   leadStage?: string;
   productOfInterest?: string;
   conversationSummary?: string;
