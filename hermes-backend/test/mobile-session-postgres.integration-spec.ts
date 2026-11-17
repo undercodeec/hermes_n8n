@@ -162,4 +162,18 @@ run('mobile G2 against disposable PostgreSQL', () => {
     await expect(service.refreshMobile(mobile.refreshToken)).rejects.toThrow();
     await expect(service.loginWithCrmProof(proof('hermes-crm'))).resolves.toHaveProperty('accessToken');
   });
+
+  it('only one phone stays active after sequential and concurrent logins', async () => {
+    const first = await service.loginMobileWithCrmProof(proof('hermes-crm-mobile'));
+    const second = await service.loginMobileWithCrmProof(proof('hermes-crm-mobile'));
+    await expect(service.refreshMobile(first.refreshToken)).rejects.toThrow();
+    expect((await prisma.mobileSession.count({ where: { user: { email }, revokedAt: null } }))).toBe(1);
+    const concurrent = await Promise.allSettled([
+      service.loginMobileWithCrmProof(proof('hermes-crm-mobile')),
+      service.loginMobileWithCrmProof(proof('hermes-crm-mobile')),
+    ]);
+    expect(concurrent.some((result) => result.status === 'fulfilled')).toBe(true);
+    expect((await prisma.mobileSession.count({ where: { user: { email }, revokedAt: null } }))).toBe(1);
+    await expect(service.refreshMobile(second.refreshToken)).rejects.toThrow();
+  });
 });

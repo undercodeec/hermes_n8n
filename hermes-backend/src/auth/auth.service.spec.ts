@@ -61,6 +61,7 @@ describe('CRM mobile sessions and shared proof replay', () => {
       }),
     },
     user: { upsert, findUnique: jest.fn(async () => storedUser) },
+    $queryRaw: jest.fn(async () => [{ id: user.id }]),
     mobileSession: {
       create: jest.fn(
         async ({
@@ -179,6 +180,15 @@ describe('CRM mobile sessions and shared proof replay', () => {
     expect(storedUser.isActive).toBe(false);
     expect(consumed.size).toBe(0);
     expect(db.mobileSession.create).not.toHaveBeenCalled();
+  });
+
+  it('revokes other phone sessions before issuing a new one', async () => {
+    await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
+    expect(db.$queryRaw).toHaveBeenCalled();
+    expect(db.mobileSession.updateMany).toHaveBeenCalledWith({
+      where: { userId: user.id, revokedAt: null },
+      data: { revokedAt: expect.any(Date) },
+    });
   });
 
   it('rejects invalid signatures and expired proofs before persistence', async () => {

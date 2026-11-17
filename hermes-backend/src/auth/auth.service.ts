@@ -142,6 +142,16 @@ export class AuthService {
         throw new UnauthorizedException('Usuario desactivado');
       if (user.role !== UserRole.ADMIN)
         throw new UnauthorizedException('Usuario no autorizado');
+      // Serialize new phone logins for this operator even when they carry
+      // different valid proofs. Last committed login is the only active phone.
+      await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${user.id} FOR UPDATE`;
+      const current = await tx.user.findUnique({ where: { id: user.id } });
+      if (!current?.isActive || current.role !== UserRole.ADMIN)
+        throw new UnauthorizedException('Usuario no autorizado o inactivo');
+      await tx.mobileSession.updateMany({
+        where: { userId: user.id, revokedAt: null },
+        data: { revokedAt: new Date() },
+      });
       const session = await tx.mobileSession.create({
         data: {
           userId: user.id,
