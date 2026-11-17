@@ -74,3 +74,38 @@ test('offline and logout delete local secret even when remote request fails', as
   await assert.rejects(auth.logout(), NetworkUnavailable);
   assert.equal(values.size, 0);
 });
+
+test('200 with inactive or missing status cannot unlock', async () => {
+  const { store } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'saved');
+  const auth = new StagingAuth(config, store, async (url) => url.endsWith('/refresh')
+    ? result({ accessToken: 'a', refreshToken: 'r' }) : result({ active: false }));
+  await assert.rejects(auth.validate(), SessionExpired);
+});
+
+test('a late refresh cannot rewrite a secret after local revocation', async () => {
+  const { store, values } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'old');
+  let release!: (value: Response) => void;
+  let requested!: () => void;
+  const started = new Promise<void>((resolve) => { requested = resolve; });
+  const transport: Transport = async (url) => url.endsWith('/refresh') ? new Promise((resolve) => { release = resolve; requested(); }) : result({ active: true });
+  const auth = new StagingAuth(config, store, transport);
+  const ongoing = auth.validate();
+  await started;
+  await auth.clear();
+  release(result({ accessToken: 'late-access', refreshToken: 'late-secret' }));
+  await assert.rejects(ongoing, SessionExpired);
+  assert.equal(values.size, 0);
+});
+
+test('logout fails closed if protected storage cannot delete the secret', async () => {
+  const { store, values } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'saved');
+  store.deleteItemAsync = async () => { throw new Error('storage failure'); };
+  const auth = new StagingAuth(config, store, async (url) => url.endsWith('/refresh')
+    ? result({ accessToken: 'a', refreshToken: 'r' }) : result({ active: true }));
+  await auth.validate();
+  await assert.rejects(auth.logout(), /storage failure/);
+  assert.equal(values.size, 1);
+});

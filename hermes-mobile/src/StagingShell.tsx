@@ -15,6 +15,8 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
   const lastInteraction = useRef(Date.now());
   const foreground = useRef(true);
   const pending = useRef(false);
+  const revision = useRef(0);
+  const authenticating = useRef(false);
   const config = useMemo(() => {
     try { return stagingConfig(process.env.EXPO_PUBLIC_CRM_AUTH_BASE_URL, process.env.EXPO_PUBLIC_HERMES_API_BASE_URL); }
     catch { return null; }
@@ -22,15 +24,17 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
   const auth = useMemo(() => config ? new StagingAuth(config, SecureStore) : null, [config]);
 
   const unlock = useCallback(async () => {
+    const current = ++revision.current;
     if (!auth) { setPhase('request'); setError('Configure las URL HTTPS del entorno de prueba antes de iniciar sesión.'); return; }
     setPhase('locked');
     try {
       await ScreenCapture.preventScreenCaptureAsync('hermes-crm-staging');
       await auth.validate();
-      if (foreground.current) { lastInteraction.current = Date.now(); setError(''); setPhase('ready'); }
+      if (foreground.current && current === revision.current) { lastInteraction.current = Date.now(); setError(''); setPhase('ready'); }
     }
     catch (failure) {
-      if (failure instanceof SessionExpired) { await auth.clear(); setPhase('request'); }
+      if (current !== revision.current) return;
+      if (failure instanceof SessionExpired) { await auth.clear(); if (current === revision.current) setPhase('request'); }
       else { setPhase('locked'); setError(failure instanceof NetworkUnavailable ? failure.message : 'No fue posible proteger la pantalla o verificar la sesión.'); }
     }
   }, [auth]);
@@ -39,23 +43,26 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
     void unlock();
     const subscription = AppState.addEventListener('change', (status) => {
       foreground.current = status === 'active';
-      if (!foreground.current) { setPhase((current) => current === 'ready' ? 'locked' : current); return; }
-      void unlock();
+      if (!foreground.current) { revision.current++; setPhase((current) => current === 'ready' ? 'locked' : current); return; }
+      if (!authenticating.current) void unlock();
     });
     const interval = setInterval(() => {
-      if (Date.now() - lastInteraction.current >= 30 * 60_000) setPhase((current) => current === 'ready' ? 'locked' : current);
+      if (Date.now() - lastInteraction.current >= 30 * 60_000) { revision.current++; setPhase((current) => current === 'ready' ? 'locked' : current); }
     }, 5_000);
     return () => { subscription.remove(); clearInterval(interval); };
   }, [unlock]);
 
   const action = async (operation: () => Promise<void>) => {
-    if (busy) return;
+    if (authenticating.current) return;
+    authenticating.current = true;
+    const current = revision.current;
     setBusy(true); setError('');
     try { await operation(); }
     catch (failure) {
+      if (current !== revision.current) return;
       if (failure instanceof SessionExpired) { await auth?.clear(); setPhase('request'); }
       setError(failure instanceof Error ? failure.message : 'Operación no disponible.');
-    } finally { setBusy(false); }
+    } finally { authenticating.current = false; setBusy(false); }
   };
 
   const activity = () => {
@@ -63,13 +70,18 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
     pending.current = true;
     void auth.activity().then(() => { lastInteraction.current = Date.now(); })
       .catch(async (failure) => {
+        const current = revision.current;
         setPhase('locked');
-        if (failure instanceof SessionExpired) { await auth.clear(); setPhase('request'); }
-        setError(failure instanceof NetworkUnavailable ? failure.message : 'La sesión requiere una nueva validación.');
+        if (failure instanceof SessionExpired) { await auth.clear(); if (current === revision.current) setPhase('request'); }
+        if (current === revision.current) setError(failure instanceof NetworkUnavailable ? failure.message : 'La sesión requiere una nueva validación.');
       }).finally(() => { pending.current = false; });
   };
 
-  if (phase === 'ready') return <View style={styles.full}>{renderDemo(() => void action(async () => { try { await auth?.logout(); } finally { setPhase('request'); setCode(''); } }), activity)}</View>;
+  if (phase === 'ready') return <View style={styles.full}>{renderDemo(() => {
+    revision.current++;
+    setPhase('locked');
+    void action(async () => { await auth?.logout(); setPhase('request'); setCode(''); });
+  }, activity)}</View>;
   return <SafeAreaView style={styles.full}>
     <LinearGradient colors={['#F8FAFF', '#F0F4FC', '#F8FAFF']} style={styles.full}>
       <ScrollView contentContainerStyle={styles.center} keyboardShouldPersistTaps="handled">
@@ -86,7 +98,13 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
             <Pressable accessibilityRole="button" disabled={busy || (phase === 'request' ? !email.trim() : !/^\d{8}$/.test(code))} style={[styles.button, busy && styles.disabled]} onPress={() => void action(async () => {
               if (!auth) throw new Error('Configure el entorno de prueba para continuar.');
               if (phase === 'request') { await auth.requestCode(email); setPhase('verify'); }
-              else { await auth.verifyCode(email, code); setCode(''); lastInteraction.current = Date.now(); setPhase('ready'); }
+              else {
+                const current = revision.current;
+                await auth.verifyCode(email, code);
+                setCode('');
+                if (foreground.current && current === revision.current) { lastInteraction.current = Date.now(); setPhase('ready'); }
+                else { setPhase('locked'); if (foreground.current) void unlock(); }
+              }
             })}><Text style={styles.buttonText}>{phase === 'request' ? 'Solicitar código' : 'Ingresar al CRM de prueba'}</Text></Pressable>
             {phase === 'verify' ? <Pressable accessibilityRole="button" onPress={() => { setCode(''); setPhase('request'); }} style={styles.secondary}><Text style={styles.secondaryText}>Volver a solicitar código</Text></Pressable> : null}
           </>}

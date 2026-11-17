@@ -25,6 +25,8 @@ export class StagingAuth {
   private accessToken: string | null = null;
   private refreshPending: Promise<void> | null = null;
   private lastActivitySent = 0;
+  private generation = 0;
+  private storageQueue: Promise<unknown> = Promise.resolve();
   constructor(private readonly config: AuthConfig, private readonly storage: Storage, private readonly transport: Transport = fetch) {}
 
   private async post(base: string, path: string, data: object, token?: string) {
@@ -49,22 +51,30 @@ export class StagingAuth {
     const verified = await this.post(this.config.adminBase, '/api/crm/auth/mobile/verify-code', { email: email.trim(), code });
     if (typeof verified.proof !== 'string') throw new Error('Respuesta de autenticación no válida.');
     const session = await this.post(this.config.hermesBase, '/api/auth/mobile/crm-proof', { proof: verified.proof });
-    await this.save(session);
+    await this.save(session, this.generation);
   }
 
-  private async save(result: Record<string, unknown>) {
+  private async save(result: Record<string, unknown>, generation: number) {
     if (typeof result.accessToken !== 'string' || typeof result.refreshToken !== 'string') throw new Error('Respuesta de sesión no válida.');
     // Commit refresh to protected storage before exposing any protected screen.
-    await this.storage.setItemAsync(KEY, result.refreshToken);
+    const write = this.storageQueue.then(async () => {
+      if (generation !== this.generation) throw new SessionExpired();
+      await this.storage.setItemAsync(KEY, result.refreshToken as string);
+    });
+    this.storageQueue = write.catch(() => undefined);
+    await write;
+    if (generation !== this.generation) throw new SessionExpired();
     this.accessToken = result.accessToken;
   }
 
   private async refresh() {
     if (!this.refreshPending) this.refreshPending = (async () => {
+      const generation = this.generation;
       const refreshToken = await this.storage.getItemAsync(KEY);
+      if (generation !== this.generation) throw new SessionExpired();
       if (!refreshToken) throw new SessionExpired();
       const result = await this.post(this.config.hermesBase, '/api/auth/mobile/refresh', { refreshToken });
-      await this.save(result);
+      await this.save(result, generation);
     })().finally(() => { this.refreshPending = null; });
     return this.refreshPending;
   }
@@ -72,13 +82,15 @@ export class StagingAuth {
   async validate() {
     if (!this.accessToken) await this.refresh();
     try {
-      await this.post(this.config.hermesBase, '/api/auth/mobile/status', {}, this.accessToken!);
+      const status = await this.post(this.config.hermesBase, '/api/auth/mobile/status', {}, this.accessToken!);
+      if (status.active !== true) throw new SessionExpired();
     } catch (error) {
       if (!(error instanceof SessionExpired)) throw error;
       // An access token may expire without ending the session. The server validates
       // the inactivity window before allowing refresh; refresh never extends it.
       await this.refresh();
-      await this.post(this.config.hermesBase, '/api/auth/mobile/status', {}, this.accessToken!);
+      const status = await this.post(this.config.hermesBase, '/api/auth/mobile/status', {}, this.accessToken!);
+      if (status.active !== true) throw new SessionExpired();
     }
   }
 
@@ -97,8 +109,11 @@ export class StagingAuth {
   }
 
   async clear() {
+    this.generation++;
     this.accessToken = null;
     this.lastActivitySent = 0;
-    await this.storage.deleteItemAsync(KEY);
+    const remove = this.storageQueue.then(() => this.storage.deleteItemAsync(KEY));
+    this.storageQueue = remove.catch(() => undefined);
+    await remove;
   }
 }
