@@ -1,12 +1,12 @@
 # G1 · Acceso móvil con la identidad actual del CRM
 
-**Fecha:** 17/11/2026. **Estado:** plan para revisión; no implementa ni autoriza cambios productivos, migraciones, cuentas nuevas o distribución. **Base Git de planificación:** rama piloto Hermes `a637ac635f1046369862b9f298f5de1551527887`, que integra el prototipo móvil y su diseño aprobado. Esa referencia Git no acredita un despliegue de backend nuevo. El último backend cuyo runtime se verificó en esta conversación fue `b044ea620e8b9b2bb5f6252d15534b359c42eee2`, imagen `sha256:4003d04037c7c3d28ff0b9c1da1554ea5151764bd4d3b9ab2762c681a3ebadbb`; no se comprobó nuevamente al redactar este plan.
+**Fecha:** 17/11/2026. **Estado:** criterios G1 acordados y aprobados por la solicitud posterior «procede con las fases» para trabajo de desarrollo local; no autoriza cambios productivos, migraciones en bases reales, cuentas nuevas ni distribución. **Base Git de planificación:** rama piloto Hermes `a637ac635f1046369862b9f298f5de1551527887`, que integra el prototipo móvil y su diseño aprobado. Esa referencia Git no acredita un despliegue de backend nuevo. El último backend cuyo runtime se verificó en esta conversación fue `b044ea620e8b9b2bb5f6252d15534b359c42eee2`, imagen `sha256:4003d04037c7c3d28ff0b9c1da1554ea5151764bd4d3b9ab2762c681a3ebadbb`; no se comprobó nuevamente al redactar este plan.
 
 ## 1. Decisiones del propietario
 
 1. La app debe admitir **el mismo operador y el mismo acceso que ya usa el CRM web**. En el código web revisado, el acceso consiste en correo autorizado y código temporal enviado por correo; no se pide crear una contraseña nueva. Confirmar el flujo y la configuración efectivos antes de implementar.
 2. **Un solo usuario** en esta fase. No crear gestión de usuarios, pantallas de roles, asignaciones por agente ni un sistema nuevo de permisos. Mantener los controles de acceso actuales y proteger todas las rutas: una única identidad no convierte la API en pública. La escalabilidad significa no impedir una futura evolución, no construirla ahora.
-3. Web y móvil pueden permanecer abiertos a la vez. Son sesiones independientes: cerrar o vencer una no debe cerrar la otra. No se ha decidido cuántos teléfonos simultáneos se permitirán.
+3. Web y móvil pueden permanecer abiertos a la vez. Son sesiones independientes: cerrar o vencer una no debe cerrar la otra. De forma provisional, se admiten varios teléfonos del **mismo único operador**, cada uno con sesión revocable propia; confirmar el máximo y el responsable de revocación antes de liberación.
 4. La sesión móvil caduca tras **30 minutos sin actividad de uso**. Para volver se solicita un nuevo código al correo autorizado.
 5. El propietario decidió **sin vencimiento máximo adicional**: mientras exista actividad válida, la sesión puede continuar. Esto incrementa la duración posible de una sesión robada; se acepta como decisión de producto para el diseño, no como sustituto de revisión de seguridad y revocación.
 
@@ -60,7 +60,7 @@
 
 ## 7. Decisiones pendientes y límites
 
-- Confirmar número de dispositivos móviles simultáneos y procedimiento para revocarlos tras pérdida del teléfono, sin construir un panel de administración por defecto.
+- Confirmar máximo de dispositivos móviles simultáneos y responsable de revocación tras pérdida del teléfono, sin construir un panel de administración por defecto. Hasta disponer de una acción administrativa autenticada y probada para revocar una sesión por identificador, **no distribuir** el cliente: un logout local no permite revocar un teléfono perdido. Una intervención manual de DB debe seguir el procedimiento operativo aprobado, con verificación de objetivo, respaldo y auditoría; nunca borrar usuarios ni credenciales globales para ello.
 - Definir destino, TTL, disponibilidad y limpieza del almacenamiento compartido para OTP/proofs/sesiones; fiabilidad del correo, límites por IP/operador y proxy que sanee la IP.
 - Contrastar la sesión web Admin que usa un token separado: la app debe solicitar únicamente las capacidades que realmente necesita; no asumir que un JWT Hermes habilita endpoints Admin.
 - La autenticación no resuelve por sí sola privacidad del Inbox, SSE, control humano o idempotencia. Con un solo usuario no hace falta un sistema nuevo de permisos, pero sí autenticación y exposición mínima antes de usar datos reales.
