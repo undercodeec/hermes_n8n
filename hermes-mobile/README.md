@@ -18,3 +18,5 @@ Desde `hermes-mobile/`, requisitos: Node compatible con Expo SDK 58, npm y Expo 
 Antes de conectar una API: contrato piloto verificado con usuarios sintéticos, sesiones revocables por dispositivo, alcance por recurso, proyecciones sin PII sobrante, SSE minimizado/autorizado e idempotencia para respuestas tras timeouts. Antes de distribución: QA físico en Android/iOS, privacidad de cachés y pantallas, accesibilidad, firmas/cuentas y autorización específica de publicación. Referencia: [`../hermes-backend/docs/crm-mobile-internal-development-plan-2026-11-12.md`](../hermes-backend/docs/crm-mobile-internal-development-plan-2026-11-12.md), adenda 17/11/2026.
 
 **No** ejecutar contra producción ni distribuir a usuarios finales. El diseño y la accesibilidad necesitan evaluación con operadores y dispositivos reales.
+
+La [bitácora de desarrollo](docs/bitacora-desarrollo.md) registra las decisiones, pruebas, riesgos y pendientes del prototipo.
