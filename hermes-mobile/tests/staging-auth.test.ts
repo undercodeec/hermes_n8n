@@ -62,6 +62,15 @@ test('expired refresh fails closed and cannot restore a screen', async () => {
   await assert.rejects(auth.validate(), SessionExpired);
 });
 
+test('OTP error and throttling never expose server payload or grant access', async () => {
+  const { store, values } = fakeStorage();
+  const invalid = new StagingAuth(config, store, async () => result({ debug: 'do-not-show' }, 400));
+  await assert.rejects(invalid.verifyCode('user@example.invalid', '00000042'), /Código inválido o vencido/);
+  const limited = new StagingAuth(config, store, async () => result({ debug: 'do-not-show' }, 429));
+  await assert.rejects(limited.requestCode('user@example.invalid'), /Demasiados intentos/);
+  assert.equal(values.size, 0);
+});
+
 test('offline and logout delete local secret even when remote request fails', async () => {
   const { store, values } = fakeStorage();
   const auth = new StagingAuth(config, store, async (url) => {

@@ -38,6 +38,8 @@ export class StagingAuth {
       });
     } catch { throw new NetworkUnavailable(); }
     if (response.status === 401 || response.status === 403) throw new SessionExpired();
+    if (response.status === 429) throw new Error('Demasiados intentos. Espere antes de volver a intentarlo.');
+    if (response.status === 400) throw new Error('Código inválido o vencido. Solicite uno nuevo.');
     if (!response.ok) throw new Error('No se pudo completar la operación. Inténtelo de nuevo.');
     try { return await response.json() as Record<string, unknown>; } catch { throw new Error('Respuesta de autenticación no válida.'); }
   }
