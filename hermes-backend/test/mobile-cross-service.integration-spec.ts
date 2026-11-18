@@ -287,10 +287,13 @@ run('isolated HTTP OTP + SMTP capture + Hermes mobile/web contract', () => {
       ).status,
     ).toBe(401);
     const secondAccess = second.json.accessToken as string;
-    expect(
-      (await post(`${hermesBase}/api/auth/mobile/revoke-all`, {}, webAccess))
-        .code,
-    ).toBe(200);
+    const revocation = await post(
+      `${hermesBase}/api/auth/mobile/revoke-all`,
+      {},
+      webAccess,
+    );
+    expect(revocation.code).toBe(200);
+    expect(revocation.json.revokedSessions).toBe(1);
     expect(
       (
         await fetch(`${hermesBase}/api/auth/mobile/session`, {
