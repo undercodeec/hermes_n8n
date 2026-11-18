@@ -66,27 +66,52 @@ export class AuthController {
 
   @Post('mobile/crm-proof')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Canjear prueba OTP móvil por sesión revocable (un teléfono)' })
-  @ApiResponse({ status: 200, description: 'Usuario, accessToken móvil, refreshToken rotatorio y expiresAt' })
-  @ApiResponse({ status: 401, description: 'Prueba inválida, vencida, reutilizada u operador no autorizado' })
+  @ApiOperation({
+    summary: 'Canjear prueba OTP móvil por sesión revocable (un teléfono)',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Usuario, accessToken móvil, refreshToken rotatorio y expiresAt',
+  })
+  @ApiResponse({
+    status: 401,
+    description:
+      'Prueba inválida, vencida, reutilizada u operador no autorizado',
+  })
   async mobileCrmProof(@Body() dto: CrmProofDto) {
     return this.authService.loginMobileWithCrmProof(dto.proof);
   }
 
   @Post('mobile/refresh')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Rotar refresh vigente sin extender la inactividad' })
-  @ApiResponse({ status: 200, description: 'Nuevo accessToken y refreshToken; persistir antes de desbloquear' })
-  @ApiResponse({ status: 401, description: 'Refresh consumido, vencido o revocado' })
+  @ApiOperation({
+    summary: 'Rotar refresh vigente sin extender la inactividad',
+  })
+  @ApiResponse({
+    status: 200,
+    description:
+      'Nuevo accessToken y refreshToken; persistir antes de desbloquear',
+  })
+  @ApiResponse({
+    status: 401,
+    description: 'Refresh consumido, vencido o revocado',
+  })
   async mobileRefresh(@Body() dto: MobileRefreshDto) {
     return this.authService.refreshMobile(dto.refreshToken);
   }
 
   @Post('mobile/logout-refresh')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Revocar con refresh vigente incluso si expiró el access JWT; no rota credenciales' })
+  @ApiOperation({
+    summary:
+      'Revocar con refresh vigente incluso si expiró el access JWT; no rota credenciales',
+  })
   @ApiResponse({ status: 200, description: 'Sesión móvil revocada' })
-  @ApiResponse({ status: 401, description: 'Refresh consumido o sesión ya vencida/revocada' })
+  @ApiResponse({
+    status: 401,
+    description: 'Refresh consumido o sesión ya vencida/revocada',
+  })
   async mobileLogoutWithRefresh(@Body() dto: MobileRefreshDto) {
     return this.authService.logoutMobileWithRefresh(dto.refreshToken);
   }
@@ -96,7 +121,10 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Comprobar sesión móvil sin renovar actividad' })
   @ApiResponse({ status: 200, description: 'active y expiresAt del servidor' })
-  @ApiResponse({ status: 401, description: 'Sesión inválida, revocada o inactiva' })
+  @ApiResponse({
+    status: 401,
+    description: 'Sesión inválida, revocada o inactiva',
+  })
   async mobileSession(@CurrentUser() user: { id: string; sessionId: string }) {
     return this.authService.checkMobile(user.id, user.sessionId);
   }
@@ -106,7 +134,9 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @UseGuards(MobileAuthGuard)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Registrar interacción real en primer plano y renovar inactividad' })
+  @ApiOperation({
+    summary: 'Registrar interacción real en primer plano y renovar inactividad',
+  })
   @ApiResponse({ status: 200, description: 'active y expiresAt renovado' })
   @ApiResponse({ status: 401, description: 'Sesión inválida o vencida' })
   async mobileActivity(@CurrentUser() user: { id: string; sessionId: string }) {
@@ -129,8 +159,14 @@ export class AuthController {
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiBearerAuth()
-  @ApiOperation({ summary: 'Revocar teléfonos desde web sin cerrar web; solo operador ADMIN autorizado' })
-  @ApiResponse({ status: 200, description: 'Número de sesiones móviles revocadas' })
+  @ApiOperation({
+    summary:
+      'Revocar teléfonos desde web sin cerrar web; solo operador ADMIN autorizado',
+  })
+  @ApiResponse({
+    status: 200,
+    description: 'Número de sesiones móviles revocadas',
+  })
   @ApiResponse({ status: 401, description: 'Operador web no autorizado' })
   async revokeAllMobile(@CurrentUser() user: { id: string; email: string }) {
     return this.authService.revokeAllMobileForOperator(user.id, user.email);

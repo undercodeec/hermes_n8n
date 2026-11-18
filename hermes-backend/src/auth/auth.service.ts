@@ -146,8 +146,7 @@ export class AuthService {
       // Serialize new phone logins for this operator even when they carry
       // different valid proofs. Last committed login is the only active phone.
       await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${user.id} FOR UPDATE`;
-      if (payload.exp <= Math.floor(Date.now() / 1000))
-        this.invalidCrmProof();
+      if (payload.exp <= Math.floor(Date.now() / 1000)) this.invalidCrmProof();
       const current = await tx.user.findUnique({ where: { id: user.id } });
       if (!current?.isActive || current.role !== UserRole.ADMIN)
         throw new UnauthorizedException('Usuario no autorizado o inactivo');
@@ -288,7 +287,8 @@ export class AuthService {
   async revokeAllMobileForOperator(userId: string, email: string) {
     const operatorEmail = this.configService
       .get<string>('CRM_OPERATOR_EMAIL', 'gerencia@undercodeec.com')
-      .trim().toLowerCase();
+      .trim()
+      .toLowerCase();
     if (email.trim().toLowerCase() !== operatorEmail)
       throw new UnauthorizedException('Operador no autorizado');
     const result = await this.prisma.$transaction(async (tx) => {
@@ -296,8 +296,11 @@ export class AuthService {
       // miss a newly created session in a concurrent transaction.
       await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR UPDATE`;
       const account = await tx.user.findUnique({ where: { id: userId } });
-      if (!account?.isActive || account.role !== UserRole.ADMIN ||
-          account.email.trim().toLowerCase() !== operatorEmail)
+      if (
+        !account?.isActive ||
+        account.role !== UserRole.ADMIN ||
+        account.email.trim().toLowerCase() !== operatorEmail
+      )
         throw new UnauthorizedException('Operador no autorizado');
       return tx.mobileSession.updateMany({
         where: { userId, revokedAt: null },
@@ -330,7 +333,9 @@ export class AuthService {
         },
         {
           expiresIn: '5m',
-          secret: mobileJwtKey(this.configService.getOrThrow<string>('JWT_SECRET')),
+          secret: mobileJwtKey(
+            this.configService.getOrThrow<string>('JWT_SECRET'),
+          ),
         },
       ),
       refreshToken: `${id}.${secret}`,
@@ -375,7 +380,10 @@ export class AuthService {
     });
   }
 
-  private verifyCrmProof(proof: string, audience: 'hermes-crm' | 'hermes-crm-mobile' = 'hermes-crm'): CrmProofPayload {
+  private verifyCrmProof(
+    proof: string,
+    audience: 'hermes-crm' | 'hermes-crm-mobile' = 'hermes-crm',
+  ): CrmProofPayload {
     const secret = this.configService.get<string>('CRM_HERMES_PROOF_SECRET');
     const operatorEmail = this.configService
       .get<string>('CRM_OPERATOR_EMAIL', 'gerencia@undercodeec.com')

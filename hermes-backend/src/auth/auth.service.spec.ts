@@ -163,10 +163,14 @@ describe('CRM mobile sessions and shared proof replay', () => {
 
   it('does not reactivate a disabled web user or promote a demoted operator', async () => {
     storedUser.isActive = false;
-    await expect(auth.loginWithCrmProof(proof())).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.loginWithCrmProof(proof())).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
     storedUser.isActive = true;
     storedUser.role = UserRole.SALES_AGENT;
-    await expect(auth.loginWithCrmProof(proof())).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.loginWithCrmProof(proof())).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
     expect(storedUser.role).toBe(UserRole.SALES_AGENT);
     expect(consumed.size).toBe(0);
   });
@@ -192,12 +196,17 @@ describe('CRM mobile sessions and shared proof replay', () => {
   });
 
   it('rejects a mobile proof that expires while waiting for the operator lock', async () => {
-    const waitingProof = proof({ aud: 'hermes-crm-mobile', exp: Math.floor(Date.now() / 1000) + 1 });
+    const waitingProof = proof({
+      aud: 'hermes-crm-mobile',
+      exp: Math.floor(Date.now() / 1000) + 1,
+    });
     db.$queryRaw.mockImplementationOnce(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1100));
       return [{ id: user.id }];
     });
-    await expect(auth.loginMobileWithCrmProof(waitingProof)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      auth.loginMobileWithCrmProof(waitingProof),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(db.mobileSession.create).not.toHaveBeenCalled();
   });
 
@@ -226,13 +235,19 @@ describe('CRM mobile sessions and shared proof replay', () => {
   });
 
   it('requires separate web and mobile proof audiences', async () => {
-    await expect(auth.loginMobileWithCrmProof(proof())).rejects.toBeInstanceOf(UnauthorizedException);
-    await expect(auth.loginWithCrmProof(proof({ aud: 'hermes-crm-mobile' }))).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.loginMobileWithCrmProof(proof())).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    await expect(
+      auth.loginWithCrmProof(proof({ aud: 'hermes-crm-mobile' })),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(db.consumedCrmProof.create).not.toHaveBeenCalled();
   });
 
   it('rotates refresh via CAS, rejects replay and does not extend idle window', async () => {
-    const initial = await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
+    const initial = await auth.loginMobileWithCrmProof(
+      proof({ aud: 'hermes-crm-mobile' }),
+    );
     expect(jwt.sign).toHaveBeenCalledWith(
       expect.objectContaining({ sid: sessionId, typ: 'mobile' }),
       expect.objectContaining({ expiresIn: '5m', secret: expect.any(String) }),
@@ -262,36 +277,68 @@ describe('CRM mobile sessions and shared proof replay', () => {
   });
 
   it('revokes with the current refresh without rotating an expired access JWT', async () => {
-    const initial = await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
+    const initial = await auth.loginMobileWithCrmProof(
+      proof({ aud: 'hermes-crm-mobile' }),
+    );
     jwt.sign.mockClear();
-    await expect(auth.logoutMobileWithRefresh(initial.refreshToken)).resolves.toEqual({ revoked: true });
+    await expect(
+      auth.logoutMobileWithRefresh(initial.refreshToken),
+    ).resolves.toEqual({ revoked: true });
     expect(jwt.sign).not.toHaveBeenCalled();
-    await expect(auth.checkMobile(user.id, sessionId)).rejects.toBeInstanceOf(UnauthorizedException);
-    await expect(auth.logoutMobileWithRefresh(initial.refreshToken)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.checkMobile(user.id, sessionId)).rejects.toBeInstanceOf(
+      UnauthorizedException,
+    );
+    await expect(
+      auth.logoutMobileWithRefresh(initial.refreshToken),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('does not allow a consumed refresh to revoke the winning rotation', async () => {
-    const initial = await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
+    const initial = await auth.loginMobileWithCrmProof(
+      proof({ aud: 'hermes-crm-mobile' }),
+    );
     const rotated = await auth.refreshMobile(initial.refreshToken);
-    await expect(auth.logoutMobileWithRefresh(initial.refreshToken)).rejects.toBeInstanceOf(UnauthorizedException);
-    await expect(auth.checkMobile(user.id, sessionId)).resolves.toMatchObject({ active: true });
-    await expect(auth.logoutMobileWithRefresh(rotated.refreshToken)).resolves.toEqual({ revoked: true });
+    await expect(
+      auth.logoutMobileWithRefresh(initial.refreshToken),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.checkMobile(user.id, sessionId)).resolves.toMatchObject({
+      active: true,
+    });
+    await expect(
+      auth.logoutMobileWithRefresh(rotated.refreshToken),
+    ).resolves.toEqual({ revoked: true });
   });
 
   it('rejects a demoted or mismatched operator for an existing mobile access JWT', async () => {
     const strategy = new JwtStrategy(config as never, db as never);
     await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
     storedUser.role = UserRole.SALES_AGENT;
-    await expect(strategy.validate({ sub: user.id, email, role: 'ADMIN', sid: sessionId, typ: 'mobile' }))
-      .rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      strategy.validate({
+        sub: user.id,
+        email,
+        role: 'ADMIN',
+        sid: sessionId,
+        typ: 'mobile',
+      }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
     storedUser.role = UserRole.ADMIN;
     storedUser.email = 'other@example.invalid';
-    await expect(strategy.validate({ sub: user.id, email, role: 'ADMIN', sid: sessionId, typ: 'mobile' }))
-      .rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      strategy.validate({
+        sub: user.id,
+        email,
+        role: 'ADMIN',
+        sid: sessionId,
+        typ: 'mobile',
+      }),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('rejects expired session on refresh, activity, check and JWT validation', async () => {
-    const initial = await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
+    const initial = await auth.loginMobileWithCrmProof(
+      proof({ aud: 'hermes-crm-mobile' }),
+    );
     session.expiresAt = new Date(Date.now() - 1);
     await expect(
       auth.refreshMobile(initial.refreshToken),
@@ -319,20 +366,34 @@ describe('CRM mobile sessions and shared proof replay', () => {
   });
 
   it('allows 29 minutes idle but rejects at the exact 30-minute server deadline', async () => {
-    const initial = await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
+    const initial = await auth.loginMobileWithCrmProof(
+      proof({ aud: 'hermes-crm-mobile' }),
+    );
     const expiry = session.expiresAt.getTime();
     jest.useFakeTimers({ now: expiry - 60_000 });
     try {
-      await expect(auth.checkMobile(user.id, sessionId)).resolves.toMatchObject({ active: true });
+      await expect(auth.checkMobile(user.id, sessionId)).resolves.toMatchObject(
+        { active: true },
+      );
       jest.setSystemTime(expiry);
-      await expect(auth.checkMobile(user.id, sessionId)).rejects.toBeInstanceOf(UnauthorizedException);
-      await expect(auth.refreshMobile(initial.refreshToken)).rejects.toBeInstanceOf(UnauthorizedException);
-      await expect(auth.mobileActivity(user.id, sessionId)).rejects.toBeInstanceOf(UnauthorizedException);
-    } finally { jest.useRealTimers(); }
+      await expect(auth.checkMobile(user.id, sessionId)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
+      await expect(
+        auth.refreshMobile(initial.refreshToken),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(
+        auth.mobileActivity(user.id, sessionId),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('revokes lost phone sessions only for the configured web operator', async () => {
-    await expect(auth.revokeAllMobileForOperator(user.id, 'other@example.invalid')).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(
+      auth.revokeAllMobileForOperator(user.id, 'other@example.invalid'),
+    ).rejects.toBeInstanceOf(UnauthorizedException);
     expect(db.mobileSession.updateMany).not.toHaveBeenCalled();
     await auth.revokeAllMobileForOperator(user.id, email);
     expect(db.$queryRaw).toHaveBeenCalled();

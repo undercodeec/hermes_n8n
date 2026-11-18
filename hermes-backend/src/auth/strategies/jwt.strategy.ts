@@ -28,15 +28,21 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       // Select the verification key using an untrusted hint only. Passport-JWT
       // verifies the signature with the selected key BEFORE validate() is called.
       secretOrKeyProvider: (_request, rawToken: string, done) => {
-        if (!rawToken || rawToken.length > 8192) return done(new Error('Invalid token'));
+        if (!rawToken || rawToken.length > 8192)
+          return done(new Error('Invalid token'));
         try {
           const parts = rawToken.split('.');
           if (parts.length !== 3) return done(new Error('Invalid token'));
-          const claims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')) as unknown;
-          if (!claims || typeof claims !== 'object') return done(new Error('Invalid token'));
+          const claims = JSON.parse(
+            Buffer.from(parts[1], 'base64url').toString('utf8'),
+          ) as unknown;
+          if (!claims || typeof claims !== 'object')
+            return done(new Error('Invalid token'));
           const mobile = (claims as Record<string, unknown>).typ === 'mobile';
           return done(null, mobile ? mobileSecret : webSecret);
-        } catch { return done(new Error('Invalid token')); }
+        } catch {
+          return done(new Error('Invalid token'));
+        }
       },
     });
   }
@@ -68,8 +74,12 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (payload.typ === 'mobile') {
       const operatorEmail = this.configService
         .get<string>('CRM_OPERATOR_EMAIL', 'gerencia@undercodeec.com')
-        .trim().toLowerCase();
-      if (user.role !== UserRole.ADMIN || user.email.trim().toLowerCase() !== operatorEmail)
+        .trim()
+        .toLowerCase();
+      if (
+        user.role !== UserRole.ADMIN ||
+        user.email.trim().toLowerCase() !== operatorEmail
+      )
         throw new UnauthorizedException('Operador móvil no autorizado');
     }
 
