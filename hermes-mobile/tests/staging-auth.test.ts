@@ -124,9 +124,12 @@ test('logout blocks immediately and removes protected secret while remote reques
   let release!: (response: Response) => void;
   let started!: () => void;
   const sent = new Promise<void>((resolve) => { started = resolve; });
-  const auth = new StagingAuth(config, store, async (url) => {
+  const auth = new StagingAuth(config, store, async (url, init) => {
     if (url.endsWith('/verify-code')) return result({ proof: 'p' });
     if (url.endsWith('/crm-proof')) return result({ accessToken: 'a', refreshToken: 'r' });
+    assert.ok(url.endsWith('/logout-refresh'));
+    assert.deepEqual(JSON.parse(String(init.body)), { refreshToken: 'r' });
+    assert.equal((init.headers as Record<string, string>).Authorization, undefined);
     started();
     return new Promise<Response>((resolve) => { release = resolve; });
   });
@@ -136,8 +139,30 @@ test('logout blocks immediately and removes protected secret while remote reques
   await sent;
   await new Promise<void>((resolve) => setImmediate(resolve));
   assert.equal(values.size, 0);
-  release(result({ success: true }));
+  release(result({ revoked: true }));
   assert.equal(await logout, 'revoked');
+});
+
+test('logout with old refresh rejected by backend 401 is unconfirmed, not success', async () => {
+  const { store, values } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'consumed');
+  const paths: string[] = [];
+  const auth = new StagingAuth(config, store, async (url, init) => {
+    paths.push(url.split('/').at(-1)!);
+    assert.deepEqual(JSON.parse(String(init.body)), { refreshToken: 'consumed' });
+    return result({}, 401);
+  });
+  assert.equal(await auth.logout(), 'unconfirmed');
+  assert.deepEqual(paths, ['logout-refresh']);
+  assert.equal(values.size, 0);
+});
+
+test('logout does not treat a 200 without revoked true as remote confirmation', async () => {
+  const { store, values } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'current');
+  const auth = new StagingAuth(config, store, async () => result({ success: true }));
+  assert.equal(await auth.logout(), 'unconfirmed');
+  assert.equal(values.size, 0);
 });
 
 test('200 with inactive or missing status cannot unlock', async () => {
@@ -176,19 +201,58 @@ test('logout fails closed if protected storage cannot delete the secret', async 
   await assert.rejects(auth.validate(), SessionExpired);
 });
 
-test('expired access JWT on logout never rotates refresh or falsely confirms revocation', async () => {
+test('expired access JWT still revokes with current refresh without session check or rotation', async () => {
+  const { store, values } = fakeStorage();
+  const paths: string[] = [];
+  const auth = new StagingAuth(config, store, async (url, init) => {
+    paths.push(url.split('/').at(-1)!);
+    if (url.endsWith('/verify-code')) return result({ proof: 'p' });
+    if (url.endsWith('/crm-proof')) return result({ accessToken: 'expired-jwt', refreshToken: 'current' });
+    if (url.endsWith('/logout-refresh')) {
+      assert.deepEqual(JSON.parse(String(init.body)), { refreshToken: 'current' });
+      assert.equal((init.headers as Record<string, string>).Authorization, undefined);
+      return result({ revoked: true });
+    }
+    return result({}, 401); // access JWT is expired; must not use it
+  });
+  await auth.verifyCode('user@example.invalid', '12345678');
+  assert.equal(await auth.logout(), 'revoked');
+  assert.deepEqual(paths, ['verify-code', 'crm-proof', 'logout-refresh']);
+  assert.equal(values.size, 0);
+});
+
+test('logout during an in-flight refresh cannot claim remote revocation of a possibly rotated token', async () => {
   const { store, values } = fakeStorage();
   await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'old');
+  let release!: (response: Response) => void;
+  let started!: () => void;
+  const sent = new Promise<void>((resolve) => { started = resolve; });
   const paths: string[] = [];
   const auth = new StagingAuth(config, store, async (url) => {
     paths.push(url.split('/').at(-1)!);
-    if (url.endsWith('/refresh')) return result({ accessToken: 'short', refreshToken: 'rotated' });
-    if (url.endsWith('/session')) return result({ active: true });
-    return result({}, 401);
+    if (url.endsWith('/refresh')) return new Promise<Response>((resolve) => { release = resolve; started(); });
+    return result({ active: true });
   });
-  await auth.validate();
+  const ongoing = auth.validate();
+  const rejected = assert.rejects(ongoing, SessionExpired);
+  await sent;
+  const logout = auth.logout();
+  await assert.rejects(auth.validate(), SessionExpired);
+  assert.equal(await logout, 'unconfirmed');
+  release(result({ accessToken: 'late', refreshToken: 'rotated' }));
+  await rejected;
+  assert.deepEqual(paths, ['refresh']);
+  assert.equal(values.size, 0);
+});
+
+test('logout after interrupted refresh marker does not send a stale secret', async () => {
+  const { store, values } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'old');
+  await store.setItemAsync('hermes.crm.mobile.refresh.pending.v1', '1');
+  let calls = 0;
+  const auth = new StagingAuth(config, store, async () => { calls++; return result({ revoked: true }); });
   assert.equal(await auth.logout(), 'unconfirmed');
-  assert.deepEqual(paths, ['refresh', 'session', 'logout']);
+  assert.equal(calls, 0);
   assert.equal(values.size, 0);
 });
 
@@ -244,7 +308,7 @@ test('unconfirmed local deletion keeps session blocked even after app tries vali
   await assert.rejects(auth.logout(), LocalClearFailed);
   await assert.rejects(auth.validate(), SessionExpired);
   await assert.rejects(auth.verifyCode('user@example.invalid', '12345678'), LocalClearFailed);
-  assert.equal(calls, 0);
+  assert.equal(calls, 1); // Remote attempt does not make failed local deletion safe.
   assert.equal(values.size, 1);
 });
 

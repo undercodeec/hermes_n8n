@@ -12,7 +12,7 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
-  const [revocationNotice, setRevocationNotice] = useState(false);
+  const [revocationNotice, setRevocationNotice] = useState<'confirmed' | 'unconfirmed' | null>(null);
   const [clearFailed, setClearFailed] = useState(false);
   const lastInteraction = useRef(Date.now());
   const foreground = useRef(true);
@@ -104,13 +104,13 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
     void (async () => {
       try {
         const result = await auth?.logout();
-        setRevocationNotice(result !== 'revoked');
+        setRevocationNotice(result === 'revoked' ? 'confirmed' : 'unconfirmed');
         setCode('');
         setPhase('request');
       } catch {
         // Never discard a protected-storage failure because AppState changed revision.
         setClearFailed(true);
-        setRevocationNotice(true);
+        setRevocationNotice('unconfirmed');
         setError(new LocalClearFailed().message);
         setPhase('locked');
       } finally { authenticating.current = false; setBusy(false); }
@@ -126,7 +126,8 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
           <Text style={styles.eyebrow}>ENTORNO DE PRUEBA · ACCESO MÓVIL</Text>
           <Text style={styles.title}>Acceso de gerencia</Text>
           <Text style={styles.disclaimer}>La autenticación se verifica en el entorno configurado. Los chats que se muestran después son ficticios: no se consultan ni envían mensajes reales.</Text>
-          {revocationNotice ? <Text accessibilityRole="alert" style={styles.error}>Se cerró el acceso en este dispositivo, pero no se confirmó la revocación remota. Revoca la sesión móvil desde la gestión de sesiones en la web; no compartas ni transfieras el token.</Text> : null}
+          {revocationNotice === 'confirmed' ? <Text accessibilityRole="alert" style={styles.disclaimer}>Revocación remota confirmada. Se borró el acceso local de este dispositivo.</Text> : null}
+          {revocationNotice === 'unconfirmed' ? <Text accessibilityRole="alert" style={styles.error}>Se bloqueó el acceso en este dispositivo, pero no se confirmó la revocación remota. Revoca la sesión móvil desde la gestión de sesiones en la web; no compartas ni transfieras el token.</Text> : null}
           {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
           {phase === 'locked' ? <Pressable accessibilityRole="button" style={styles.button} disabled={busy} onPress={() => { if (clearFailed) { void auth?.clear().then(() => { setClearFailed(false); setError(''); setPhase('request'); }, () => setError(new LocalClearFailed().message)); } else void unlock(); }}><Text style={styles.buttonText}>{clearFailed ? 'Reintentar borrado local' : 'Comprobar sesión'}</Text></Pressable> : <>
             <Text style={styles.label}>{phase === 'request' ? 'Correo de acceso' : 'Código recibido por correo'}</Text>
@@ -139,7 +140,7 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
                 const current = revision.current;
                 await auth.verifyCode(email, code);
                 setCode('');
-                if (foreground.current && current === revision.current) { lastInteraction.current = Date.now(); setRevocationNotice(false); setPhase('ready'); }
+                if (foreground.current && current === revision.current) { lastInteraction.current = Date.now(); setRevocationNotice(null); setPhase('ready'); }
                 else { setPhase('locked'); if (foreground.current) void unlock(); }
               }
             })}><Text style={styles.buttonText}>{phase === 'request' ? 'Solicitar código' : 'Ingresar al CRM de prueba'}</Text></Pressable>

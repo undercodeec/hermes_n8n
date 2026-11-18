@@ -155,14 +155,28 @@ export class StagingAuth {
   }
 
   async logout() {
-    const token = this.accessToken;
+    // A rotating refresh already in flight may have consumed the stored token.
+    // In that case do not claim remote revocation, even if a later request succeeds.
+    const refreshInFlight = this.refreshPending !== null;
     this.blocked = true;
-    // Lock synchronously, never refresh just to log out. An expired JWT or
-    // offline request cannot prove server-side revocation with this contract.
+    // Lock synchronously. Never validate, renew, or rely on an access JWT here.
     this.generation++;
     this.accessToken = null;
     this.lastActivitySent = 0;
-    const remote = token ? this.post(this.config.hermesBase, '/api/auth/mobile/logout', {}, token).then(() => true, () => false) : Promise.resolve(false);
+    // Read the current protected token before queuing its deletion. A pending
+    // marker (including one left by a crash) makes its identity uncertain.
+    const read = this.storageQueue.then(async () => {
+      if (refreshInFlight || await this.storage.getItemAsync(PENDING_KEY) !== null) return null;
+      return this.storage.getItemAsync(KEY);
+    });
+    this.storageQueue = read.catch(() => undefined);
+    const remote = read.then(async (refreshToken) => {
+      if (!refreshToken) return false;
+      try {
+        const response = await this.post(this.config.hermesBase, '/api/auth/mobile/logout-refresh', { refreshToken });
+        return response.revoked === true;
+      } catch { return false; }
+    }, () => false);
     await this.clear();
     return await remote ? 'revoked' as const : 'unconfirmed' as const;
   }
