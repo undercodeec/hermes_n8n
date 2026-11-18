@@ -33,8 +33,8 @@ try {
     $head = (git rev-parse HEAD).Trim()
     Invoke-Checked 'Expected commit check' { git merge-base --is-ancestor $ExpectedMobileCommit HEAD }
     $commit = (git rev-parse $ExpectedMobileCommit).Trim()
-    if ($commit -ne '960fe806d44627bd3f9425a2680fc09a1214d6a8') {
-      throw 'The 24h mobile safety commit must be passed as ExpectedMobileCommit.'
+    if ($commit -ne 'a2e9b5b3ba7e4dec4015a10b29830856757c2f14') {
+      throw 'The latest mobile safety commit (24h and late-response protection) must be passed as ExpectedMobileCommit.'
     }
     if ((git status --porcelain -- hermes-mobile).Length -gt 0) {
       throw 'Commit mobile source changes before building so the APK has reproducible provenance.'
@@ -116,7 +116,7 @@ try {
     Copy-Item $apk $artifact -ErrorAction Stop
     $hash = (Get-FileHash $artifact -Algorithm SHA256).Hash
     Write-Host "APK (local only): $artifact"
-    Write-Host "Source HEAD: $head; includes 24h commit: $commit; variant: $Variant"
+    Write-Host "Source HEAD: $head; includes latest mobile safety commit: $commit; variant: $Variant"
     Write-Host "SHA256: $hash"
     Write-Host 'Temporary test key only: NOT a distribution/release signing identity. Do not install or share without authorization.'
   } finally { Pop-Location }
