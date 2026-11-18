@@ -26,6 +26,7 @@ import { GoogleCalendarModule } from './integrations/google-calendar/google-cale
 import { PaymentsModule } from './payments/payments.module';
 import { FeedbackModule } from './feedback/feedback.module';
 import { RetentionModule } from './retention/retention.module';
+import { MobileInboxModule } from './mobile-inbox/mobile-inbox.module';
 import { parseReviewCanaryFeedbackIds } from './learning/review-canary.policy';
 import { parseSingleGenerationCanaryConfig } from './auto-replies/single-generation-canary.policy';
 
@@ -78,6 +79,7 @@ import { parseSingleGenerationCanaryConfig } from './auto-replies/single-generat
 
     // Autenticación
     AuthModule,
+    MobileInboxModule,
 
     // Integración con Meta WhatsApp Cloud API
     WebhookModule,

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/require-await, @typescript-eslint/no-unsafe-assignment -- Deliberately asynchronous in-memory Prisma/Jest mock with untyped test payloads. */
 import { createHmac } from 'crypto';
 import { Prisma, UserRole } from '@prisma/client';
 import { UnauthorizedException } from '@nestjs/common';
@@ -37,7 +38,13 @@ function proof(overrides: Record<string, unknown> = {}) {
 
 describe('CRM mobile sessions and shared proof replay', () => {
   const consumed = new Set<string>();
-  let storedUser = { ...user };
+  let storedUser: {
+    id: string;
+    email: string;
+    name: string;
+    role: UserRole;
+    isActive: boolean;
+  } = { ...user };
   let session: {
     id: string;
     userId: string;
@@ -49,6 +56,7 @@ describe('CRM mobile sessions and shared proof replay', () => {
     Object.assign(storedUser, args.update);
     return { ...storedUser };
   });
+  const txReference: { current?: unknown } = {};
   const db = {
     consumedCrmProof: {
       create: jest.fn(async ({ data }: { data: { jti: string } }) => {
@@ -116,17 +124,20 @@ describe('CRM mobile sessions and shared proof replay', () => {
         },
       ),
     },
-    $transaction: jest.fn(async (fn: (tx: unknown) => Promise<unknown>) => {
-      const previous = new Set(consumed);
-      try {
-        return await fn(db);
-      } catch (error) {
-        consumed.clear();
-        previous.forEach((jti) => consumed.add(jti));
-        throw error;
-      }
-    }),
+    $transaction: jest.fn(
+      async (fn: (tx: unknown) => Promise<unknown>): Promise<unknown> => {
+        const previous = new Set(consumed);
+        try {
+          return await fn(txReference.current);
+        } catch (error) {
+          consumed.clear();
+          previous.forEach((jti) => consumed.add(jti));
+          throw error;
+        }
+      },
+    ),
   };
+  txReference.current = db;
   const jwt = { sign: jest.fn().mockReturnValue('short-jwt') };
   const config = {
     get: jest.fn(
