@@ -12,6 +12,7 @@ import {
   ApiBearerAuth,
   ApiHeader,
   ApiOperation,
+  ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
@@ -90,6 +91,11 @@ export class AdvertisingController {
   }
 
   @Post('leads/:id/events')
+  @ApiResponse({
+    status: 201,
+    description:
+      'Devuelve la conversión creada o existente. Si este contacto ya tiene una primera compra en otro lead: { leadId, eventType: "CONTRACT_WON", conversionCreated: false, reason: "FIRST_PURCHASE_ALREADY_RECORDED" }; no se expone la conversión anterior.',
+  })
   recordEvent(
     @Param('id') leadId: string,
     @Body() dto: RecordCommercialEventDto,

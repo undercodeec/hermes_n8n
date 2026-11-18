@@ -94,10 +94,9 @@ Google ni hitos comerciales deduplicados. Por eso se conservaron sin cambiar y
 se creo el dominio independiente `advertising`.
 
 El pipeline actual crea un solo lead por conversacion/contacto y evita oportunidades
-abiertas duplicadas con advisory locks. La IA solo puede producir el hito
-`LEAD_QUALIFIED` despues de que las reglas existentes cambian realmente la etapa.
-Los contratos ganados requieren una operacion autenticada del CRM con importe,
-moneda y referencia comercial.
+abiertas duplicadas con advisory locks. La calificacion comercial se confirma
+manualmente. Los contratos ganados requieren una operacion autenticada del CRM;
+los datos de importe, moneda y referencia son opcionales como paquete completo.
 
 ## Contrato para UnderCodeEC
 
@@ -298,3 +297,27 @@ La migracion es aditiva. Para rollback de aplicacion se puede desplegar la versi
 anterior conservando las tablas nuevas. Eliminarlas implica perdida de historial y
 solo debe hacerse, despues de backup, con un script aprobado expresamente; no se
 incluye un `DROP` automatico.
+# Primera compra y respuesta del evento comercial
+
+`POST /api/advertising/leads/:id/events` con `eventType: CONTRACT_WON` admite
+omitir importe, ingreso recibido, moneda y referencia conjuntamente; si se
+informa cualquiera, deben enviarse importe, moneda y referencia completos. El
+importe debe ser positivo; el ingreso recibido, si se informa, puede ser cero
+cuando ese es el dato real. Se conservan los controles
+de transferencia y consentimiento existentes.
+
+La respuesta HTTP 201 conserva el objeto de conversión previo cuando se crea o
+repite la conversión del mismo lead. Si el contacto ya tiene `CONTRACT_WON` en
+otro lead, el lead solicitado se marca `WON` sin crear otro evento ni trabajo de
+sincronización y la respuesta es exactamente:
+
+```json
+{"leadId":"id-del-lead-solicitado","eventType":"CONTRACT_WON","conversionCreated":false,"reason":"FIRST_PURCHASE_ALREADY_RECORDED"}
+```
+
+Un reintento equivalente devuelve la misma forma sin actualizar el lead ni
+generar otra auditoría. Datos comerciales incompatibles con un cierre existente
+se rechazan como conflicto y requieren corrección explícita. En cualquier
+reintento `revenueReceived` omitido no modifica el ingreso; si se envía, debe
+coincidir con el ingreso persistido, distinguiendo cero de ausencia. La identidad de
+deduplicación es el `contactId`, no una identidad entre números distintos.

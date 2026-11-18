@@ -258,12 +258,18 @@ export class AdvertisingService {
     }
     if (
       dto.eventType === AdvertisingEventType.CONTRACT_WON &&
+      (dto.value != null ||
+        dto.revenueReceived != null ||
+        dto.currency != null ||
+        dto.commercialReference != null) &&
       (!dto.commercialReference?.trim() ||
         !Number.isFinite(dto.value) ||
-        dto.value === undefined ||
+        dto.value == null ||
         dto.value <= 0 ||
         !dto.currency ||
-        !/^[A-Z]{3}$/.test(dto.currency))
+        !/^[A-Z]{3}$/.test(dto.currency) ||
+        (dto.revenueReceived != null &&
+          (!Number.isFinite(dto.revenueReceived) || dto.revenueReceived < 0)))
     ) {
       throw new BadRequestException(
         'CONTRACT_WON requires a positive value, ISO currency and a commercial reference',
@@ -273,10 +279,10 @@ export class AdvertisingService {
       leadId,
       eventType: dto.eventType,
       occurredAt: dto.occurredAt ? new Date(dto.occurredAt) : new Date(),
-      value: dto.value,
-      revenueReceived: dto.revenueReceived,
-      currency: dto.currency,
-      commercialReference: dto.commercialReference,
+      value: dto.value ?? undefined,
+      revenueReceived: dto.revenueReceived ?? undefined,
+      currency: dto.currency ?? undefined,
+      commercialReference: dto.commercialReference ?? undefined,
       serviceRequested: dto.serviceRequested,
       source: 'CRM_OPERATOR',
       verified: true,
@@ -307,25 +313,53 @@ export class AdvertisingService {
     commercialReference?: string;
     serviceRequested?: string;
   }) {
-    let conversion: AdvertisingConversion;
+    let conversion:
+      | AdvertisingConversion
+      | {
+          leadId: string;
+          eventType: typeof AdvertisingEventType.CONTRACT_WON;
+          conversionCreated: false;
+          reason: 'FIRST_PURCHASE_ALREADY_RECORDED';
+        };
     try {
       conversion = await this.prisma.$transaction(async (tx) => {
         const initialLead = await tx.lead.findUnique({
           where: { id: params.leadId },
-          select: { id: true, contactId: true, stage: true },
+          select: {
+            id: true,
+            contactId: true,
+            stage: true,
+            contractedAmount: true,
+            revenueReceived: true,
+            commercialCurrency: true,
+            contractReference: true,
+          },
         });
         if (!initialLead) throw new NotFoundException('Lead not found');
-        if (params.eventType === AdvertisingEventType.LEAD_QUALIFIED) {
+        const lockedEvent =
+          params.eventType === AdvertisingEventType.LEAD_QUALIFIED ||
+          params.eventType === AdvertisingEventType.CONTRACT_WON ||
+          params.eventType === AdvertisingEventType.CONTRACT_LOST;
+        if (lockedEvent) {
           await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${initialLead.contactId}))`;
         }
-        const lead =
-          params.eventType === AdvertisingEventType.LEAD_QUALIFIED
-            ? await tx.lead.findUnique({
-                where: { id: params.leadId },
-                select: { id: true, contactId: true, stage: true },
-              })
-            : initialLead;
+        const lead = lockedEvent
+          ? await tx.lead.findUnique({
+              where: { id: params.leadId },
+              select: {
+                id: true,
+                contactId: true,
+                stage: true,
+                contractedAmount: true,
+                revenueReceived: true,
+                commercialCurrency: true,
+                contractReference: true,
+              },
+            })
+          : initialLead;
         if (!lead) throw new NotFoundException('Lead not found');
+        if (lead.contactId !== initialLead.contactId)
+          throw new ConflictException('Lead contact changed');
         if (
           params.eventType === AdvertisingEventType.LEAD_QUALIFIED &&
           lead.stage !== LeadStage.QUALIFIED
@@ -341,6 +375,105 @@ export class AdvertisingService {
           throw new ConflictException(
             'Opposite terminal lead stage already recorded',
           );
+        }
+        if (
+          params.eventType === AdvertisingEventType.CONTRACT_WON ||
+          params.eventType === AdvertisingEventType.CONTRACT_LOST
+        ) {
+          const transfer = await tx.transferPayment.findFirst({
+            where: {
+              leadId: lead.id,
+              status: {
+                in: [
+                  'INSTRUCTIONS_PREPARED',
+                  'INSTRUCTIONS_SENT',
+                  'PROOF_RECEIVED',
+                  'UNDER_REVIEW',
+                ],
+              },
+            },
+            select: { id: true },
+          });
+          if (transfer || lead.stage === LeadStage.PAYMENT_REVIEW)
+            throw new ConflictException(
+              'La transferencia debe aprobarse desde Inbox',
+            );
+        }
+        if (params.eventType === AdvertisingEventType.CONTRACT_WON) {
+          if (
+            params.value === undefined &&
+            (lead.contractedAmount != null ||
+              lead.commercialCurrency != null ||
+              lead.contractReference != null)
+          )
+            throw new ConflictException(
+              'Existing commercial data requires a complete valued WON event',
+            );
+          const prior = await tx.advertisingConversion.findFirst({
+            where: {
+              contactId: lead.contactId,
+              eventType: AdvertisingEventType.CONTRACT_WON,
+            },
+          });
+          if (prior && prior.leadId !== lead.id) {
+            if (lead.stage === LeadStage.WON) {
+              if (
+                (params.value === undefined) !==
+                  (lead.contractedAmount == null) ||
+                (params.value !== undefined &&
+                  Number(lead.contractedAmount) !== params.value) ||
+                (params.currency ?? null) !==
+                  (lead.commercialCurrency ?? null) ||
+                (params.commercialReference ?? null) !==
+                  (lead.contractReference ?? null) ||
+                (params.revenueReceived !== undefined &&
+                  (lead.revenueReceived == null ||
+                    Number(lead.revenueReceived) !== params.revenueReceived))
+              ) {
+                throw new ConflictException(
+                  'Recorded commercial milestone is immutable; explicit correction required',
+                );
+              }
+            } else {
+              const data: Prisma.LeadUpdateInput = {
+                stage: LeadStage.WON,
+                wonAt: params.occurredAt,
+                commercialOwnerId: params.verifiedByUserId,
+              };
+              if (params.value !== undefined)
+                data.contractedAmount = new Prisma.Decimal(params.value);
+              if (params.revenueReceived !== undefined)
+                data.revenueReceived = new Prisma.Decimal(
+                  params.revenueReceived,
+                );
+              if (params.currency !== undefined)
+                data.commercialCurrency = params.currency;
+              if (params.commercialReference !== undefined)
+                data.contractReference = params.commercialReference;
+              if (params.serviceRequested)
+                data.serviceRequested = params.serviceRequested;
+              await tx.lead.update({ where: { id: lead.id }, data });
+              await tx.auditLog.create({
+                data: {
+                  userId: params.verifiedByUserId,
+                  action: 'LEAD_STAGE_CHANGED',
+                  entity: 'leads',
+                  entityId: lead.id,
+                  changes: {
+                    before: { stage: lead.stage },
+                    after: { stage: LeadStage.WON },
+                    reason: 'FIRST_PURCHASE_ALREADY_RECORDED',
+                  },
+                },
+              });
+            }
+            return {
+              leadId: lead.id,
+              eventType: AdvertisingEventType.CONTRACT_WON,
+              conversionCreated: false as const,
+              reason: 'FIRST_PURCHASE_ALREADY_RECORDED' as const,
+            };
+          }
         }
 
         const attribution = await tx.advertisingAttribution.findFirst({
@@ -363,6 +496,16 @@ export class AdvertisingService {
         const existing = latest?.invalidatedAt ? null : latest;
         if (existing) {
           this.assertMatchingMilestone(existing, params);
+          if (
+            params.eventType === AdvertisingEventType.CONTRACT_WON &&
+            params.revenueReceived !== undefined &&
+            (lead.revenueReceived == null ||
+              Number(lead.revenueReceived) !== params.revenueReceived)
+          ) {
+            throw new ConflictException(
+              'Recorded commercial milestone is immutable; explicit correction required',
+            );
+          }
           return existing;
         }
         const data = {
@@ -412,7 +555,8 @@ export class AdvertisingService {
           leadUpdate.proposalValue = new Prisma.Decimal(params.value);
         }
         if (params.eventType === AdvertisingEventType.CONTRACT_WON) {
-          leadUpdate.contractedAmount = new Prisma.Decimal(params.value!);
+          if (params.value !== undefined)
+            leadUpdate.contractedAmount = new Prisma.Decimal(params.value);
           if (params.revenueReceived !== undefined) {
             leadUpdate.revenueReceived = new Prisma.Decimal(
               params.revenueReceived,
@@ -466,6 +610,7 @@ export class AdvertisingService {
       conversion = existing;
     }
 
+    if ('conversionCreated' in conversion) return conversion;
     await this.prepareSync(conversion.id);
     return conversion;
   }

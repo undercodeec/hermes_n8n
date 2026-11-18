@@ -229,33 +229,34 @@ export class PaymentsService {
     text: string;
   }): Promise<boolean> {
     if (!this.enabled()) return false;
-    const lead = await this.prisma.lead.findFirst({
-      where: {
-        conversationId: params.conversationId,
-        contactId: params.contactId,
-      },
-      orderBy: { createdAt: 'desc' },
-    });
-    if (!lead) return false;
-    const currency = lead.commercialCurrency || 'USD';
-    const account = await this.prisma.bankAccount.findFirst({
-      where: { isActive: true, currency },
-      orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
-    });
-    const amount = Number(lead.proposalValue || 0);
-    const priorApproved = await this.prisma.transferPayment.count({
-      where: { leadId: lead.id, status: TransferPaymentStatus.APPROVED },
-    });
-    const decision = this.policy.analyze(params.text, {
-      service: lead.serviceRequested || lead.productOfInterest,
-      amount,
-      leadOpen: REQUEST_STAGES.includes(lead.stage),
-      hasApprovedTransfer: priorApproved > 0,
-      hasActiveAccount: Boolean(account),
-    });
-    if (!decision.approved || !account) return false;
     const existing = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.conversationId}))`;
+      // All paths changing a lead/payment stage acquire this same contact lock.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${params.contactId}))`;
+      const lead = await tx.lead.findFirst({
+        where: {
+          conversationId: params.conversationId,
+          contactId: params.contactId,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      if (!lead) return null;
+      const currency = lead.commercialCurrency || 'USD';
+      const account = await tx.bankAccount.findFirst({
+        where: { isActive: true, currency },
+        orderBy: [{ priority: 'asc' }, { createdAt: 'asc' }],
+      });
+      const amount = Number(lead.proposalValue || 0);
+      const priorApproved = await tx.transferPayment.count({
+        where: { leadId: lead.id, status: TransferPaymentStatus.APPROVED },
+      });
+      const decision = this.policy.analyze(params.text, {
+        service: lead.serviceRequested || lead.productOfInterest,
+        amount,
+        leadOpen: REQUEST_STAGES.includes(lead.stage),
+        hasApprovedTransfer: priorApproved > 0,
+        hasActiveAccount: Boolean(account),
+      });
+      if (!decision.approved || !account) return null;
       const open = await tx.transferPayment.findFirst({
         where: {
           conversationId: params.conversationId,
@@ -301,6 +302,7 @@ export class PaymentsService {
       });
       return transfer;
     });
+    if (!existing) return false;
     const deliverySourceId =
       existing.status === TransferPaymentStatus.INSTRUCTIONS_PREPARED
         ? existing.sourceMessageId
@@ -467,7 +469,7 @@ export class PaymentsService {
     )
       return false;
     const transfer = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${message.conversationId}))`;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${message.contactId}))`;
       const payment = await tx.transferPayment.findFirst({
         where: {
           conversationId: message.conversationId,
@@ -477,6 +479,15 @@ export class PaymentsService {
         orderBy: { createdAt: 'desc' },
       });
       if (!payment) return null;
+      const lead = await tx.lead.findUnique({ where: { id: payment.leadId } });
+      if (
+        !lead ||
+        lead.contactId !== message.contactId ||
+        (INSTRUCTION_STATUSES.includes(payment.status)
+          ? lead.stage !== LeadStage.PAYMENT_PENDING
+          : lead.stage !== LeadStage.PAYMENT_REVIEW)
+      )
+        return null;
       const recorded = await tx.transferPaymentProofMessage.findUnique({
         where: { messageId },
       });
@@ -575,9 +586,14 @@ export class PaymentsService {
 
   async startReview(id: string, userId: string) {
     return this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${id}))`;
-      const transfer = await tx.transferPayment.findUnique({ where: { id } });
+      let transfer = await tx.transferPayment.findUnique({ where: { id } });
       if (!transfer) throw new NotFoundException('Transferencia no encontrada');
+      const contactId = transfer.contactId;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${contactId}))`;
+      transfer = await tx.transferPayment.findUnique({ where: { id } });
+      if (!transfer) throw new NotFoundException('Transferencia no encontrada');
+      if (transfer.contactId !== contactId)
+        throw new ConflictException('Contacto de transferencia cambió');
       if (!REVIEW_STATUSES.includes(transfer.status))
         throw new ConflictException('Transferencia no pendiente de revisión');
       const updated = await tx.transferPayment.update({
@@ -611,9 +627,14 @@ export class PaymentsService {
     if (!dto.contractReference?.trim())
       throw new BadRequestException('Referencia de contrato obligatoria');
     const updated = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${id}))`;
-      const payment = await tx.transferPayment.findUnique({ where: { id } });
+      let payment = await tx.transferPayment.findUnique({ where: { id } });
       if (!payment) throw new NotFoundException('Transferencia no encontrada');
+      const contactId = payment.contactId;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${contactId}))`;
+      payment = await tx.transferPayment.findUnique({ where: { id } });
+      if (!payment) throw new NotFoundException('Transferencia no encontrada');
+      if (payment.contactId !== contactId)
+        throw new ConflictException('Contacto de transferencia cambi??');
       if (
         payment.status !== dto.expectedStatus ||
         !REVIEW_STATUSES.includes(payment.status)
@@ -626,7 +647,11 @@ export class PaymentsService {
       if (!proof || proof.message.conversationId !== payment.conversationId)
         throw new BadRequestException('Comprobante ajeno a la conversación');
       const lead = await tx.lead.findUnique({ where: { id: payment.leadId } });
-      if (!lead || lead.stage !== LeadStage.PAYMENT_REVIEW)
+      if (
+        !lead ||
+        lead.contactId !== contactId ||
+        lead.stage !== LeadStage.PAYMENT_REVIEW
+      )
         throw new ConflictException('Etapa del lead cambió');
       const updatedLead = await tx.lead.update({
         where: { id: lead.id },
@@ -688,14 +713,26 @@ export class PaymentsService {
     if (!dto.reviewNote?.trim())
       throw new BadRequestException('Motivo obligatorio');
     const updated = await this.prisma.$transaction(async (tx) => {
-      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${id}))`;
-      const payment = await tx.transferPayment.findUnique({ where: { id } });
+      let payment = await tx.transferPayment.findUnique({ where: { id } });
       if (!payment) throw new NotFoundException('Transferencia no encontrada');
+      const contactId = payment.contactId;
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${contactId}))`;
+      payment = await tx.transferPayment.findUnique({ where: { id } });
+      if (!payment) throw new NotFoundException('Transferencia no encontrada');
+      if (payment.contactId !== contactId)
+        throw new ConflictException('Contacto de transferencia cambió');
       if (
         payment.status !== dto.expectedStatus ||
         !REVIEW_STATUSES.includes(payment.status)
       )
         throw new ConflictException('Estado de transferencia cambió');
+      const lead = await tx.lead.findUnique({ where: { id: payment.leadId } });
+      if (
+        !lead ||
+        lead.contactId !== contactId ||
+        lead.stage !== LeadStage.PAYMENT_REVIEW
+      )
+        throw new ConflictException('Etapa del lead cambió');
       const updated = await tx.transferPayment.update({
         where: { id },
         data: {

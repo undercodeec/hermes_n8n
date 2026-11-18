@@ -60,6 +60,8 @@ describe('PaymentsService', () => {
     transferPayment: {
       findFirst: jest.fn(),
       findUnique: jest.fn(),
+      count: jest.fn(),
+      create: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
     },
@@ -68,7 +70,8 @@ describe('PaymentsService', () => {
       findFirst: jest.fn(),
       upsert: jest.fn(),
     },
-    lead: { findUnique: jest.fn(), update: jest.fn() },
+    lead: { findFirst: jest.fn(), findUnique: jest.fn(), update: jest.fn() },
+    bankAccount: { findFirst: jest.fn() },
     task: {
       findFirst: jest.fn(),
       create: jest.fn(),
@@ -108,6 +111,11 @@ describe('PaymentsService', () => {
     jest.clearAllMocks();
     (prisma.message.findUnique as jest.Mock).mockResolvedValue(message);
     tx.transferPayment.findFirst.mockResolvedValue(transfer);
+    tx.lead.findUnique.mockResolvedValue({
+      id: 'lead-1',
+      contactId: 'contact-1',
+      stage: LeadStage.PAYMENT_PENDING,
+    });
     tx.transferPaymentProofMessage.findUnique.mockResolvedValue(null);
     (
       prisma.transferPaymentProofMessage.findUnique as jest.Mock
@@ -132,6 +140,70 @@ describe('PaymentsService', () => {
       data: { stage: LeadStage.PAYMENT_REVIEW },
     });
     expect(deliveries.prepareBatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('relee lead tras esperar el lock y no prepara una transferencia si ya quedó WON', async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    tx.$executeRaw.mockImplementationOnce(async () => {
+      entered();
+      await gate;
+    });
+    tx.bankAccount.findFirst.mockResolvedValue({ id: 'account' });
+    tx.transferPayment.count.mockResolvedValue(0);
+    const op = service.maybeSendInstructions({
+      conversationId: 'conversation-1',
+      contactId: 'contact-1',
+      sourceMessageId: 'source',
+      text: 'quiero transferir, dame los datos de transferencia',
+    });
+    await locked;
+    expect(tx.lead.findFirst).not.toHaveBeenCalled();
+    tx.lead.findFirst.mockResolvedValue({
+      id: 'lead-1',
+      contactId: 'contact-1',
+      stage: LeadStage.WON,
+      serviceRequested: 'service',
+      proposalValue: 100,
+    });
+    release();
+    await expect(op).resolves.toBe(false);
+    expect(tx.transferPayment.create).not.toHaveBeenCalled();
+    expect(tx.lead.update).not.toHaveBeenCalled();
+    expect(tx.$executeRaw.mock.calls[0][1]).toBe('contact-1');
+  });
+
+  it('relee el lead tras esperar el lock y no retrocede WON por un comprobante', async () => {
+    let release!: () => void;
+    let entered!: () => void;
+    const locked = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    tx.$executeRaw.mockImplementationOnce(async () => {
+      entered();
+      await gate;
+    });
+    const op = service.detectProof(message.id);
+    await locked;
+    tx.lead.findUnique.mockResolvedValue({
+      id: 'lead-1',
+      contactId: 'contact-1',
+      stage: LeadStage.WON,
+    });
+    release();
+    await expect(op).resolves.toBe(false);
+    expect(tx.transferPaymentProofMessage.upsert).not.toHaveBeenCalled();
+    expect(tx.lead.update).not.toHaveBeenCalled();
+    expect(tx.$executeRaw.mock.calls[0][1]).toBe('contact-1');
   });
 
   it('no duplica tarea ni auditoría al repetir el webhook', async () => {
@@ -458,6 +530,15 @@ describe('transfer approval with attributed CONTRACT_WON', () => {
         }),
       },
       advertisingConversion: {
+        findFirst: jest.fn(({ where }) =>
+          Promise.resolve(
+            [...conversions.values()].find(
+              (item) =>
+                item.contactId === where.contactId &&
+                item.eventType === where.eventType,
+            ) || null,
+          ),
+        ),
         findUnique: jest.fn(({ where }) => {
           const conversion = where.id
             ? [...conversions.values()].find((item) => item.id === where.id)

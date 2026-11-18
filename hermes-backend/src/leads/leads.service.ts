@@ -53,6 +53,7 @@ const ALLOWED_STAGE_TRANSITIONS: Partial<Record<LeadStage, LeadStage[]>> = {
     LeadStage.PROPOSAL,
     LeadStage.NEGOTIATION,
     LeadStage.PAYMENT_PENDING,
+    LeadStage.WON,
     LeadStage.LOST,
   ],
   [LeadStage.PROPOSAL]: [
@@ -89,38 +90,18 @@ export class LeadsService {
     return this.cls.isActive() ? this.cls.get<string>('traceId') : undefined;
   }
 
-  async recordConfirmedMeeting(tx: Prisma.TransactionClient, meeting: Meeting) {
-    if (meeting.status !== 'CONFIRMED' || !meeting.leadId) return null;
-    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${meeting.contactId}))`;
-    const lead = await tx.lead.findUnique({ where: { id: meeting.leadId } });
-    if (
-      !lead ||
-      lead.contactId !== meeting.contactId ||
-      !AUTOMATICALLY_PROMOTABLE_STAGES.includes(lead.stage)
-    )
-      return null;
-    const updated = await tx.lead.update({
-      where: { id: lead.id },
-      data: { stage: LeadStage.QUALIFIED },
-    });
-    await tx.auditLog.create({
-      data: {
-        action: 'MEETING_LEAD_QUALIFIED',
-        entity: 'leads',
-        entityId: lead.id,
-        changes: {
-          before: { stage: lead.stage },
-          after: { stage: LeadStage.QUALIFIED },
-          meetingId: meeting.id,
-        },
-      },
-    });
-    await this.recordQualifiedMilestone(tx, updated, 'CONFIRMED_MEETING');
-    const contact = await tx.contact.findUniqueOrThrow({
-      where: { id: meeting.contactId },
-      select: { name: true, waId: true },
-    });
-    return { lead: updated, contact, conversationId: meeting.conversationId };
+  recordConfirmedMeeting(
+    _tx: Prisma.TransactionClient,
+    _meeting: Meeting,
+  ): Promise<{
+    lead: Lead;
+    contact: { name: string | null; waId: string };
+    conversationId: string | null;
+  } | null> {
+    // Meeting confirmation does not authorize commercial qualification.
+    void _tx;
+    void _meeting;
+    return Promise.resolve(null);
   }
 
   publishMeetingQualification(
@@ -252,6 +233,14 @@ export class LeadsService {
     userId: string,
     source = 'CRM_STAGE_CHANGE',
   ): Promise<void> {
+    await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${lead.contactId}))`;
+    const prior = await tx.advertisingConversion.findFirst({
+      where: {
+        contactId: lead.contactId,
+        eventType: AdvertisingEventType.CONTRACT_WON,
+      },
+    });
+    if (prior && prior.leadId !== lead.id) return;
     const conversion = await tx.advertisingConversion.upsert({
       where: {
         leadId_eventType_qualificationCycle: {
@@ -276,7 +265,9 @@ export class LeadsService {
       update: {},
     });
     if (
-      Number(conversion.value) !== Number(lead.contractedAmount) ||
+      (conversion.value === null) !== (lead.contractedAmount === null) ||
+      (conversion.value !== null &&
+        Number(conversion.value) !== Number(lead.contractedAmount)) ||
       conversion.currency !== lead.commercialCurrency ||
       conversion.commercialReference !== lead.contractReference
     ) {
@@ -610,7 +601,12 @@ export class LeadsService {
           throw new ConflictException(
             'La validación del pago debe resolverse desde Inbox',
           );
-        if (dto.stage === LeadStage.WON && lead.stage !== LeadStage.WON) {
+        if (
+          dto.stage &&
+          dto.stage !== lead.stage &&
+          (dto.stage === LeadStage.WON ||
+            lead.stage === LeadStage.PAYMENT_PENDING)
+        ) {
           const transfer = await tx.transferPayment.findFirst({
             where: {
               leadId: id,
@@ -701,15 +697,21 @@ export class LeadsService {
         }
 
         if (dto.stage === LeadStage.WON && lead.stage !== LeadStage.WON) {
-          const amount = dto.contractedAmount ?? Number(lead.contractedAmount);
+          const amount =
+            dto.contractedAmount ??
+            (lead.contractedAmount == null
+              ? undefined
+              : Number(lead.contractedAmount));
           const currency = dto.commercialCurrency ?? lead.commercialCurrency;
           const reference = dto.contractReference ?? lead.contractReference;
           if (
-            !Number.isFinite(amount) ||
-            amount <= 0 ||
-            !currency ||
-            !/^[A-Z]{3}$/.test(currency) ||
-            !reference?.trim()
+            (amount != null || currency != null || reference != null) &&
+            (amount == null ||
+              !Number.isFinite(amount) ||
+              amount <= 0 ||
+              !currency ||
+              !/^[A-Z]{3}$/.test(currency) ||
+              !reference?.trim())
           ) {
             throw new BadRequestException(
               'WON requires amount, currency and contract reference',
@@ -1020,8 +1022,7 @@ export class LeadsService {
         return { lead: existing, contact, created, qualified: false };
       }
 
-      // Una intención de compra aislada no basta: la promoción automática exige
-      // una necesidad concreta, el servicio y al menos un dato para evaluación.
+      // Context may enrich the lead but qualification requires an operator.
       if (!this.hasQualificationContext(params.commercialProfile)) {
         const contact = await tx.contact.findUniqueOrThrow({
           where: { id: params.contactId },
@@ -1033,18 +1034,16 @@ export class LeadsService {
       const lead = await tx.lead.update({
         where: { id: existing.id },
         data: {
-          stage: LeadStage.QUALIFIED,
           conversationId: params.conversationId,
           productOfInterest:
             params.productOfInterest ?? existing.productOfInterest,
         },
       });
-      await this.recordQualifiedMilestone(tx, lead, 'CRM_QUALIFICATION_RULES');
       const contact = await tx.contact.findUniqueOrThrow({
         where: { id: params.contactId },
         select: { name: true, waId: true },
       });
-      return { lead, contact, created, qualified: true };
+      return { lead, contact, created, qualified: false };
     });
 
     if (result.created) {
