@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { NetworkUnavailable, SessionExpired, stagingConfig, StagingAuth, type Storage, type Transport } from '../src/stagingAuth';
+import { LocalClearFailed, NetworkUnavailable, RefreshUncertain, SessionExpired, stagingConfig, StagingAuth, type Storage, type Transport } from '../src/stagingAuth';
 
 function fakeStorage() {
   const values = new Map<string, string>();
@@ -62,6 +62,40 @@ test('expired refresh fails closed and cannot restore a screen', async () => {
   await assert.rejects(auth.validate(), SessionExpired);
 });
 
+test('offline session check never refreshes; 401 may refresh once but never accepts grace', async () => {
+  const { store } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'old');
+  let refreshes = 0;
+  let offline = false;
+  const auth = new StagingAuth(config, store, async (url) => {
+    if (url.endsWith('/refresh')) { refreshes++; return result({ accessToken: 'access', refreshToken: `r${refreshes}` }); }
+    if (offline) throw new Error('offline');
+    return result({}, 401);
+  });
+  await assert.rejects(auth.validate(), SessionExpired);
+  assert.equal(refreshes, 1); // restored token rejected; do not rotate again
+  offline = true;
+  await assert.rejects(auth.validate(), NetworkUnavailable);
+  assert.equal(refreshes, 1);
+});
+
+test('401 on an existing access JWT tries refresh once; rejected refresh has no grace period', async () => {
+  const { store, values } = fakeStorage();
+  let refreshes = 0;
+  const auth = new StagingAuth(config, store, async (url) => {
+    if (url.endsWith('/verify-code')) return result({ proof: 'p' });
+    if (url.endsWith('/crm-proof')) return result({ accessToken: 'a', refreshToken: 'old' });
+    if (url.endsWith('/refresh')) { refreshes++; return result({}, 401); }
+    return result({}, 401);
+  });
+  await auth.verifyCode('user@example.invalid', '12345678');
+  await assert.rejects(auth.validate(), SessionExpired);
+  assert.equal(refreshes, 1);
+  assert.equal(values.size, 0);
+  await assert.rejects(auth.validate(), SessionExpired);
+  assert.equal(refreshes, 1);
+});
+
 test('OTP error and throttling never expose server payload or grant access', async () => {
   const { store, values } = fakeStorage();
   const invalid = new StagingAuth(config, store, async () => result({ debug: 'do-not-show' }, 400));
@@ -71,7 +105,7 @@ test('OTP error and throttling never expose server payload or grant access', asy
   assert.equal(values.size, 0);
 });
 
-test('offline and logout delete local secret even when remote request fails', async () => {
+test('offline logout confirms local deletion but not remote revocation', async () => {
   const { store, values } = fakeStorage();
   const auth = new StagingAuth(config, store, async (url) => {
     if (url.endsWith('/crm-proof')) return result({ accessToken: 'a', refreshToken: 'r' });
@@ -80,8 +114,30 @@ test('offline and logout delete local secret even when remote request fails', as
   });
   await auth.verifyCode('user@example.invalid', '12345678');
   await assert.rejects(auth.validate(), NetworkUnavailable);
-  await assert.rejects(auth.logout(), NetworkUnavailable);
+  assert.equal(await auth.logout(), 'unconfirmed');
   assert.equal(values.size, 0);
+  await assert.rejects(auth.validate(), SessionExpired);
+});
+
+test('logout blocks immediately and removes protected secret while remote request is pending', async () => {
+  const { store, values } = fakeStorage();
+  let release!: (response: Response) => void;
+  let started!: () => void;
+  const sent = new Promise<void>((resolve) => { started = resolve; });
+  const auth = new StagingAuth(config, store, async (url) => {
+    if (url.endsWith('/verify-code')) return result({ proof: 'p' });
+    if (url.endsWith('/crm-proof')) return result({ accessToken: 'a', refreshToken: 'r' });
+    started();
+    return new Promise<Response>((resolve) => { release = resolve; });
+  });
+  await auth.verifyCode('user@example.invalid', '12345678');
+  const logout = auth.logout();
+  await assert.rejects(auth.validate(), SessionExpired);
+  await sent;
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(values.size, 0);
+  release(result({ success: true }));
+  assert.equal(await logout, 'revoked');
 });
 
 test('200 with inactive or missing status cannot unlock', async () => {
@@ -111,11 +167,84 @@ test('a late refresh cannot rewrite a secret after local revocation', async () =
 test('logout fails closed if protected storage cannot delete the secret', async () => {
   const { store, values } = fakeStorage();
   await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'saved');
-  store.deleteItemAsync = async () => { throw new Error('storage failure'); };
   const auth = new StagingAuth(config, store, async (url) => url.endsWith('/refresh')
     ? result({ accessToken: 'a', refreshToken: 'r' }) : result({ active: true }));
   await auth.validate();
-  await assert.rejects(auth.logout(), /storage failure/);
+  store.deleteItemAsync = async () => { throw new Error('storage failure'); };
+  await assert.rejects(auth.logout(), LocalClearFailed);
+  assert.equal(values.size, 1);
+  await assert.rejects(auth.validate(), SessionExpired);
+});
+
+test('expired access JWT on logout never rotates refresh or falsely confirms revocation', async () => {
+  const { store, values } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'old');
+  const paths: string[] = [];
+  const auth = new StagingAuth(config, store, async (url) => {
+    paths.push(url.split('/').at(-1)!);
+    if (url.endsWith('/refresh')) return result({ accessToken: 'short', refreshToken: 'rotated' });
+    if (url.endsWith('/session')) return result({ active: true });
+    return result({}, 401);
+  });
+  await auth.validate();
+  assert.equal(await auth.logout(), 'unconfirmed');
+  assert.deepEqual(paths, ['refresh', 'session', 'logout']);
+  assert.equal(values.size, 0);
+});
+
+test('lost refresh response clears old token, never retries and requires new OTP', async () => {
+  const { store, values } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'old');
+  let calls = 0;
+  const auth = new StagingAuth(config, store, async () => { calls++; throw new Error('lost response'); });
+  await assert.rejects(auth.validate(), RefreshUncertain);
+  await assert.rejects(auth.validate(), SessionExpired);
+  assert.equal(calls, 1);
+  assert.equal(values.size, 0);
+});
+
+test('interrupted refresh persists pending marker and new process never resends old token', async () => {
+  const { store, values } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'old');
+  let started!: () => void;
+  const sent = new Promise<void>((resolve) => { started = resolve; });
+  const first = new StagingAuth(config, store, async () => { started(); return new Promise<Response>(() => {}); });
+  void first.validate();
+  await sent;
+  assert.equal(values.size, 2);
+  let calls = 0;
+  const restarted = new StagingAuth(config, store, async () => { calls++; return result({}); });
+  await assert.rejects(restarted.validate(), RefreshUncertain);
+  assert.equal(calls, 0);
+  assert.equal(values.size, 0);
+});
+
+test('refresh storage write failure cannot expose access or replay old refresh', async () => {
+  const { store, values } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'old');
+  let calls = 0;
+  const original = store.setItemAsync;
+  store.setItemAsync = async (key, value) => {
+    if (value === 'rotated') throw new Error('storage failure');
+    await original(key, value);
+  };
+  const auth = new StagingAuth(config, store, async () => { calls++; return result({ accessToken: 'new', refreshToken: 'rotated' }); });
+  await assert.rejects(auth.validate(), RefreshUncertain);
+  await assert.rejects(auth.validate(), SessionExpired);
+  assert.equal(calls, 1);
+  assert.equal(values.size, 0);
+});
+
+test('unconfirmed local deletion keeps session blocked even after app tries validation', async () => {
+  const { store, values } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'old');
+  store.deleteItemAsync = async () => {};
+  let calls = 0;
+  const auth = new StagingAuth(config, store, async () => { calls++; return result({}); });
+  await assert.rejects(auth.logout(), LocalClearFailed);
+  await assert.rejects(auth.validate(), SessionExpired);
+  await assert.rejects(auth.verifyCode('user@example.invalid', '12345678'), LocalClearFailed);
+  assert.equal(calls, 0);
   assert.equal(values.size, 1);
 });
 

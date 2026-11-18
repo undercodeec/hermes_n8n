@@ -3,6 +3,7 @@ export type Storage = { getItemAsync(key: string): Promise<string | null>; setIt
 export type Transport = (url: string, init: RequestInit) => Promise<Response>;
 export type AuthConfig = { adminBase: string; hermesBase: string };
 const KEY = 'hermes.crm.mobile.refresh.v1';
+const PENDING_KEY = 'hermes.crm.mobile.refresh.pending.v1';
 
 function baseUrl(value: string): string {
   const parsed = new URL(value);
@@ -19,6 +20,8 @@ export function stagingConfig(adminBase?: string, hermesBase?: string): AuthConf
 
 export class SessionExpired extends Error { constructor() { super('La sesión terminó. Solicite un nuevo código.'); } }
 export class NetworkUnavailable extends Error { constructor() { super('Sin conexión. La información permanece bloqueada hasta validar la sesión.'); } }
+export class RefreshUncertain extends Error { constructor() { super('No se pudo confirmar la renovación. Solicite un nuevo código de acceso.'); } }
+export class LocalClearFailed extends Error { constructor() { super('No se confirmó el borrado local. La pantalla permanece bloqueada; reintente el borrado antes de continuar.'); } }
 
 type Tokens = { accessToken: string; refreshToken: string };
 export class StagingAuth {
@@ -26,6 +29,7 @@ export class StagingAuth {
   private refreshPending: Promise<void> | null = null;
   private lastActivitySent = 0;
   private generation = 0;
+  private blocked = false;
   private storageQueue: Promise<unknown> = Promise.resolve();
   constructor(private readonly config: AuthConfig, private readonly storage: Storage, private readonly transport: Transport = fetch) {}
 
@@ -54,12 +58,14 @@ export class StagingAuth {
   async verifyCode(email: string, code: string) {
     const generation = this.generation;
     if (!/^\d{8}$/.test(code)) throw new Error('Ingrese los ocho dígitos del código.');
+    if (this.blocked && (await this.storage.getItemAsync(KEY) !== null || await this.storage.getItemAsync(PENDING_KEY) !== null)) throw new LocalClearFailed();
     const verified = await this.post(this.config.adminBase, '/api/crm/auth/mobile/verify-code', { email: email.trim(), code });
     if (generation !== this.generation) throw new SessionExpired();
     if (typeof verified.proof !== 'string') throw new Error('Respuesta de autenticación no válida.');
     const session = await this.post(this.config.hermesBase, '/api/auth/mobile/crm-proof', { proof: verified.proof });
     if (generation !== this.generation) throw new SessionExpired();
     await this.save(session, generation);
+    this.blocked = false;
   }
 
   private async save(result: Record<string, unknown>, generation: number) {
@@ -78,25 +84,55 @@ export class StagingAuth {
   private async refresh() {
     if (!this.refreshPending) this.refreshPending = (async () => {
       const generation = this.generation;
+      if (this.blocked) throw new SessionExpired();
+      // A prior attempt may have reached the server and rotated the token.
+      // Never replay it, including after a process restart.
+      if (await this.storage.getItemAsync(PENDING_KEY)) {
+        await this.clear();
+        throw new RefreshUncertain();
+      }
       const refreshToken = await this.storage.getItemAsync(KEY);
       if (generation !== this.generation) throw new SessionExpired();
       if (!refreshToken) throw new SessionExpired();
-      const result = await this.post(this.config.hermesBase, '/api/auth/mobile/refresh', { refreshToken });
-      await this.save(result, generation);
+      const mark = this.storageQueue.then(async () => {
+        if (generation !== this.generation) throw new SessionExpired();
+        await this.storage.setItemAsync(PENDING_KEY, '1');
+      });
+      this.storageQueue = mark.catch(() => undefined);
+      await mark;
+      if (generation !== this.generation) throw new SessionExpired();
+      try {
+        const result = await this.post(this.config.hermesBase, '/api/auth/mobile/refresh', { refreshToken });
+        await this.save(result, generation);
+        const done = this.storageQueue.then(async () => {
+          if (generation !== this.generation) throw new SessionExpired();
+          await this.storage.deleteItemAsync(PENDING_KEY);
+          if (await this.storage.getItemAsync(PENDING_KEY) !== null) throw new LocalClearFailed();
+        });
+        this.storageQueue = done.catch(() => undefined);
+        await done;
+      } catch (failure) {
+        if (generation !== this.generation) throw new SessionExpired();
+        await this.clear();
+        throw failure instanceof SessionExpired ? failure : new RefreshUncertain();
+      }
     })().finally(() => { this.refreshPending = null; });
     return this.refreshPending;
   }
 
   async validate() {
+    if (this.blocked) throw new SessionExpired();
+    if (this.refreshPending) await this.refreshPending;
     const generation = this.generation;
-    if (!this.accessToken) await this.refresh();
+    const hadAccess = !!this.accessToken;
+    if (!hadAccess) await this.refresh();
     if (generation !== this.generation) throw new SessionExpired();
     try {
       const status = await this.get(this.config.hermesBase, '/api/auth/mobile/session', this.accessToken!);
       if (generation !== this.generation) throw new SessionExpired();
       if (status.active !== true) throw new SessionExpired();
     } catch (error) {
-      if (!(error instanceof SessionExpired)) throw error;
+      if (!(error instanceof SessionExpired) || !hadAccess) throw error;
       if (generation !== this.generation) throw error;
       // An access token may expire without ending the session. The server validates
       // the inactivity window before allowing refresh; refresh never extends it.
@@ -119,19 +155,29 @@ export class StagingAuth {
   }
 
   async logout() {
-    try {
-      // A short access JWT may have elapsed; refreshing here does NOT renew idle time.
-      await this.validate();
-      await this.post(this.config.hermesBase, '/api/auth/mobile/logout', {}, this.accessToken!);
-    } finally { await this.clear(); }
+    const token = this.accessToken;
+    this.blocked = true;
+    // Lock synchronously, never refresh just to log out. An expired JWT or
+    // offline request cannot prove server-side revocation with this contract.
+    this.generation++;
+    this.accessToken = null;
+    this.lastActivitySent = 0;
+    const remote = token ? this.post(this.config.hermesBase, '/api/auth/mobile/logout', {}, token).then(() => true, () => false) : Promise.resolve(false);
+    await this.clear();
+    return await remote ? 'revoked' as const : 'unconfirmed' as const;
   }
 
   async clear() {
     this.generation++;
     this.accessToken = null;
     this.lastActivitySent = 0;
-    const remove = this.storageQueue.then(() => this.storage.deleteItemAsync(KEY));
+    const remove = this.storageQueue.then(async () => {
+      await this.storage.deleteItemAsync(KEY);
+      if (await this.storage.getItemAsync(KEY) !== null) throw new LocalClearFailed();
+      await this.storage.deleteItemAsync(PENDING_KEY);
+      if (await this.storage.getItemAsync(PENDING_KEY) !== null) throw new LocalClearFailed();
+    });
     this.storageQueue = remove.catch(() => undefined);
-    await remove;
+    try { await remove; } catch { this.blocked = true; throw new LocalClearFailed(); }
   }
 }

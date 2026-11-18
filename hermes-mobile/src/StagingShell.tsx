@@ -3,7 +3,7 @@ import { AppState, Image, Pressable, SafeAreaView, ScrollView, StyleSheet, Text,
 import * as SecureStore from 'expo-secure-store';
 import * as ScreenCapture from 'expo-screen-capture';
 import { LinearGradient } from 'expo-linear-gradient';
-import { NetworkUnavailable, SessionExpired, stagingConfig, StagingAuth } from './stagingAuth';
+import { LocalClearFailed, NetworkUnavailable, RefreshUncertain, SessionExpired, stagingConfig, StagingAuth } from './stagingAuth';
 
 type Phase = 'locked' | 'request' | 'verify' | 'ready';
 export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, activity: () => void) => React.ReactNode }) {
@@ -12,6 +12,8 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
   const [code, setCode] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [revocationNotice, setRevocationNotice] = useState(false);
+  const [clearFailed, setClearFailed] = useState(false);
   const lastInteraction = useRef(Date.now());
   const foreground = useRef(true);
   const pending = useRef(false);
@@ -25,6 +27,7 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
 
   const unlock = useCallback(async () => {
     const current = ++revision.current;
+    if (clearFailed || authenticating.current) return;
     if (!auth) { setPhase('request'); setError('Configure las URL HTTPS del entorno de prueba antes de iniciar sesión.'); return; }
     setPhase('locked');
     try {
@@ -33,11 +36,14 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
       if (foreground.current && current === revision.current) { lastInteraction.current = Date.now(); setError(''); setPhase('ready'); }
     }
     catch (failure) {
+      if (failure instanceof LocalClearFailed) { setClearFailed(true); setPhase('locked'); setError(failure.message); return; }
       if (current !== revision.current) return;
-      if (failure instanceof SessionExpired) { await auth.clear(); if (current === revision.current) setPhase('request'); }
-      else { setPhase('locked'); setError(failure instanceof NetworkUnavailable ? failure.message : 'No fue posible proteger la pantalla o verificar la sesión.'); }
+      if (failure instanceof SessionExpired || failure instanceof RefreshUncertain) {
+        try { await auth.clear(); if (current === revision.current) { setPhase('request'); setError(failure instanceof RefreshUncertain ? failure.message : ''); } }
+        catch { setClearFailed(true); setPhase('locked'); setError(new LocalClearFailed().message); }
+      } else { setPhase('locked'); setError(failure instanceof NetworkUnavailable || failure instanceof LocalClearFailed ? failure.message : 'No fue posible proteger la pantalla o verificar la sesión.'); }
     }
-  }, [auth]);
+  }, [auth, clearFailed]);
 
   useEffect(() => {
     void unlock();
@@ -47,7 +53,7 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
       if (!authenticating.current) void unlock();
     });
     const interval = setInterval(() => {
-      if (Date.now() - lastInteraction.current >= 30 * 60_000) { revision.current++; setPhase((current) => current === 'ready' ? 'locked' : current); }
+      if (Date.now() - lastInteraction.current >= 30 * 60_000 && !authenticating.current) { revision.current++; setPhase((current) => current === 'ready' ? 'locked' : current); }
     }, 5_000);
     return () => { subscription.remove(); clearInterval(interval); };
   }, [unlock]);
@@ -59,8 +65,12 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
     setBusy(true); setError('');
     try { await operation(); }
     catch (failure) {
+      if (failure instanceof LocalClearFailed) { setClearFailed(true); setPhase('locked'); setError(failure.message); return; }
       if (current !== revision.current) return;
-      if (failure instanceof SessionExpired) { await auth?.clear(); setPhase('request'); }
+      if (failure instanceof SessionExpired || failure instanceof RefreshUncertain) {
+        try { await auth?.clear(); setPhase('request'); }
+        catch { setClearFailed(true); setPhase('locked'); setError(new LocalClearFailed().message); return; }
+      }
       setError(failure instanceof Error ? failure.message : 'Operación no disponible.');
     } finally { authenticating.current = false; setBusy(false); }
   };
@@ -71,20 +81,43 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
     pending.current = true;
     void auth.activity().then(() => { if (current === revision.current && foreground.current) lastInteraction.current = Date.now(); })
       .catch(async (failure) => {
+        if (failure instanceof LocalClearFailed) { setClearFailed(true); setPhase('locked'); setError(failure.message); return; }
         if (current !== revision.current) return;
         revision.current++;
         setPhase('locked');
         const locked = revision.current;
-        if (failure instanceof SessionExpired) { await auth.clear(); if (locked === revision.current) setPhase('request'); }
-        if (locked === revision.current) setError(failure instanceof NetworkUnavailable ? failure.message : 'La sesión requiere una nueva validación.');
+        if (failure instanceof SessionExpired || failure instanceof RefreshUncertain) {
+          try { await auth.clear(); if (locked === revision.current) setPhase('request'); }
+          catch { setClearFailed(true); setPhase('locked'); setError(new LocalClearFailed().message); return; }
+        }
+        if (locked === revision.current) setError(failure instanceof NetworkUnavailable || failure instanceof RefreshUncertain ? failure.message : 'La sesión requiere una nueva validación.');
       }).finally(() => { pending.current = false; });
   };
 
-  if (phase === 'ready') return <View style={styles.full}>{renderDemo(() => {
+  const logout = () => {
+    if (authenticating.current) return;
+    authenticating.current = true;
     revision.current++;
     setPhase('locked');
-    void action(async () => { await auth?.logout(); setPhase('request'); setCode(''); });
-  }, activity)}</View>;
+    setBusy(true);
+    setError('');
+    void (async () => {
+      try {
+        const result = await auth?.logout();
+        setRevocationNotice(result !== 'revoked');
+        setCode('');
+        setPhase('request');
+      } catch {
+        // Never discard a protected-storage failure because AppState changed revision.
+        setClearFailed(true);
+        setRevocationNotice(true);
+        setError(new LocalClearFailed().message);
+        setPhase('locked');
+      } finally { authenticating.current = false; setBusy(false); }
+    })();
+  };
+
+  if (phase === 'ready') return <View style={styles.full}>{renderDemo(logout, activity)}</View>;
   return <SafeAreaView style={styles.full}>
     <LinearGradient colors={['#F8FAFF', '#F0F4FC', '#F8FAFF']} style={styles.full}>
       <ScrollView contentContainerStyle={styles.center} keyboardShouldPersistTaps="handled">
@@ -93,8 +126,9 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
           <Text style={styles.eyebrow}>ENTORNO DE PRUEBA · ACCESO MÓVIL</Text>
           <Text style={styles.title}>Acceso de gerencia</Text>
           <Text style={styles.disclaimer}>La autenticación se verifica en el entorno configurado. Los chats que se muestran después son ficticios: no se consultan ni envían mensajes reales.</Text>
+          {revocationNotice ? <Text accessibilityRole="alert" style={styles.error}>Se cerró el acceso en este dispositivo, pero no se confirmó la revocación remota. Revoca la sesión móvil desde la gestión de sesiones en la web; no compartas ni transfieras el token.</Text> : null}
           {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}
-          {phase === 'locked' ? <Pressable accessibilityRole="button" style={styles.button} disabled={busy} onPress={() => void unlock()}><Text style={styles.buttonText}>Comprobar sesión</Text></Pressable> : <>
+          {phase === 'locked' ? <Pressable accessibilityRole="button" style={styles.button} disabled={busy} onPress={() => { if (clearFailed) { void auth?.clear().then(() => { setClearFailed(false); setError(''); setPhase('request'); }, () => setError(new LocalClearFailed().message)); } else void unlock(); }}><Text style={styles.buttonText}>{clearFailed ? 'Reintentar borrado local' : 'Comprobar sesión'}</Text></Pressable> : <>
             <Text style={styles.label}>{phase === 'request' ? 'Correo de acceso' : 'Código recibido por correo'}</Text>
             {phase === 'request' ? <TextInput accessibilityLabel="Correo autorizado" autoCapitalize="none" autoComplete="email" keyboardType="email-address" editable={!busy} value={email} onChangeText={setEmail} style={styles.input} />
               : <TextInput accessibilityLabel="Código de ocho dígitos" keyboardType="number-pad" autoComplete="one-time-code" maxLength={8} editable={!busy} value={code} onChangeText={setCode} style={styles.input} />}
@@ -105,7 +139,7 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
                 const current = revision.current;
                 await auth.verifyCode(email, code);
                 setCode('');
-                if (foreground.current && current === revision.current) { lastInteraction.current = Date.now(); setPhase('ready'); }
+                if (foreground.current && current === revision.current) { lastInteraction.current = Date.now(); setRevocationNotice(false); setPhase('ready'); }
                 else { setPhase('locked'); if (foreground.current) void unlock(); }
               }
             })}><Text style={styles.buttonText}>{phase === 'request' ? 'Solicitar código' : 'Ingresar al CRM de prueba'}</Text></Pressable>
