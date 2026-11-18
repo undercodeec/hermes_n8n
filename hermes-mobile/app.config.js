@@ -21,7 +21,7 @@ const expo = {
 
 // The demo is the default. Never infer staging from a stray .env file.
 const variant = process.env.HERMES_MOBILE_BUILD_VARIANT || 'demo';
-if (!['demo', 'staging'].includes(variant)) throw new Error('Unknown mobile build variant.');
+if (!['demo', 'staging', 'read-only-public'].includes(variant)) throw new Error('Unknown mobile build variant.');
 
 function testEndpoint(value) {
   if (!value) throw new Error('Both isolated HTTPS test endpoints are required for a staging build.');
@@ -38,6 +38,20 @@ if (variant === 'staging') {
   }
   testEndpoint(process.env.EXPO_PUBLIC_CRM_AUTH_BASE_URL);
   testEndpoint(process.env.EXPO_PUBLIC_HERMES_API_BASE_URL);
+  if (process.env.EXPO_PUBLIC_MOBILE_INBOX_MODE || process.env.HERMES_MOBILE_PUBLIC_READ_ONLY_CONFIRMED ||
+      ['admincrm.undercodeec.com', 'api.undercodeec.com'].some((host) =>
+        [process.env.EXPO_PUBLIC_CRM_AUTH_BASE_URL, process.env.EXPO_PUBLIC_HERMES_API_BASE_URL]
+          .some((endpoint) => new URL(endpoint).hostname === host))) {
+    throw new Error('The isolated auth + synthetic demo build cannot target public APIs or real Inbox.');
+  }
+} else if (variant === 'read-only-public') {
+  if (process.env.HERMES_MOBILE_PUBLIC_READ_ONLY_CONFIRMED !== 'yes' ||
+      process.env.EXPO_PUBLIC_MOBILE_AUTH_MODE !== 'staging' ||
+      process.env.EXPO_PUBLIC_MOBILE_INBOX_MODE !== 'read-only' ||
+      process.env.EXPO_PUBLIC_CRM_AUTH_BASE_URL !== 'https://admincrm.undercodeec.com' ||
+      process.env.EXPO_PUBLIC_HERMES_API_BASE_URL !== 'https://api.undercodeec.com') {
+    throw new Error('Public API read-only test requires explicit, exact HTTPS CRM and Hermes URLs and both opt-ins.');
+  }
 } else if (process.env.EXPO_PUBLIC_MOBILE_AUTH_MODE || process.env.EXPO_PUBLIC_MOBILE_INBOX_MODE ||
            process.env.EXPO_PUBLIC_CRM_AUTH_BASE_URL || process.env.EXPO_PUBLIC_HERMES_API_BASE_URL) {
   throw new Error('Demo build must not contain staging configuration.');
@@ -45,10 +59,12 @@ if (variant === 'staging') {
 
 module.exports = {
   ...expo,
-  name: variant === 'demo' ? 'Hermes CRM Demo - Test' : 'Hermes CRM Staging - Test',
+  name: variant === 'demo' ? 'Hermes CRM Demo - Test' :
+    variant === 'staging' ? 'Hermes CRM Staging - Test' : 'Hermes CRM Read-Only - Test',
   android: {
     ...expo.android,
-    package: variant === 'demo' ? 'com.undercodeec.hermescrmdemo.test' : 'com.undercodeec.hermescrmstaging.test',
+    package: variant === 'demo' ? 'com.undercodeec.hermescrmdemo.test' :
+      variant === 'staging' ? 'com.undercodeec.hermescrmstaging.test' : 'com.undercodeec.hermescrmreadonly.publicapitest',
     allowBackup: false,
   },
 };

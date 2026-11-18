@@ -57,7 +57,7 @@ export function MobileInboxScreen({ authorizedGet, onLogout, onActivity, onAcces
     <View style={crm.header}>
       <View style={crm.brandRow}>
         <Image source={require('../assets/hermes-crm-logo.png')} style={crm.logo} resizeMode="contain" accessibilityLabel="Hermes CRM" />
-        <Text style={styles.environment}>DATOS DEL ENTORNO DE PRUEBA</Text>
+        <Text style={styles.environment}>INBOX REMOTO · SOLO LECTURA</Text>
       </View>
       <View style={crm.titleRow}>
         <Text style={crm.title}>{state.selected ? 'Conversación' : 'Chats'}</Text>

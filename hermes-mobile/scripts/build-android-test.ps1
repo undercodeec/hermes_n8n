@@ -1,10 +1,11 @@
-# Local-only, standalone release APK. No EAS account, cloud upload, phone install or production endpoint.
+# Local-only, standalone release APK. No EAS account, cloud upload, phone install or live API requests.
 param(
   [Parameter(Mandatory = $true)][ValidatePattern('^[0-9a-fA-F]{40}$')][string]$ExpectedMobileCommit,
-  [ValidateSet('demo', 'staging')][string]$Variant = 'demo',
+  [ValidateSet('demo', 'staging', 'read-only-public')][string]$Variant = 'demo',
   [string]$CrmAuthUrl,
   [string]$HermesApiUrl,
-  [switch]$ConfirmIsolatedTestEndpoints
+  [switch]$ConfirmIsolatedTestEndpoints,
+  [switch]$ConfirmPublicReadOnlyNoInstall
 )
 
 $ErrorActionPreference = 'Stop'
@@ -15,6 +16,7 @@ if ($mobile.Length -gt 65) {
 }
 $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { Join-Path $env:LOCALAPPDATA 'Android\Sdk' }
 $envNames = @('EXPO_NO_DOTENV', 'HERMES_MOBILE_BUILD_VARIANT', 'HERMES_MOBILE_ISOLATED_TEST_CONFIRMED',
+  'HERMES_MOBILE_PUBLIC_READ_ONLY_CONFIRMED',
   'EXPO_PUBLIC_MOBILE_AUTH_MODE', 'EXPO_PUBLIC_MOBILE_INBOX_MODE', 'EXPO_PUBLIC_CRM_AUTH_BASE_URL',
   'EXPO_PUBLIC_HERMES_API_BASE_URL', 'HERMES_APK_KEY_PASSWORD', 'HERMES_TEST_KEYSTORE', 'ANDROID_HOME', 'ANDROID_SDK_ROOT')
 $envNames += @(Get-ChildItem Env:EXPO_PUBLIC_* -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Name)
@@ -45,11 +47,16 @@ try {
     throw 'Android SDK platforms and build-tools are required locally.'
   }
   if ($Variant -eq 'staging') {
-    if (!$ConfirmIsolatedTestEndpoints -or !$CrmAuthUrl -or !$HermesApiUrl) {
+    if (!$ConfirmIsolatedTestEndpoints -or $ConfirmPublicReadOnlyNoInstall -or !$CrmAuthUrl -or !$HermesApiUrl) {
       throw 'Staging requires both explicit HTTPS URLs and ConfirmIsolatedTestEndpoints; no production URLs.'
     }
-  } elseif ($CrmAuthUrl -or $HermesApiUrl -or $ConfirmIsolatedTestEndpoints) {
-    throw 'Demo builds cannot accept staging endpoints.'
+  } elseif ($Variant -eq 'read-only-public') {
+    if (!$ConfirmPublicReadOnlyNoInstall -or $ConfirmIsolatedTestEndpoints -or
+        $CrmAuthUrl -cne 'https://admincrm.undercodeec.com' -or $HermesApiUrl -cne 'https://api.undercodeec.com') {
+      throw 'Read-only public API build requires exact HTTPS CRM/Hermes origins and ConfirmPublicReadOnlyNoInstall; NEVER install while idleRemainingMs is absent.'
+    }
+  } elseif ($CrmAuthUrl -or $HermesApiUrl -or $ConfirmIsolatedTestEndpoints -or $ConfirmPublicReadOnlyNoInstall) {
+    throw 'Demo builds cannot accept integration endpoints.'
   }
 
   # Expo inlines all EXPO_PUBLIC_* variables. Ignore .env files and remove inherited public vars.
@@ -63,16 +70,31 @@ try {
     $env:EXPO_PUBLIC_MOBILE_AUTH_MODE = 'staging'
     $env:EXPO_PUBLIC_CRM_AUTH_BASE_URL = $CrmAuthUrl
     $env:EXPO_PUBLIC_HERMES_API_BASE_URL = $HermesApiUrl
-    # Read-only Inbox is intentionally not enabled: this APK is an auth + synthetic demo test.
+    # This variant only authenticates and then shows synthetic demo data.
+  } elseif ($Variant -eq 'read-only-public') {
+    $env:HERMES_MOBILE_PUBLIC_READ_ONLY_CONFIRMED = 'yes'
+    $env:EXPO_PUBLIC_MOBILE_AUTH_MODE = 'staging'
+    $env:EXPO_PUBLIC_MOBILE_INBOX_MODE = 'read-only'
+    $env:EXPO_PUBLIC_CRM_AUTH_BASE_URL = $CrmAuthUrl
+    $env:EXPO_PUBLIC_HERMES_API_BASE_URL = $HermesApiUrl
   }
 
   Push-Location $mobile
   try {
     Invoke-Checked 'npm ci' { npm ci --no-audit --no-fund }
     Invoke-Checked 'checks' { npm run check }
+    # Only the read-only variant selects its own Metro entrypoint. Keep the
+    # modified package main until Gradle finishes bundling; restore on any exit.
+    $packageFile = Join-Path $mobile 'package.json'
+    $packageBeforeBuild = [IO.File]::ReadAllBytes($packageFile)
+    if ($Variant -eq 'read-only-public') {
+      $packageText = [IO.File]::ReadAllText($packageFile)
+      if ([regex]::Matches($packageText, '"main": "index\.ts"').Count -ne 1) { throw 'Unexpected Expo entrypoint; refusing mixed demo/read-only bundle.' }
+      [IO.File]::WriteAllText($packageFile, $packageText.Replace('"main": "index.ts"', '"main": "index.readonly.ts"'))
+    }
+    try {
     # Expo rewrites package.json development commands during prebuild; do not let
     # generated commands become an uncommitted source change.
-    $packageFile = Join-Path $mobile 'package.json'
     $packageBeforePrebuild = [IO.File]::ReadAllBytes($packageFile)
     try { Invoke-Checked 'Expo prebuild' { npx --no-install expo prebuild --platform android --no-install --clean } }
     finally { [IO.File]::WriteAllBytes($packageFile, $packageBeforePrebuild) }
@@ -108,6 +130,17 @@ try {
 
     $apk = Join-Path $mobile 'android\app\build\outputs\apk\release\app-release.apk'
     if (!(Test-Path $apk)) { throw 'Gradle did not create a release APK.' }
+    if ($Variant -eq 'read-only-public') {
+      $bundle = Join-Path $mobile 'android\app\build\generated\assets\react\release\index.android.bundle'
+      if (!(Test-Path $bundle)) { throw 'Missing read-only Metro bundle.' }
+      $js = [IO.File]::ReadAllText($bundle)
+      if (!$js.Contains('/api/mobile/inbox') -or !$js.Contains('https://api.undercodeec.com') -or
+          !$js.Contains('https://admincrm.undercodeec.com') -or
+          $js.Contains('agente@example.invalid') -or $js.Contains('Respuesta de prueba') -or
+          $js.Contains('DATOS FICTICIOS')) {
+        throw 'Read-only bundle missing expected API/Inbox code or includes the demo composer. Refusing APK.'
+      }
+    }
     $signer = Join-Path $sdk 'build-tools\36.0.0\apksigner.bat'
     if (!(Test-Path $signer)) { throw 'apksigner 36.0.0 is required for verification.' }
     Invoke-Checked 'APK signature verification' { & $signer verify --verbose $apk }
@@ -119,6 +152,8 @@ try {
     Write-Host "Source HEAD: $head; includes latest mobile safety commit: $commit; variant: $Variant"
     Write-Host "SHA256: $hash"
     Write-Host 'Temporary test key only: NOT a distribution/release signing identity. Do not install or share without authorization.'
+    if ($Variant -eq 'read-only-public') { Write-Host 'Public API is NOT idleRemainingMs-compatible: do not install or launch this APK until backend release and QA authorization are verified.' }
+    } finally { [IO.File]::WriteAllBytes($packageFile, $packageBeforeBuild) }
   } finally { Pop-Location }
 } finally {
   foreach ($name in $envNames) { [Environment]::SetEnvironmentVariable($name, $original[$name], 'Process') }
