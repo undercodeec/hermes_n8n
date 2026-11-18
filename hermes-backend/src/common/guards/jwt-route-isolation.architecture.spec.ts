@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/unbound-method -- Methods are inspected as metadata targets, never invoked. */
 import 'reflect-metadata';
 import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { readdirSync, readFileSync } from 'fs';

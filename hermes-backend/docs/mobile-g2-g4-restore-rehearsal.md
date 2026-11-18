@@ -1,5 +1,9 @@
 # G2/G4: ensayo aislado de respaldo y restauración
 
+## Deuda técnica aceptada por el propietario — 18/11/2026
+
+El propietario decidió posponer la restauración aislada de backups **productivos** hasta ampliar la capacidad del VPS. Esta decisión permite continuar las validaciones no productivas, pero no constituye evidencia de que exista un backup recuperable ni acredita RPO/RTO. La deuda sigue abierta: al disponer de capacidad, identificar respaldos de PostgreSQL y MariaDB, espacio y destino aislado; verificar integridad y restauración bajo protocolo y registrar tiempos y resultados sin datos privados. No confundir rollback de código con recuperación de datos. Cualquier migración o despliegue productivo antes de cerrar esta deuda requiere presentar expresamente el riesgo residual, alternativas, impacto y una decisión operativa específica; no queda autorizado automáticamente por esta anotación.
+
 Este ensayo **no respalda ni restaura datos existentes**. Crea dos contenedores efímeros nuevos (`postgres:16-alpine`, `mariadb:11.4`) con puertos aleatorios ligados exclusivamente a `127.0.0.1`, sin volúmenes ni conexiones a producción. Requiere Docker Desktop local para Windows (contexto `npipe`), PowerShell, `npm ci` en `hermes-backend/` y el archivo SQL G2 OTP del backend UnderCodeEC. No lee `.env` ni acepta una `DATABASE_URL` heredada.
 
 Desde `hermes-backend/` en un checkout limpio de pruebas:
