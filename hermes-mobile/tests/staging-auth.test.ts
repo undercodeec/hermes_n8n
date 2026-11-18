@@ -101,6 +101,19 @@ test('server TTL controls offline display expiry even without requests or gestur
   assert.equal(auth.idleExpired(), true);
 });
 
+test('late Inbox response cannot reveal data after the server TTL elapsed', async () => {
+  const { store } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'saved');
+  const auth = new StagingAuth(config, store, async (url) => {
+    if (url.endsWith('/refresh')) return result({ accessToken: 'a', refreshToken: 'r' });
+    if (url.endsWith('/mobile/session')) return result({ active: true, idleRemainingMs: 15 });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    return result({ data: [{ content: 'synthetic' }] });
+  });
+  await auth.validate();
+  await assert.rejects(auth.authorizedGet('/api/mobile/inbox'), SessionExpired);
+});
+
 test('missing TTL from older backend never exposes a protected screen', async () => {
   const { store } = fakeStorage();
   await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'saved');

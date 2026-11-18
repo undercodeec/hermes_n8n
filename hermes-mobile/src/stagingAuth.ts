@@ -181,7 +181,7 @@ export class StagingAuth {
           method: 'GET', headers: { Authorization: `Bearer ${this.accessToken!}` }, cache: 'no-store',
         });
       } catch { throw new NetworkUnavailable(); }
-      if (generation !== this.generation || this.blocked) throw new SessionExpired();
+      if (generation !== this.generation || this.blocked || this.idleExpired()) throw new SessionExpired();
       return response;
     };
     let response = await attempt();
