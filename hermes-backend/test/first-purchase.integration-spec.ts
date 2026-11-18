@@ -166,14 +166,19 @@ describe('first purchase PostgreSQL HTTP integration', () => {
       .post(`/api/advertising/leads/${first.id}/events`)
       .send({ eventType: 'CONTRACT_WON' })
       .expect(201);
-    expect(firstResult.body.leadId).toBe(first.id);
-    expect(firstResult.body.id).toBeDefined();
-    expect(firstResult.body.value).toBeNull();
+    const firstBody = firstResult.body as {
+      leadId: string;
+      id: string;
+      value: unknown;
+    };
+    expect(firstBody.leadId).toBe(first.id);
+    expect(firstBody.id).toBeDefined();
+    expect(firstBody.value).toBeNull();
     const retry = await request(app.getHttpServer())
       .post(`/api/advertising/leads/${first.id}/events`)
       .send({ eventType: 'CONTRACT_WON' })
       .expect(201);
-    expect(retry.body.id).toBe(firstResult.body.id);
+    expect((retry.body as { id: string }).id).toBe(firstBody.id);
     const second = await prisma.lead.create({
       data: { contactId: contact.id, stage: LeadStage.QUALIFIED },
     });
@@ -379,7 +384,9 @@ describe('first purchase PostgreSQL HTTP integration', () => {
       .post(`/api/advertising/leads/${firstLead.id}/events`)
       .send(body)
       .expect(201);
-    expect(omitted.body.id).toBe(first.body.id);
+    expect((omitted.body as { id: string }).id).toBe(
+      (first.body as { id: string }).id,
+    );
 
     const secondContact = await prisma.contact.create({
       data: { waId: `test-${randomUUID()}` },
@@ -399,7 +406,9 @@ describe('first purchase PostgreSQL HTTP integration', () => {
       .post(`/api/advertising/leads/${secondLead.id}/events`)
       .send({ ...body, revenueReceived: 0 })
       .expect(201);
-    expect(equal.body.id).toBe(second.body.id);
+    expect((equal.body as { id: string }).id).toBe(
+      (second.body as { id: string }).id,
+    );
     const persisted = await prisma.lead.findUniqueOrThrow({
       where: { id: secondLead.id },
     });

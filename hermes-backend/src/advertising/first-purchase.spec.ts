@@ -9,7 +9,7 @@ import { GoogleAdsReportingService } from './google-ads-reporting.service';
 describe('operator first purchase', () => {
   function setup() {
     const tx = {
-      $executeRaw: jest.fn(),
+      $executeRaw: jest.fn<unknown, [unknown, string]>(),
       lead: {
         findUnique: jest.fn().mockResolvedValue({
           id: 'lead',
@@ -19,7 +19,18 @@ describe('operator first purchase', () => {
           commercialCurrency: null,
           contractReference: null,
         }),
-        update: jest.fn(),
+        update: jest.fn<
+          unknown,
+          [
+            {
+              data: {
+                contractedAmount?: unknown;
+                revenueReceived?: unknown;
+                stage?: LeadStage;
+              };
+            },
+          ]
+        >(),
       },
       transferPayment: { findFirst: jest.fn().mockResolvedValue(null) },
       advertisingAttribution: { findFirst: jest.fn().mockResolvedValue(null) },
@@ -31,12 +42,18 @@ describe('operator first purchase', () => {
       auditLog: { create: jest.fn() },
     };
     const service = new AdvertisingService(
-      { $transaction: jest.fn((fn) => fn(tx)) } as unknown as PrismaService,
+      {
+        $transaction: jest.fn((fn: (transaction: typeof tx) => unknown) =>
+          fn(tx),
+        ),
+      } as unknown as PrismaService,
       { get: jest.fn() } as unknown as ConfigService,
       {} as Queue,
     );
-    jest.spyOn(service, 'prepareSync').mockResolvedValue(undefined);
-    return { tx, service };
+    const prepareSync = jest
+      .spyOn(service, 'prepareSync')
+      .mockResolvedValue(undefined);
+    return { tx, service, prepareSync };
   }
   it('persists a valueless event and closes the qualified lead', async () => {
     const { tx, service } = setup();
@@ -52,11 +69,11 @@ describe('operator first purchase', () => {
         currency: undefined,
         commercialReference: undefined,
         eventType: AdvertisingEventType.CONTRACT_WON,
-      }),
+      }) as unknown,
     });
     expect(tx.lead.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ stage: LeadStage.WON }),
+        data: expect.objectContaining({ stage: LeadStage.WON }) as unknown,
       }),
     );
     expect(tx.lead.update.mock.calls[0][0].data).not.toHaveProperty(
@@ -166,7 +183,7 @@ describe('operator first purchase', () => {
     );
     expect(tx.lead.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        data: expect.objectContaining({ stage: LeadStage.LOST }),
+        data: expect.objectContaining({ stage: LeadStage.LOST }) as unknown,
       }),
     );
     expect(tx.advertisingSyncJob.create).toHaveBeenCalledTimes(1);
@@ -215,7 +232,7 @@ describe('operator first purchase', () => {
   ])(
     'checks received revenue on first-lead replay: $stored -> $sent',
     async ({ stored, sent, conflict }) => {
-      const { tx, service } = setup();
+      const { tx, service, prepareSync } = setup();
       tx.lead.findUnique.mockResolvedValue({
         id: 'lead',
         contactId: 'contact',
@@ -249,7 +266,7 @@ describe('operator first purchase', () => {
       expect(tx.auditLog.create).not.toHaveBeenCalled();
       expect(tx.advertisingConversion.create).not.toHaveBeenCalled();
       expect(tx.advertisingSyncJob.create).not.toHaveBeenCalled();
-      if (conflict) expect(service.prepareSync).not.toHaveBeenCalled();
+      if (conflict) expect(prepareSync).not.toHaveBeenCalled();
     },
   );
   it.each([-1, Number.NaN, Number.POSITIVE_INFINITY])(
@@ -273,7 +290,7 @@ describe('operator first purchase', () => {
     },
   );
   it('closes a second lead once, returns explicit result and is idempotent on retry', async () => {
-    const { tx, service } = setup();
+    const { tx, service, prepareSync } = setup();
     const lead = {
       id: 'lead',
       contactId: 'contact',
@@ -283,10 +300,10 @@ describe('operator first purchase', () => {
       contractReference: null,
       revenueReceived: null,
     };
-    tx.lead.findUnique.mockImplementation(async () => ({ ...lead }));
-    tx.lead.update.mockImplementation(async ({ data }) => {
+    tx.lead.findUnique.mockImplementation(() => Promise.resolve({ ...lead }));
+    tx.lead.update.mockImplementation(({ data }) => {
       Object.assign(lead, data);
-      return lead;
+      return Promise.resolve(lead);
     });
     tx.advertisingConversion.findFirst.mockResolvedValue({
       id: 'private-other-conversion',
@@ -309,7 +326,7 @@ describe('operator first purchase', () => {
     expect(tx.auditLog.create).toHaveBeenCalledTimes(1);
     expect(tx.advertisingConversion.create).not.toHaveBeenCalled();
     expect(tx.advertisingSyncJob.create).not.toHaveBeenCalled();
-    expect(service.prepareSync).not.toHaveBeenCalled();
+    expect(prepareSync).not.toHaveBeenCalled();
     expect(JSON.stringify(response)).not.toContain('private-other-conversion');
     await expect(
       service.recordOperatorEvent(

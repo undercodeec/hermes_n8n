@@ -90,7 +90,7 @@ export class LeadsService {
     return this.cls.isActive() ? this.cls.get<string>('traceId') : undefined;
   }
 
-  async recordConfirmedMeeting(
+  recordConfirmedMeeting(
     _tx: Prisma.TransactionClient,
     _meeting: Meeting,
   ): Promise<{
@@ -99,7 +99,9 @@ export class LeadsService {
     conversationId: string | null;
   } | null> {
     // Meeting confirmation does not authorize commercial qualification.
-    return null;
+    void _tx;
+    void _meeting;
+    return Promise.resolve(null);
   }
 
   publishMeetingQualification(
