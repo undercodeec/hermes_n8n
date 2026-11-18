@@ -20,7 +20,7 @@ import {
   UserRole,
 } from '@prisma/client';
 import { createHash } from 'crypto';
-import { MetaService } from '../meta/meta.service';
+import { MetaSendError, MetaService } from '../meta/meta.service';
 import { whatsappReplyWindow } from '../meta/whatsapp-service-window';
 import { PrismaService } from '../prisma/prisma.service';
 import { MobileReplyDto } from './dto/mobile-reply.dto';
@@ -51,6 +51,8 @@ export class MobileReplyService {
     createdAt: Date;
     dispatchStartedAt: Date | null;
     confirmedAt: Date | null;
+    rejectedAt: Date | null;
+    rejectionCode: string | null;
     ambiguousAt: Date | null;
   }) {
     return {
@@ -61,6 +63,8 @@ export class MobileReplyService {
       createdAt: operation.createdAt,
       dispatchStartedAt: operation.dispatchStartedAt,
       confirmedAt: operation.confirmedAt,
+      rejectedAt: operation.rejectedAt,
+      rejectionCode: operation.rejectionCode,
       ambiguousAt: operation.ambiguousAt,
       // A committed DISPATCHING may have reached Meta even after a crash.
       retryable: operation.status === MobileReplyStatus.PREPARED,
@@ -266,8 +270,27 @@ export class MobileReplyService {
     try {
       const sent = await this.meta.sendTextMessage(claim.waId, dto.content);
       wamid = sent?.messages?.[0]?.id;
-    } catch {
-      // Network failure is indistinguishable from Meta accepting a request.
+    } catch (error) {
+      if (
+        error instanceof MetaSendError &&
+        error.outcome === 'DEFINITIVE_REJECTION'
+      ) {
+        // A definitive 4xx response means no provider delivery was accepted.
+        // Never silently retry this UUID; the operator may resolve the problem
+        // and explicitly create a NEW intent only after checking the outcome.
+        await this.prisma.mobileReplyOperation
+          .updateMany({
+            where: { operationId, status: MobileReplyStatus.DISPATCHING },
+            data: {
+              status: MobileReplyStatus.REJECTED,
+              rejectedAt: new Date(),
+              rejectionCode: error.safeCode,
+            },
+          })
+          .catch(() => undefined);
+        return this.status(conversationId, operationId, actor);
+      }
+      // Timeouts/transport errors are indistinguishable from accepted delivery.
     }
     if (!wamid) {
       await this.markAmbiguous(operationId);

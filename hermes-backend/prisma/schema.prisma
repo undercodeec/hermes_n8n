@@ -141,6 +141,7 @@ enum MobileReplyStatus {
   PREPARED
   DISPATCHING
   CONFIRMED
+  REJECTED
   AMBIGUOUS
 }
 
@@ -154,6 +155,8 @@ model MobileReplyOperation {
   status            MobileReplyStatus @default(PREPARED)
   dispatchStartedAt DateTime?
   confirmedAt       DateTime?
+  rejectedAt        DateTime?
+  rejectionCode     String?           @db.VarChar(64)
   ambiguousAt       DateTime?
   wamid             String?           @unique
   messageId         String?           @unique

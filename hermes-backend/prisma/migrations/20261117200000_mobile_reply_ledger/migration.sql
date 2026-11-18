@@ -1,5 +1,5 @@
 -- Explicit, additive migration. Keep this table even if the mobile endpoint is rolled back.
-CREATE TYPE "MobileReplyStatus" AS ENUM ('PREPARED', 'DISPATCHING', 'CONFIRMED', 'AMBIGUOUS');
+CREATE TYPE "MobileReplyStatus" AS ENUM ('PREPARED', 'DISPATCHING', 'CONFIRMED', 'REJECTED', 'AMBIGUOUS');
 
 CREATE TABLE "mobile_reply_operations" (
     "operationId" UUID NOT NULL,
@@ -9,6 +9,8 @@ CREATE TABLE "mobile_reply_operations" (
     "status" "MobileReplyStatus" NOT NULL DEFAULT 'PREPARED',
     "dispatchStartedAt" TIMESTAMP(3),
     "confirmedAt" TIMESTAMP(3),
+    "rejectedAt" TIMESTAMP(3),
+    "rejectionCode" VARCHAR(64),
     "ambiguousAt" TIMESTAMP(3),
     "wamid" TEXT,
     "messageId" TEXT,

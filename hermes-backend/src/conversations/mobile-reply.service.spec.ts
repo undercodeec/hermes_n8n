@@ -3,6 +3,7 @@ import { ConflictException, ServiceUnavailableException } from '@nestjs/common';
 import { MobileReplyStatus } from '@prisma/client';
 import { createHash, randomUUID } from 'crypto';
 import { MobileReplyService } from './mobile-reply.service';
+import { MetaSendError } from '../meta/meta.service';
 
 describe('mobile reply ledger (Meta is always mocked)', () => {
   const actor = { id: randomUUID(), sessionId: randomUUID() };
@@ -37,6 +38,8 @@ describe('mobile reply ledger (Meta is always mocked)', () => {
             createdAt: new Date(),
             dispatchStartedAt: null,
             confirmedAt: null,
+            rejectedAt: null,
+            rejectionCode: null,
             ambiguousAt: null,
           };
           return { ...state };
@@ -136,6 +139,8 @@ describe('mobile reply ledger (Meta is always mocked)', () => {
       createdAt: new Date(),
       dispatchStartedAt: new Date(),
       confirmedAt: null,
+      rejectedAt: null,
+      rejectionCode: null,
       ambiguousAt: null,
     };
     // Reproduce contentHash of the original request.
@@ -153,6 +158,22 @@ describe('mobile reply ledger (Meta is always mocked)', () => {
     expect(
       await service.reply(conversationId, operationId, dto, actor),
     ).toMatchObject({ status: 'AMBIGUOUS' });
+    await service.reply(conversationId, operationId, dto, actor);
+    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('records a definitive provider rejection separately, without retrying the same intent', async () => {
+    meta.sendTextMessage.mockRejectedValueOnce(
+      new MetaSendError('DEFINITIVE_REJECTION', false, 400, 'META_HTTP_400'),
+    );
+    expect(
+      await service.reply(conversationId, operationId, dto, actor),
+    ).toMatchObject({
+      status: MobileReplyStatus.REJECTED,
+      rejectionCode: 'META_HTTP_400',
+      rejectedAt: expect.any(Date),
+      retryable: false,
+    });
     await service.reply(conversationId, operationId, dto, actor);
     expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
   });
