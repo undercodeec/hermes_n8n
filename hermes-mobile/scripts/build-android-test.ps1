@@ -92,7 +92,10 @@ try {
     $signingDir = Join-Path $env:LOCALAPPDATA 'Temp\opencode\hermes-mobile-signing'
     [IO.Directory]::CreateDirectory($signingDir) | Out-Null
     $env:HERMES_TEST_KEYSTORE = Join-Path $signingDir ("$Variant-$head-" + [guid]::NewGuid().ToString('N') + '.jks')
-    $env:HERMES_APK_KEY_PASSWORD = [Convert]::ToHexString([Security.Cryptography.RandomNumberGenerator]::GetBytes(32))
+    $random = New-Object byte[] 32
+    $generator = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $generator.GetBytes($random) } finally { $generator.Dispose() }
+    $env:HERMES_APK_KEY_PASSWORD = [BitConverter]::ToString($random).Replace('-', '')
     Invoke-Checked 'temporary test key' {
       & $keytool -genkeypair -keystore $env:HERMES_TEST_KEYSTORE -alias hermeslocaltest -keyalg RSA -keysize 3072 -validity 30 -dname 'CN=Hermes CRM Local Test, O=Hermes, C=EC' -storepass:env HERMES_APK_KEY_PASSWORD -keypass:env HERMES_APK_KEY_PASSWORD -noprompt
     }
