@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment -- Jest's expect.any matcher is typed as any. */
 import { BadRequestException, NotFoundException } from '@nestjs/common';
-import { ConversationStatus, MessageType } from '@prisma/client';
+import { ConversationStatus, MessageType, Prisma } from '@prisma/client';
 import { MobileInboxService } from './mobile-inbox.service';
 import { MobileInboxGuard } from './mobile-inbox.guard';
 import { MobileInboxController } from './mobile-inbox.controller';
@@ -15,9 +15,11 @@ describe('mobile inbox read boundary', () => {
   const findMany = jest.fn();
   const findFirst = jest.fn();
   const messages = jest.fn();
+  const queryRaw = jest.fn();
   const tx = {
     conversation: { findMany, findFirst },
     message: { findMany: messages },
+    $queryRaw: queryRaw,
   };
   const prisma = {
     ...tx,
@@ -58,14 +60,26 @@ describe('mobile inbox read boundary', () => {
     );
   });
 
-  it('scopes list and keyset in SQL, projects allowlist, ties latest message order and excludes raw payload', async () => {
+  it('ranks by indexed latest message, deterministic ties and empties last; never hydrates all candidates', async () => {
     const at = new Date('2026-01-02T12:00:00Z');
     const id = '11111111-1111-4111-8111-111111111111';
+    const emptyId = '22222222-2222-4222-8222-222222222222';
+    // Parent updatedAt is deliberately older than the message. Hydration arrives out of order.
+    queryRaw.mockResolvedValue([
+      { id, latestAt: at },
+      { id: emptyId, latestAt: null },
+    ]);
     findMany.mockResolvedValue([
+      {
+        id: emptyId,
+        status: ConversationStatus.ACTIVE,
+        updatedAt: at,
+        messages: [],
+      },
       {
         id,
         status: ConversationStatus.ACTIVE,
-        updatedAt: at,
+        updatedAt: new Date('2025-01-01T12:00:00Z'),
         contact: { id: 'c', name: 'a', phone: null },
         messages: [
           {
@@ -81,11 +95,6 @@ describe('mobile inbox read boundary', () => {
         ],
         metadata: 'secret',
       },
-      {
-        id: '22222222-2222-4222-8222-222222222222',
-        updatedAt: at,
-        messages: [],
-      },
     ]);
     const first = await service.list({
       limit: 1,
@@ -94,7 +103,7 @@ describe('mobile inbox read boundary', () => {
     expect(first.data[0]).toEqual({
       id,
       status: 'ACTIVE',
-      updatedAt: at,
+      updatedAt: new Date('2025-01-01T12:00:00Z'),
       contact: { id: 'c', name: 'a', phone: null },
       latestMessage: {
         id: 'm',
@@ -107,25 +116,55 @@ describe('mobile inbox read boundary', () => {
       },
     });
     expect(first.nextCursor).toBeTruthy();
+    expect(queryRaw).toHaveBeenCalledTimes(1);
+    const rawCalls: unknown = queryRaw.mock.calls;
+    const sqlAt = (index: number): Prisma.Sql =>
+      (rawCalls as [Prisma.Sql][])[index][0];
+    const rankedSql = sqlAt(0);
+    expect(rankedSql.sql).toContain('WHERE m."conversationId" = c.id');
+    expect(rankedSql.sql).toContain('ORDER BY m."createdAt" DESC LIMIT 1');
+    expect(rankedSql.sql).toContain("WHERE c.channel = 'whatsapp'");
+    expect(rankedSql.sql).toContain(
+      'ORDER BY latest."createdAt" DESC NULLS LAST, c.id COLLATE "C" ASC',
+    );
+    expect(rankedSql.values).toContain(2); // limit+1, not a 200k-ID array
+    expect(rankedSql.values).toContain('ACTIVE');
     await service.list({
       limit: 1,
       cursor: first.nextCursor!,
       status: ConversationStatus.ACTIVE,
     });
+    expect(sqlAt(1).sql).toContain('latest."createdAt" <');
+    expect(sqlAt(1).sql).toContain('latest."createdAt" =');
+    expect(sqlAt(1).sql).toContain('c.id COLLATE "C" >');
+    expect(sqlAt(1).sql).toContain('OR latest."createdAt" IS NULL');
     expect(findMany).toHaveBeenLastCalledWith(
       expect.objectContaining({
-        where: expect.objectContaining({
+        where: {
           channel: 'whatsapp',
           status: 'ACTIVE',
-          OR: expect.any(Array),
-        }),
+          id: { in: [id] },
+        },
         select: expect.objectContaining({
           messages: expect.objectContaining({ take: 1 }),
         }),
-        orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
-        take: 2,
       }),
     );
+    // An empty conversation cursor must not return a nonempty conversation again.
+    queryRaw.mockResolvedValueOnce([
+      { id: emptyId, latestAt: null },
+      { id, latestAt: null },
+    ]);
+    const empty = await service.list({ limit: 1 });
+    await service.list({ limit: 1, cursor: empty.nextCursor! });
+    const afterEmpty = sqlAt(3);
+    expect(afterEmpty.sql).toContain(
+      'latest."createdAt" IS NULL AND c.id COLLATE "C" >',
+    );
+    expect(afterEmpty.sql).not.toContain('latest."createdAt" <');
+    await expect(
+      service.list({ limit: 1, cursor: first.nextCursor }),
+    ).rejects.toThrow(BadRequestException);
     await expect(service.list({ limit: 1, cursor: 'bad' })).rejects.toThrow(
       BadRequestException,
     );
@@ -205,6 +244,11 @@ describe('mobile inbox read boundary', () => {
     expect(events).toEqual([
       { type: 'connected', data: { reconciliation: 'restart' }, retry: 3000 },
       { type: 'heartbeat', data: {} },
+    ]);
+    await jest.advanceTimersByTimeAsync(45000);
+    expect(events).toEqual([
+      { type: 'connected', data: { reconciliation: 'restart' }, retry: 3000 },
+      ...Array.from({ length: 4 }, () => ({ type: 'heartbeat', data: {} })),
       { type: 'reconcile', data: { reconciliation: 'restart' } },
     ]);
     subscription.unsubscribe();

@@ -8,6 +8,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MobileInboxQuery, MobileMessageQuery } from './mobile-inbox.dto';
 
 type Cursor = { at: string; id: string };
+type InboxCursor = { latestAt: Date | null; id: string };
 const contactSelect = { id: true, name: true, phone: true } as const;
 const messageSelect = {
   id: true,
@@ -60,6 +61,54 @@ function nextCursor(at: Date, id: string): string {
   );
 }
 
+function readInboxCursor(
+  raw: string | undefined,
+  status: string | undefined,
+): InboxCursor | undefined {
+  if (!raw) return undefined;
+  try {
+    const value: unknown = JSON.parse(
+      Buffer.from(raw, 'base64url').toString('utf8'),
+    );
+    if (!value || typeof value !== 'object') throw new Error('cursor');
+    const cursor = value as Record<string, unknown>;
+    if (
+      cursor.v !== 2 ||
+      cursor.status !== (status ?? null) ||
+      typeof cursor.id !== 'string' ||
+      !/^[0-9a-f-]{36}$/i.test(cursor.id) ||
+      (cursor.latestAt !== null &&
+        (typeof cursor.latestAt !== 'string' ||
+          !/^\d{4}-\d\d-\d\dT/.test(cursor.latestAt) ||
+          !Number.isFinite(Date.parse(cursor.latestAt))))
+    )
+      throw new Error('cursor');
+    return {
+      latestAt: cursor.latestAt === null ? null : new Date(cursor.latestAt),
+      id: cursor.id,
+    };
+  } catch {
+    throw new BadRequestException(
+      'Cursor de Inbox inválido; reinicie la reconciliación',
+    );
+  }
+}
+
+function nextInboxCursor(
+  latestAt: Date | null,
+  id: string,
+  status?: string,
+): string {
+  return Buffer.from(
+    JSON.stringify({
+      v: 2,
+      latestAt: latestAt?.toISOString() ?? null,
+      id,
+      status: status ?? null,
+    }),
+  ).toString('base64url');
+}
+
 function safeMessage(message: {
   id: string;
   conversationId: string;
@@ -85,43 +134,68 @@ export class MobileInboxService {
   constructor(private readonly prisma: PrismaService) {}
 
   async list(query: MobileInboxQuery) {
-    const cursor = readCursor(query.cursor);
-    const where: Prisma.ConversationWhereInput = {
-      channel: 'whatsapp',
-      ...(query.status ? { status: query.status } : {}),
-      ...(cursor
-        ? {
-            OR: [
-              { updatedAt: { lt: new Date(cursor.at) } },
-              { updatedAt: new Date(cursor.at), id: { lt: cursor.id } },
-            ],
-          }
-        : {}),
-    };
+    const cursor = readInboxCursor(query.cursor, query.status);
+    const statusFilter = query.status
+      ? Prisma.sql`AND c.status = ${query.status}::"ConversationStatus"`
+      : Prisma.empty;
+    // DESC NULLS LAST, then deterministic C-collated ID ASC, including empty conversations.
+    const after = !cursor
+      ? Prisma.empty
+      : cursor.latestAt === null
+        ? Prisma.sql`AND latest."createdAt" IS NULL AND c.id COLLATE "C" > ${cursor.id}`
+        : Prisma.sql`AND (
+          latest."createdAt" < ${cursor.latestAt}
+          OR (latest."createdAt" = ${cursor.latestAt} AND c.id COLLATE "C" > ${cursor.id})
+          OR latest."createdAt" IS NULL
+        )`;
     return this.prisma.$transaction(
       async (tx) => {
-        const rows = await tx.conversation.findMany({
-          where,
-          select: conversationSelect,
-          orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
-          take: query.limit + 1,
-        });
-        const page = rows.slice(0, query.limit);
+        // Only <= limit+1 IDs cross the wire. The existing
+        // messages(conversationId, createdAt) index backs each LATERAL LIMIT 1.
+        const ranked = await tx.$queryRaw<
+          Array<{ id: string; latestAt: Date | null }>
+        >(Prisma.sql`
+          SELECT c.id, latest."createdAt" AS "latestAt"
+          FROM conversations c
+          LEFT JOIN LATERAL (
+            SELECT m."createdAt" FROM messages m
+            WHERE m."conversationId" = c.id
+            ORDER BY m."createdAt" DESC LIMIT 1
+          ) latest ON true
+          WHERE c.channel = 'whatsapp' ${statusFilter} ${after}
+          ORDER BY latest."createdAt" DESC NULLS LAST, c.id COLLATE "C" ASC
+          LIMIT ${query.limit + 1}
+        `);
+        const page = ranked.slice(0, query.limit);
+        const rows = page.length
+          ? await tx.conversation.findMany({
+              where: {
+                id: { in: page.map((entry) => entry.id) },
+                channel: 'whatsapp',
+                ...(query.status ? { status: query.status } : {}),
+              },
+              select: conversationSelect,
+            })
+          : [];
+        const byId = new Map(rows.map((row) => [row.id, row]));
         return {
-          data: page.map((row) => ({
-            id: row.id,
-            status: row.status,
-            updatedAt: row.updatedAt,
-            contact: row.contact,
-            latestMessage: row.messages[0]
-              ? safeMessage(row.messages[0])
-              : null,
-          })),
+          data: page
+            .map((rank) => byId.get(rank.id)!)
+            .map((row) => ({
+              id: row.id,
+              status: row.status,
+              updatedAt: row.updatedAt,
+              contact: row.contact,
+              latestMessage: row.messages[0]
+                ? safeMessage(row.messages[0])
+                : null,
+            })),
           nextCursor:
-            rows.length > query.limit && page.length
-              ? nextCursor(
-                  page[page.length - 1].updatedAt,
+            ranked.length > query.limit && page.length
+              ? nextInboxCursor(
+                  page[page.length - 1].latestAt,
                   page[page.length - 1].id,
+                  query.status,
                 )
               : null,
           // A cursor is a traversal hint, not a snapshot: refresh page 1 after invalidation.

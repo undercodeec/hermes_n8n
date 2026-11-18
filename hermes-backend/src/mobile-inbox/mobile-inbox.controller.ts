@@ -55,6 +55,7 @@ export class MobileInboxController {
     const expiresAt = typeof exp === 'number' ? exp * 1000 : 0;
     return new Observable<MessageEvent>((subscriber) => {
       let stopped = false;
+      let heartbeats = 0;
       let timer: ReturnType<typeof setTimeout> | undefined;
       const stop = () => {
         stopped = true;
@@ -74,12 +75,15 @@ export class MobileInboxController {
             return;
           }
           if (stopped) return;
-          // A signal to re-read page one; NOT an assertion of new messages.
+          // Check revocation every 15s; do not run a costly Inbox re-read each heartbeat.
           subscriber.next({ type: 'heartbeat', data: {} });
-          subscriber.next({
-            type: 'reconcile',
-            data: { reconciliation: 'restart' },
-          });
+          if (++heartbeats % 4 === 0) {
+            // Reconcile every 60s; NOT an assertion of new messages.
+            subscriber.next({
+              type: 'reconcile',
+              data: { reconciliation: 'restart' },
+            });
+          }
           timer = setTimeout(() => {
             void tick();
           }, 15000);
