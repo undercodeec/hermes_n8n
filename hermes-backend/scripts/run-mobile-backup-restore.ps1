@@ -189,4 +189,7 @@ try {
   }
   if ($remaining.Count -gt 0) { throw 'Disposable container cleanup incomplete; inspect the named rehearsal containers manually.' }
   Write-Host 'Disposable containers and their in-container dumps removed and verified (verify manually if interrupted forcibly).'
+  # Inspect intentionally returns 1 for a removed container. Do not report that
+  # expected cleanup result as a failed rehearsal to the invoking shell.
+  $global:LASTEXITCODE = 0
 }
