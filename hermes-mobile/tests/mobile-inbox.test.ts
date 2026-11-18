@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { MobileInboxClient, type AuthorizedGet } from '../src/mobileInboxClient';
+import { chronologicalMessages, MobileInboxClient, type AuthorizedGet } from '../src/mobileInboxClient';
 
 const contact = { id: 'contact-1', name: 'Cliente real', phone: '0990000000', email: 'must-not-leak' };
 const row = (id: string) => ({ id, status: 'OPEN', updatedAt: '2026-11-17T12:00:00.000Z', contact, latestMessage: msg(`${id}-msg`, id), unread: 30 });
@@ -31,6 +31,28 @@ test('list and messages follow opaque cursors, dedupe rows, and drop forbidden p
   assert.ok(paths.includes('/api/mobile/inbox?limit=20&cursor=opaque%2Bcursor'));
   assert.ok(paths.includes('/api/mobile/inbox/a/messages?limit=50&cursor=old%2Bmsg'));
   assert.ok(paths.every((path) => path.startsWith('/api/mobile/inbox') && !/reply|send|events/.test(path)));
+});
+
+test('chronological display reverses newest-first pages without changing cursor traversal or tie order', async () => {
+  const at = (id: string, createdAt: string, direction: string) => ({ ...msg(id, 'a'), createdAt, direction });
+  const newest = at('d', '2026-11-17T12:02:00.000Z', 'OUTBOUND');
+  const question = at('c', '2026-11-17T12:01:00.000Z', 'INBOUND');
+  const tied = at('b', '2026-11-17T12:01:00.000Z', 'OUTBOUND');
+  const oldest = at('a', '2026-11-17T12:00:00.000Z', 'INBOUND');
+  const client = new MobileInboxClient(async (path) => {
+    if (path.endsWith('/a')) return reply(row('a'));
+    if (path.includes('/messages')) return reply(path.includes('cursor=') ? page([tied, oldest], null) : page([newest, question], 'older'));
+    return reply(page([row('a')], null));
+  });
+  await client.refresh();
+  await client.open('a');
+  assert.deepEqual(chronologicalMessages(client.snapshot.messages).map((m) => m.id), ['c', 'd']);
+  await client.moreMessages();
+  const before = client.snapshot.messages.map((m) => m.id);
+  assert.deepEqual(before, ['d', 'c', 'b', 'a']);
+  assert.deepEqual(chronologicalMessages(client.snapshot.messages).map((m) => m.id), ['a', 'b', 'c', 'd']);
+  assert.deepEqual(client.snapshot.messages.map((m) => m.id), before);
+  assert.equal(client.snapshot.messagesCursor, null);
 });
 
 test('foreground/manual reconciliation discards old cursors and stale detail; restart after invalid cursor', async () => {

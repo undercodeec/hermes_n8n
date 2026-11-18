@@ -61,6 +61,11 @@ function mergeById<T extends { id: string }>(before: T[], after: T[]): T[] {
   return [...rows.values()];
 }
 
+/** API traversal is newest-first (createdAt DESC, id DESC); show its exact reverse. */
+export function chronologicalMessages(messages: readonly InboxMessage[]): InboxMessage[] {
+  return [...messages].reverse();
+}
+
 export class MobileInboxClient {
   private state = blank();
   private generation = 0;

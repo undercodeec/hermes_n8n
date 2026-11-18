@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ComponentRef } from 'react';
 import { AppState, Image, Pressable, SafeAreaView, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { crm } from './crmStyles';
-import { MobileInboxClient, type AuthorizedGet, type InboxMessage } from './mobileInboxClient';
+import { chronologicalMessages, MobileInboxClient, type AuthorizedGet, type InboxMessage, type InboxSnapshot } from './mobileInboxClient';
 
 type Props = { authorizedGet: AuthorizedGet; onLogout: () => void; onActivity?: () => void; onAccessLost?: () => void };
 const timestamp = (value: string) => {
@@ -11,6 +11,32 @@ const timestamp = (value: string) => {
 };
 const label = (name: string | null, phone: string | null) => name || phone || 'Contacto';
 const text = (message: InboxMessage | null | undefined) => message?.type === 'TEXT' ? (message.content || 'Mensaje de texto vacío') : message ? 'Mensaje no textual · no disponible' : 'Sin mensajes';
+
+function MessageHistory({ state, loadOlder }: { state: InboxSnapshot; loadOlder: () => void }) {
+  const scroll = useRef<ComponentRef<typeof ScrollView>>(null);
+  const initiallyPositioned = useRef(false);
+  return <ScrollView
+    ref={scroll}
+    style={crm.root}
+    contentContainerStyle={crm.history}
+    maintainVisibleContentPosition={{ minIndexForVisible: 1 }}
+    onContentSizeChange={() => {
+      if (!initiallyPositioned.current && state.messages.length) {
+        initiallyPositioned.current = true;
+        scroll.current?.scrollToEnd({ animated: false });
+      }
+    }}
+  >
+    <Text style={crm.day}>Historial · orden cronológico</Text>
+    {state.messagesCursor ? <Pressable accessibilityRole="button" accessibilityState={{ disabled: state.loadingMore }} disabled={state.loadingMore} style={styles.more} onPress={loadOlder}><Text style={styles.moreText}>{state.loadingMore ? 'Cargando…' : 'Cargar mensajes anteriores'}</Text></Pressable> : null}
+    {chronologicalMessages(state.messages).map((item) => <View key={item.id} style={[crm.bubble, item.direction === 'OUTBOUND' && crm.agentBubble]}>
+      <Text style={crm.messageAuthor}>{item.sender}</Text>
+      <Text style={crm.message}>{text(item)}</Text>
+      <Text style={crm.messageTime}>{timestamp(item.createdAt)}</Text>
+    </View>)}
+    {!state.messages.length ? <Text style={crm.empty}>No hay mensajes de texto disponibles.</Text> : null}
+  </ScrollView>;
+}
 
 /** Mount only inside the authenticated staging shell; never render alongside DemoApp. */
 export function MobileInboxScreen({ authorizedGet, onLogout, onActivity, onAccessLost }: Props) {
@@ -58,16 +84,7 @@ export function MobileInboxScreen({ authorizedGet, onLogout, onActivity, onAcces
       <Pressable accessibilityRole="button" accessibilityLabel="Actualizar y volver a conversaciones" style={styles.detailRefresh} onPress={() => action(() => void client.refresh())}>
         <Feather name="refresh-cw" size={14} color="#625AE2" /><Text style={styles.moreText}>Actualizar · volver a chats</Text>
       </Pressable>
-      <ScrollView style={crm.root} contentContainerStyle={crm.history}>
-        <Text style={crm.day}>Historial · más recientes primero</Text>
-        {state.messages.map((item) => <View key={item.id} style={[crm.bubble, item.direction === 'OUTBOUND' && crm.agentBubble]}>
-          <Text style={crm.messageAuthor}>{item.sender}</Text>
-          <Text style={crm.message}>{text(item)}</Text>
-          <Text style={crm.messageTime}>{timestamp(item.createdAt)}</Text>
-        </View>)}
-        {!state.messages.length ? <Text style={crm.empty}>No hay mensajes de texto disponibles.</Text> : null}
-        {state.messagesCursor ? <Pressable accessibilityRole="button" accessibilityState={{ disabled: state.loadingMore }} disabled={state.loadingMore} style={styles.more} onPress={() => action(() => void client.moreMessages())}><Text style={styles.moreText}>{state.loadingMore ? 'Cargando…' : 'Cargar mensajes anteriores'}</Text></Pressable> : null}
-      </ScrollView>
+      <MessageHistory key={state.selected.id} state={state} loadOlder={() => action(() => void client.moreMessages())} />
     </> : <>
       <View style={styles.toolbar}>
         <Text style={crm.listMeta}>{state.conversations.length} conversaciones cargadas</Text>
