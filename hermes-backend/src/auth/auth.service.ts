@@ -16,7 +16,7 @@ import { mobileJwtKey } from './mobile-jwt-key';
 
 @Injectable()
 export class AuthService {
-  private readonly mobileIdleMs = 30 * 60 * 1000;
+  private readonly mobileIdleMs = 24 * 60 * 60 * 1000;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -250,18 +250,23 @@ export class AuthService {
   }
 
   async checkMobile(userId: string, sessionId: string) {
+    const now = new Date();
     const session = await this.prisma.mobileSession.findFirst({
       where: {
         id: sessionId,
         userId,
         revokedAt: null,
-        expiresAt: { gt: new Date() },
+        expiresAt: { gt: now },
       },
       select: { expiresAt: true },
     });
+    // Do not report an active session if it expired while the DB read was pending.
     if (!session)
       throw new UnauthorizedException('Sesión móvil vencida o revocada');
-    return { active: true, expiresAt: session.expiresAt };
+    const idleRemainingMs = session.expiresAt.getTime() - Date.now();
+    if (idleRemainingMs <= 0)
+      throw new UnauthorizedException('Sesión móvil vencida o revocada');
+    return { active: true, expiresAt: session.expiresAt, idleRemainingMs };
   }
 
   async mobileActivity(userId: string, sessionId: string) {

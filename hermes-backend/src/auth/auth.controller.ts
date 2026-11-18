@@ -120,7 +120,11 @@ export class AuthController {
   @UseGuards(MobileAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Comprobar sesión móvil sin renovar actividad' })
-  @ApiResponse({ status: 200, description: 'active y expiresAt del servidor' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'active, expiresAt e idleRemainingMs (reloj servidor; sin credenciales)',
+  })
   @ApiResponse({
     status: 401,
     description: 'Sesión inválida, revocada o inactiva',

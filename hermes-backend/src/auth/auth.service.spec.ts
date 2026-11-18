@@ -376,26 +376,109 @@ describe('CRM mobile sessions and shared proof replay', () => {
     ).resolves.toMatchObject({ id: user.id });
   });
 
-  it('allows 29 minutes idle but rejects at the exact 30-minute server deadline', async () => {
-    const initial = await auth.loginMobileWithCrmProof(
-      proof({ aud: 'hermes-crm-mobile' }),
-    );
-    const expiry = session.expiresAt.getTime();
-    jest.useFakeTimers({ now: expiry - 60_000 });
+  it('expires after exactly 24 hours without human activity, including while refresh, checks and validation run', async () => {
+    const start = Date.parse('2026-11-18T12:00:00.000Z');
+    jest.useFakeTimers({ now: start });
     try {
-      await expect(auth.checkMobile(user.id, sessionId)).resolves.toMatchObject(
-        { active: true },
+      const initial = await auth.loginMobileWithCrmProof(
+        proof({ aud: 'hermes-crm-mobile' }),
       );
+      const expiry = start + 24 * 60 * 60 * 1000;
+      expect(session.expiresAt.getTime()).toBe(expiry);
+      jest.setSystemTime(start + 30 * 60 * 1000);
+      const rotated = await auth.refreshMobile(initial.refreshToken);
+      expect(rotated.expiresAt.getTime()).toBe(expiry);
+      expect(await auth.checkMobile(user.id, sessionId)).toEqual({
+        active: true,
+        expiresAt: session.expiresAt,
+        idleRemainingMs: expiry - Date.now(),
+      });
+      const strategy = new JwtStrategy(config as never, db as never);
+      await expect(
+        strategy.validate({
+          sub: user.id,
+          email,
+          role: 'ADMIN',
+          sid: sessionId,
+          typ: 'mobile',
+        }),
+      ).resolves.toMatchObject({ sessionId });
+      jest.setSystemTime(expiry - 1);
+      const lastRefresh = await auth.refreshMobile(rotated.refreshToken);
+      expect(lastRefresh.expiresAt.getTime()).toBe(expiry);
+      expect(await auth.checkMobile(user.id, sessionId)).toEqual({
+        active: true,
+        expiresAt: session.expiresAt,
+        idleRemainingMs: 1,
+      });
       jest.setSystemTime(expiry);
       await expect(auth.checkMobile(user.id, sessionId)).rejects.toBeInstanceOf(
         UnauthorizedException,
       );
       await expect(
-        auth.refreshMobile(initial.refreshToken),
+        auth.refreshMobile(lastRefresh.refreshToken),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(
+        strategy.validate({
+          sub: user.id,
+          email,
+          role: 'ADMIN',
+          sid: sessionId,
+          typ: 'mobile',
+        }),
       ).rejects.toBeInstanceOf(UnauthorizedException);
       await expect(
         auth.mobileActivity(user.id, sessionId),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+      // This change does not impose a mobile deadline on existing web JWTs.
+      await expect(
+        strategy.validate({ sub: user.id, email, role: 'ADMIN' }),
+      ).resolves.toMatchObject({ id: user.id });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('extends the mobile deadline only for explicit interaction, with no absolute maximum', async () => {
+    const start = Date.parse('2026-11-18T12:00:00.000Z');
+    const day = 24 * 60 * 60 * 1000;
+    jest.useFakeTimers({ now: start });
+    try {
+      const initial = await auth.loginMobileWithCrmProof(
+        proof({ aud: 'hermes-crm-mobile' }),
+      );
+      for (let dayNumber = 1; dayNumber <= 7; dayNumber++) {
+        const interaction = start + dayNumber * (day - 1_000);
+        jest.setSystemTime(interaction);
+        const result = await auth.mobileActivity(user.id, sessionId);
+        expect(result.expiresAt.getTime()).toBe(interaction + day);
+        expect(session.expiresAt.getTime()).toBe(interaction + day);
+      }
+      jest.setSystemTime(session.expiresAt.getTime() - 1);
+      await expect(
+        auth.refreshMobile(initial.refreshToken),
+      ).resolves.toMatchObject({ expiresAt: session.expiresAt });
+      jest.setSystemTime(session.expiresAt.getTime());
+      await expect(
+        auth.mobileActivity(user.id, sessionId),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not return a positive TTL when the session expires during the DB read', async () => {
+    const start = Date.parse('2026-11-18T12:00:00.000Z');
+    jest.useFakeTimers({ now: start });
+    try {
+      await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
+      db.mobileSession.findFirst.mockImplementationOnce(async () => {
+        jest.setSystemTime(session.expiresAt);
+        return { ...session };
+      });
+      await expect(auth.checkMobile(user.id, sessionId)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
     } finally {
       jest.useRealTimers();
     }

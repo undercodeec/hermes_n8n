@@ -148,7 +148,12 @@ describe('G2 mobile/web auth HTTP contract (synthetic, in-memory Prisma)', () =>
     const web = await webLogin();
     const mobile = await mobileLogin();
     await http().get('/api/auth/profile').set(bearer(web)).expect(200);
-    await http().get('/api/auth/mobile/session').set(bearer(mobile.accessToken)).expect(200);
+    const check = await http().get('/api/auth/mobile/session').set(bearer(mobile.accessToken)).expect(200);
+    const checkBody = check.body as { active: boolean; expiresAt: string; idleRemainingMs: number };
+    expect(typeof checkBody.idleRemainingMs).toBe('number');
+    expect(checkBody).toEqual({ active: true, expiresAt: mobile.expiresAt, idleRemainingMs: checkBody.idleRemainingMs });
+    expect(checkBody.idleRemainingMs).toBeGreaterThan(0);
+    expect(checkBody.idleRemainingMs).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
     await http().get('/api/auth/mobile/session').expect(401);
     await http().get('/api/auth/mobile/session').set(bearer(web)).expect(401);
     await http().get('/api/auth/profile').set(bearer(mobile.accessToken)).expect(403);
