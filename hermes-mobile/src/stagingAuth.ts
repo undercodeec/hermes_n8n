@@ -1,4 +1,5 @@
 /** Opt-in staging authentication. Never ship endpoint secrets or log OTP/proof/tokens. */
+import { localInactivityElapsed, serverIdleDeadline } from './sessionPolicy';
 export type Storage = { getItemAsync(key: string): Promise<string | null>; setItemAsync(key: string, value: string): Promise<void>; deleteItemAsync(key: string): Promise<void> };
 export type Transport = (url: string, init: RequestInit) => Promise<Response>;
 export type AuthConfig = { adminBase: string; hermesBase: string };
@@ -30,6 +31,7 @@ export class StagingAuth {
   private lastActivitySent = 0;
   private generation = 0;
   private blocked = false;
+  private idleDeadline: number | null = null;
   private storageQueue: Promise<unknown> = Promise.resolve();
   constructor(private readonly config: AuthConfig, private readonly storage: Storage, private readonly transport: Transport = fetch) {}
 
@@ -51,6 +53,20 @@ export class StagingAuth {
   private post(base: string, path: string, data: object, token?: string) { return this.request(base, path, 'POST', data, token); }
   private get(base: string, path: string, token: string) { return this.request(base, path, 'GET', undefined, token); }
 
+  /** No network call is needed to hide a screen whose server-provided TTL elapsed. */
+  idleExpired() { return localInactivityElapsed(this.idleDeadline, performance.now()); }
+
+  private async sessionStatus(generation: number) {
+    const startedAt = performance.now();
+    const status = await this.get(this.config.hermesBase, '/api/auth/mobile/session', this.accessToken!);
+    if (generation !== this.generation) throw new SessionExpired();
+    if (status.active !== true) throw new SessionExpired();
+    // Starting at request dispatch is conservative: network latency cannot extend server TTL.
+    const deadline = serverIdleDeadline(status.idleRemainingMs, startedAt);
+    if (localInactivityElapsed(deadline, performance.now())) throw new SessionExpired();
+    this.idleDeadline = deadline;
+  }
+
   async requestCode(email: string) {
     await this.post(this.config.adminBase, '/api/crm/auth/request-code', { email: email.trim() });
   }
@@ -66,6 +82,7 @@ export class StagingAuth {
     if (generation !== this.generation) throw new SessionExpired();
     await this.save(session, generation);
     this.blocked = false;
+    await this.validate();
   }
 
   private async save(result: Record<string, unknown>, generation: number) {
@@ -128,18 +145,14 @@ export class StagingAuth {
     if (!hadAccess) await this.refresh();
     if (generation !== this.generation) throw new SessionExpired();
     try {
-      const status = await this.get(this.config.hermesBase, '/api/auth/mobile/session', this.accessToken!);
-      if (generation !== this.generation) throw new SessionExpired();
-      if (status.active !== true) throw new SessionExpired();
+      await this.sessionStatus(generation);
     } catch (error) {
       if (!(error instanceof SessionExpired) || !hadAccess) throw error;
       if (generation !== this.generation) throw error;
       // An access token may expire without ending the session. The server validates
       // the inactivity window before allowing refresh; refresh never extends it.
       await this.refresh();
-      const status = await this.get(this.config.hermesBase, '/api/auth/mobile/session', this.accessToken!);
-      if (generation !== this.generation) throw new SessionExpired();
-      if (status.active !== true) throw new SessionExpired();
+      await this.sessionStatus(generation);
     }
   }
 
@@ -151,6 +164,7 @@ export class StagingAuth {
     if (generation !== this.generation) throw new SessionExpired();
     await this.post(this.config.hermesBase, '/api/auth/mobile/activity', {}, this.accessToken!);
     if (generation !== this.generation) throw new SessionExpired();
+    await this.sessionStatus(generation);
     this.lastActivitySent = now;
   }
 
@@ -189,6 +203,7 @@ export class StagingAuth {
     // Lock synchronously. Never validate, renew, or rely on an access JWT here.
     this.generation++;
     this.accessToken = null;
+    this.idleDeadline = null;
     this.lastActivitySent = 0;
     // Read the current protected token before queuing its deletion. A pending
     // marker (including one left by a crash) makes its identity uncertain.
@@ -211,6 +226,7 @@ export class StagingAuth {
   async clear() {
     this.generation++;
     this.accessToken = null;
+    this.idleDeadline = null;
     this.lastActivitySent = 0;
     const remove = this.storageQueue.then(async () => {
       await this.storage.deleteItemAsync(KEY);

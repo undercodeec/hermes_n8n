@@ -1,5 +1,7 @@
 # G1 · Acceso móvil con la identidad actual del CRM
 
+> **Nota de vigencia (18/11/2026):** este plan conserva el acuerdo G1 original de 30 minutos para trazabilidad. El propietario lo reemplazó por **24 horas sin interacción humana para web y móvil, también con el teléfono bloqueado**, sin máximo absoluto mientras haya actividad. Refresh, validación automática, polling y background no reinician la inactividad. Ver `bitacora-desarrollo.md` y el registro de integración VPS: el cambio no está desplegado por el solo hecho de actualizar este documento.
+
 **Fecha:** 17/11/2026. **Estado:** criterios G1 acordados y aprobados por la solicitud posterior «procede con las fases» para trabajo de desarrollo local; no autoriza cambios productivos, migraciones en bases reales, cuentas nuevas ni distribución. **Base Git de planificación:** rama piloto Hermes `a637ac635f1046369862b9f298f5de1551527887`, que integra el prototipo móvil y su diseño aprobado. Esa referencia Git no acredita un despliegue de backend nuevo. El último backend cuyo runtime se verificó en esta conversación fue `b044ea620e8b9b2bb5f6252d15534b359c42eee2`, imagen `sha256:4003d04037c7c3d28ff0b9c1da1554ea5151764bd4d3b9ab2762c681a3ebadbb`; no se comprobó nuevamente al redactar este plan.
 
 ## 1. Decisiones del propietario

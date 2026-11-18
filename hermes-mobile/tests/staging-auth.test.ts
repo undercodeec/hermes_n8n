@@ -13,6 +13,7 @@ function fakeStorage() {
 }
 const config = stagingConfig('https://otp.example.invalid', 'https://hermes.example.invalid')!;
 function result(value: unknown, status = 200) { return new Response(JSON.stringify(value), { status, headers: { 'Content-Type': 'application/json' } }); }
+const activeSession = () => result({ active: true, idleRemainingMs: 24 * 60 * 60_000 });
 
 test('staging mode requires explicit endpoints and HTTPS outside loopback', () => {
   assert.equal(stagingConfig(undefined, 'https://hermes.example.invalid'), null);
@@ -28,7 +29,7 @@ test('inbox GET stays on Hermes, uses the protected session, and never calls sen
     calls.push({ url, method: String(init.method), authorized: Boolean((init.headers as Record<string, string>)?.Authorization) });
     if (url.endsWith('/verify-code')) return result({ proof: 'proof' });
     if (url.endsWith('/crm-proof')) return result({ accessToken: 'access', refreshToken: 'refresh' });
-    if (url.endsWith('/mobile/session')) return result({ active: true });
+    if (url.endsWith('/mobile/session')) return activeSession();
     return result({ data: [], nextCursor: null, reconciliation: 'restart' });
   });
   await auth.verifyCode('operator@example.invalid', '12345678');
@@ -43,9 +44,11 @@ test('inbox GET stays on Hermes, uses the protected session, and never calls sen
 
 test('revoked inbox session fails closed without returning data', async () => {
   const { store } = fakeStorage();
+  let checked = false;
   const auth = new StagingAuth(config, store, async (url) => {
     if (url.endsWith('/verify-code')) return result({ proof: 'proof' });
     if (url.endsWith('/crm-proof')) return result({ accessToken: 'access', refreshToken: 'refresh' });
+    if (url.endsWith('/mobile/session') && !checked) { checked = true; return activeSession(); }
     return result({}, 401);
   });
   await auth.verifyCode('operator@example.invalid', '12345678');
@@ -56,17 +59,18 @@ test('OTP proof goes only to Hermes; no admin token is stored', async () => {
   const { store, values } = fakeStorage();
   const calls: { url: string; body: Record<string, string> }[] = [];
   const transport: Transport = async (url, init) => {
-    const body = JSON.parse(String(init.body)) as Record<string, string>;
+    const body = init.body ? JSON.parse(String(init.body)) as Record<string, string> : {};
     calls.push({ url, body });
     if (url.endsWith('/request-code')) return result({ success: true });
     if (url.endsWith('/verify-code')) return result({ success: true, proof: 'one-use-proof' });
+    if (url.endsWith('/mobile/session')) return activeSession();
     return result({ accessToken: 'short-access', refreshToken: 'private-refresh' });
   };
   const auth = new StagingAuth(config, store, transport);
   await auth.requestCode(' user@example.invalid ');
   await assert.rejects(auth.verifyCode('user@example.invalid', '123'), /ocho dígitos/);
   await auth.verifyCode('user@example.invalid', '00000001');
-  assert.equal(calls.length, 3);
+  assert.equal(calls.length, 4);
   assert.equal(calls[0].body.email, 'user@example.invalid');
   assert.equal(calls[1].body.code, '00000001');
   assert.deepEqual(calls[2].body, { proof: 'one-use-proof' });
@@ -80,10 +84,49 @@ test('restoring validates with server; refresh and session check do not send act
   const calls: string[] = [];
   const transport: Transport = async (url, init) => {
     calls.push(`${init.method} ${url}`);
-    return url.endsWith('/refresh') ? result({ accessToken: 'access', refreshToken: 'rotated' }) : result({ active: true });
+    return url.endsWith('/refresh') ? result({ accessToken: 'access', refreshToken: 'rotated' }) : activeSession();
   };
   await new StagingAuth(config, store, transport).validate();
   assert.deepEqual(calls.map((url) => `${url.split(' ')[0]} ${url.split('/').at(-1)}`), ['POST refresh', 'GET session']);
+});
+
+test('server TTL controls offline display expiry even without requests or gestures', async () => {
+  const { store } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'saved');
+  const auth = new StagingAuth(config, store, async (url) => url.endsWith('/refresh')
+    ? result({ accessToken: 'a', refreshToken: 'r' }) : result({ active: true, idleRemainingMs: 15 }));
+  await auth.validate();
+  assert.equal(auth.idleExpired(), false);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(auth.idleExpired(), true);
+});
+
+test('missing TTL from older backend never exposes a protected screen', async () => {
+  const { store } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'saved');
+  const auth = new StagingAuth(config, store, async (url) => url.endsWith('/refresh')
+    ? result({ accessToken: 'a', refreshToken: 'r' }) : result({ active: true }));
+  await assert.rejects(auth.validate(), SessionExpired);
+  assert.equal(auth.idleExpired(), true);
+});
+
+test('deliberate activity renews TTL but validation alone never posts activity', async () => {
+  const { store } = fakeStorage();
+  await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'saved');
+  let remaining = 20;
+  let activities = 0;
+  const auth = new StagingAuth(config, store, async (url) => {
+    if (url.endsWith('/refresh')) return result({ accessToken: 'a', refreshToken: 'r' });
+    if (url.endsWith('/activity')) { activities++; remaining = 86_400_000; return result({ active: true }); }
+    return result({ active: true, idleRemainingMs: remaining });
+  });
+  await auth.validate();
+  assert.equal(activities, 0);
+  await auth.activity();
+  assert.equal(activities, 1);
+  assert.equal(auth.idleExpired(), false);
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(auth.idleExpired(), false);
 });
 
 test('expired refresh fails closed and cannot restore a screen', async () => {
@@ -113,9 +156,11 @@ test('offline session check never refreshes; 401 may refresh once but never acce
 test('401 on an existing access JWT tries refresh once; rejected refresh has no grace period', async () => {
   const { store, values } = fakeStorage();
   let refreshes = 0;
+  let checked = false;
   const auth = new StagingAuth(config, store, async (url) => {
     if (url.endsWith('/verify-code')) return result({ proof: 'p' });
     if (url.endsWith('/crm-proof')) return result({ accessToken: 'a', refreshToken: 'old' });
+    if (url.endsWith('/mobile/session') && !checked) { checked = true; return activeSession(); }
     if (url.endsWith('/refresh')) { refreshes++; return result({}, 401); }
     return result({}, 401);
   });
@@ -138,12 +183,15 @@ test('OTP error and throttling never expose server payload or grant access', asy
 
 test('offline logout confirms local deletion but not remote revocation', async () => {
   const { store, values } = fakeStorage();
+  let offline = false;
   const auth = new StagingAuth(config, store, async (url) => {
     if (url.endsWith('/crm-proof')) return result({ accessToken: 'a', refreshToken: 'r' });
     if (url.endsWith('/verify-code')) return result({ proof: 'p' });
+    if (!offline && url.endsWith('/mobile/session')) return activeSession();
     throw new Error('offline');
   });
   await auth.verifyCode('user@example.invalid', '12345678');
+  offline = true;
   await assert.rejects(auth.validate(), NetworkUnavailable);
   assert.equal(await auth.logout(), 'unconfirmed');
   assert.equal(values.size, 0);
@@ -158,6 +206,7 @@ test('logout blocks immediately and removes protected secret while remote reques
   const auth = new StagingAuth(config, store, async (url, init) => {
     if (url.endsWith('/verify-code')) return result({ proof: 'p' });
     if (url.endsWith('/crm-proof')) return result({ accessToken: 'a', refreshToken: 'r' });
+    if (url.endsWith('/mobile/session')) return activeSession();
     assert.ok(url.endsWith('/logout-refresh'));
     assert.deepEqual(JSON.parse(String(init.body)), { refreshToken: 'r' });
     assert.equal((init.headers as Record<string, string>).Authorization, undefined);
@@ -224,7 +273,7 @@ test('logout fails closed if protected storage cannot delete the secret', async 
   const { store, values } = fakeStorage();
   await store.setItemAsync('hermes.crm.mobile.refresh.v1', 'saved');
   const auth = new StagingAuth(config, store, async (url) => url.endsWith('/refresh')
-    ? result({ accessToken: 'a', refreshToken: 'r' }) : result({ active: true }));
+    ? result({ accessToken: 'a', refreshToken: 'r' }) : activeSession());
   await auth.validate();
   store.deleteItemAsync = async () => { throw new Error('storage failure'); };
   await assert.rejects(auth.logout(), LocalClearFailed);
@@ -239,6 +288,7 @@ test('expired access JWT still revokes with current refresh without session chec
     paths.push(url.split('/').at(-1)!);
     if (url.endsWith('/verify-code')) return result({ proof: 'p' });
     if (url.endsWith('/crm-proof')) return result({ accessToken: 'expired-jwt', refreshToken: 'current' });
+    if (url.endsWith('/mobile/session')) return activeSession();
     if (url.endsWith('/logout-refresh')) {
       assert.deepEqual(JSON.parse(String(init.body)), { refreshToken: 'current' });
       assert.equal((init.headers as Record<string, string>).Authorization, undefined);
@@ -248,7 +298,7 @@ test('expired access JWT still revokes with current refresh without session chec
   });
   await auth.verifyCode('user@example.invalid', '12345678');
   assert.equal(await auth.logout(), 'revoked');
-  assert.deepEqual(paths, ['verify-code', 'crm-proof', 'logout-refresh']);
+  assert.deepEqual(paths, ['verify-code', 'crm-proof', 'session', 'logout-refresh']);
   assert.equal(values.size, 0);
 });
 

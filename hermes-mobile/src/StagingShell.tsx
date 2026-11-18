@@ -15,7 +15,6 @@ export function StagingShell({ renderDemo, renderReadOnly }: { renderDemo: (logo
   const [busy, setBusy] = useState(false);
   const [revocationNotice, setRevocationNotice] = useState<'confirmed' | 'unconfirmed' | null>(null);
   const [clearFailed, setClearFailed] = useState(false);
-  const lastInteraction = useRef(Date.now());
   const foreground = useRef(true);
   const pending = useRef(false);
   const revision = useRef(0);
@@ -34,7 +33,7 @@ export function StagingShell({ renderDemo, renderReadOnly }: { renderDemo: (logo
     try {
       await ScreenCapture.preventScreenCaptureAsync('hermes-crm-staging');
       await auth.validate();
-      if (foreground.current && current === revision.current) { lastInteraction.current = Date.now(); setError(''); setPhase('ready'); }
+      if (foreground.current && current === revision.current && !auth.idleExpired()) { setError(''); setPhase('ready'); }
     }
     catch (failure) {
       if (failure instanceof LocalClearFailed) { setClearFailed(true); setPhase('locked'); setError(failure.message); return; }
@@ -54,7 +53,7 @@ export function StagingShell({ renderDemo, renderReadOnly }: { renderDemo: (logo
       if (!authenticating.current) void unlock();
     });
     const interval = setInterval(() => {
-      if (Date.now() - lastInteraction.current >= 30 * 60_000 && !authenticating.current) { revision.current++; setPhase((current) => current === 'ready' ? 'locked' : current); }
+      if (auth?.idleExpired() && !authenticating.current) { revision.current++; setPhase((current) => current === 'ready' ? 'locked' : current); }
     }, 5_000);
     return () => { subscription.remove(); clearInterval(interval); };
   }, [unlock]);
@@ -80,7 +79,7 @@ export function StagingShell({ renderDemo, renderReadOnly }: { renderDemo: (logo
     if (phase !== 'ready' || !foreground.current || !auth || pending.current) return;
     const current = revision.current;
     pending.current = true;
-    void auth.activity().then(() => { if (current === revision.current && foreground.current) lastInteraction.current = Date.now(); })
+    void auth.activity().then(() => { if (current !== revision.current || !foreground.current) return; })
       .catch(async (failure) => {
         if (failure instanceof LocalClearFailed) { setClearFailed(true); setPhase('locked'); setError(failure.message); return; }
         if (current !== revision.current) return;
@@ -151,7 +150,7 @@ export function StagingShell({ renderDemo, renderReadOnly }: { renderDemo: (logo
                 const current = revision.current;
                 await auth.verifyCode(email, code);
                 setCode('');
-                if (foreground.current && current === revision.current) { lastInteraction.current = Date.now(); setRevocationNotice(null); setPhase('ready'); }
+                if (foreground.current && current === revision.current && !auth.idleExpired()) { setRevocationNotice(null); setPhase('ready'); }
                 else { setPhase('locked'); if (foreground.current) void unlock(); }
               }
             })}><Text style={styles.buttonText}>{phase === 'request' ? 'Solicitar código' : 'Ingresar al CRM de prueba'}</Text></Pressable>

@@ -24,6 +24,10 @@ La [bitácora de desarrollo](docs/bitacora-desarrollo.md) registra las decisione
 
 El [plan G1 de acceso y sesión](docs/plan-g1-acceso-sesion-2026-11-17.md) documenta las decisiones del propietario para reutilizar el acceso actual de un solo operador y cerrar la sesión móvil tras 30 minutos de inactividad; es diseño, no implementación.
 
+**Decisión posterior (18/11/2026):** el plazo de 30 minutos del plan G1 fue reemplazado por **24 horas sin interacción humana para web y móvil**, incluso si el teléfono está bloqueado. La app usa ese umbral como bloqueo local; la caducidad efectiva depende de desplegar y verificar las versiones nuevas de los servidores. Ver la bitácora; no tratar el código local ni Expo Go como prueba de 24 horas productivas.
+
+El cliente de solo lectura con esta política **requiere** `idleRemainingMs` del servidor Hermes al consultar `/api/auth/mobile/session`. Si la API antigua no lo entrega, no abre el Inbox: desplegar Hermes compatible antes de ofrecer este bundle. No iniciar una compilación instalable con URLs sin configurar; el modo sin opt-in mantiene la demo de datos ficticios.
+
 ## G3 · Acceso en entorno aislado (opt-in)
 
 La app sigue abriendo por defecto el prototipo G0 sin red. Con `EXPO_PUBLIC_MOBILE_AUTH_MODE=staging` y ambas URL HTTPS configuradas (`.env.example`), el acceso solicita el OTP al proveedor CRM de prueba y canjea una prueba temporal por una sesión móvil Hermes. El token de renovación se almacena mediante `expo-secure-store`; no se incluye ningún secreto en el bundle. Se bloquea la pantalla al pasar a segundo plano, volver sin red o no poder validar la sesión. Solo una interacción del operador en primer plano solicita prolongación de la sesión; el backend decide su expiración. Este modo **no muestra datos reales ni envía mensajes**: después del login se conserva el Inbox ficticio, claramente marcado. No apuntar estas URL a producción ni probar con cuentas reales hasta pasar revisión de seguridad, integración completa, validación en dispositivo y aprobación de liberación.
