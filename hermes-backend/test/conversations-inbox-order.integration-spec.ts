@@ -122,7 +122,9 @@ describeDatabase('Pilot Inbox against disposable PostgreSQL', () => {
         }),
       },
     };
-    prisma = new PrismaClient(options);
+    // Keep the existing Prisma internal test override at runtime; its type is private.
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-type-assertion
+    prisma = new PrismaClient(options as never);
     expect(await prisma.conversation.count()).toBe(0);
     service = new ConversationsService(
       prisma as PrismaService,

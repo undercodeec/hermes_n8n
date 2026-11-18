@@ -3,20 +3,38 @@ import { PrismaClient } from '@prisma/client';
 import { AuthService } from '../src/auth/auth.service';
 import { JwtStrategy } from '../src/auth/strategies/jwt.strategy';
 
-// Opt in ONLY to a disposable local test database with migrations already applied.
+// Opt in ONLY to a NEW migrated disposable local database with a random name.
 const url = process.env.HERMES_G2_TEST_DATABASE_URL;
-const local =
-  url &&
-  /^postgres(?:ql)?:\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1):\d+\/hermes_g2(?:\?|$)/.test(
-    url,
-  );
+function disposableUrl(value?: string): boolean {
+  if (!value) return false;
+  try {
+    const target = new URL(value);
+    return (
+      target.protocol === 'postgresql:' &&
+      target.hostname === '127.0.0.1' &&
+      /^\d+$/.test(target.port) &&
+      target.username === 'hermes_g2_test' &&
+      Boolean(target.password) &&
+      /^\/hermes_g2_test_[a-f0-9]{32}$/.test(target.pathname) &&
+      !target.search &&
+      !target.hash
+    );
+  } catch {
+    return false;
+  }
+}
+const local = disposableUrl(url);
 const run = local ? describe : describe.skip;
 const secret = 'hermes-g2-local-test-secret-minimum-32-characters';
 
 run('mobile G2 against disposable PostgreSQL', () => {
   const prisma = new PrismaClient({
     datasources: {
-      db: { url: url || 'postgresql://test:test@127.0.0.1:1/hermes_g2' },
+      db: {
+        url:
+          url ||
+          'postgresql://test:test@127.0.0.1:1/hermes_g2_test_unavailable',
+      },
     },
   });
   const email = `g2-${randomUUID()}@example.test`;
@@ -30,9 +48,7 @@ run('mobile G2 against disposable PostgreSQL', () => {
       )[key],
     getOrThrow: () => secret,
   };
-  const jwt = {
-    sign: (_payload: unknown) => 'local-signed-token-not-used-over-http',
-  };
+  const jwt = { sign: () => 'local-signed-token-not-used-over-http' };
   const service = new AuthService(
     prisma as never,
     jwt as never,
@@ -41,7 +57,15 @@ run('mobile G2 against disposable PostgreSQL', () => {
   const strategy = new JwtStrategy(config as never, prisma as never);
   const jtis: string[] = [];
 
-  function proof(audience: 'hermes-crm' | 'hermes-crm-mobile' = 'hermes-crm', jti = randomUUID()) {
+  beforeAll(async () => {
+    expect(await prisma.user.count()).toBe(0);
+    expect(await prisma.mobileSession.count()).toBe(0);
+  });
+
+  function proof(
+    audience: 'hermes-crm' | 'hermes-crm-mobile' = 'hermes-crm',
+    jti = randomUUID(),
+  ) {
     const header = Buffer.from(
       JSON.stringify({ alg: 'HS256', typ: 'JWT' }),
     ).toString('base64url');
@@ -92,7 +116,9 @@ run('mobile G2 against disposable PostgreSQL', () => {
     expect(
       await prisma.consumedCrmProof.count({ where: { jti: jtis[1] } }),
     ).toBe(0);
-    await expect(service.loginWithCrmProof(proof('hermes-crm', inactiveJti))).rejects.toThrow();
+    await expect(
+      service.loginWithCrmProof(proof('hermes-crm', inactiveJti)),
+    ).rejects.toThrow();
     expect(
       (await prisma.user.findUniqueOrThrow({ where: { email } })).isActive,
     ).toBe(false);
@@ -100,7 +126,9 @@ run('mobile G2 against disposable PostgreSQL', () => {
   });
 
   it('refresh CAS allows exactly one winner; idle expiry and logout revoke JWT', async () => {
-    const login = await service.loginMobileWithCrmProof(proof('hermes-crm-mobile'));
+    const login = await service.loginMobileWithCrmProof(
+      proof('hermes-crm-mobile'),
+    );
     const session = await prisma.mobileSession.findFirstOrThrow({
       where: { user: { email }, revokedAt: null },
       orderBy: { createdAt: 'desc' },
@@ -137,7 +165,9 @@ run('mobile G2 against disposable PostgreSQL', () => {
     await service.logoutMobile(session.userId, session.id);
     await expect(strategy.validate(claims)).rejects.toThrow();
 
-    const second = await service.loginMobileWithCrmProof(proof('hermes-crm-mobile'));
+    const second = await service.loginMobileWithCrmProof(
+      proof('hermes-crm-mobile'),
+    );
     const expiring = await prisma.mobileSession.findUniqueOrThrow({
       where: { id: second.refreshToken.split('.')[0] },
     });
@@ -155,25 +185,43 @@ run('mobile G2 against disposable PostgreSQL', () => {
   });
 
   it('web operator can revoke all phone sessions without revoking web access', async () => {
-    const mobile = await service.loginMobileWithCrmProof(proof('hermes-crm-mobile'));
+    const mobile = await service.loginMobileWithCrmProof(
+      proof('hermes-crm-mobile'),
+    );
     const account = await prisma.user.findUniqueOrThrow({ where: { email } });
     const revoked = await service.revokeAllMobileForOperator(account.id, email);
     expect(revoked.revokedSessions).toBeGreaterThanOrEqual(1);
     await expect(service.refreshMobile(mobile.refreshToken)).rejects.toThrow();
-    await expect(service.loginWithCrmProof(proof('hermes-crm'))).resolves.toHaveProperty('accessToken');
+    await expect(
+      service.loginWithCrmProof(proof('hermes-crm')),
+    ).resolves.toHaveProperty('accessToken');
   });
 
   it('only one phone stays active after sequential and concurrent logins', async () => {
-    const first = await service.loginMobileWithCrmProof(proof('hermes-crm-mobile'));
-    const second = await service.loginMobileWithCrmProof(proof('hermes-crm-mobile'));
+    const first = await service.loginMobileWithCrmProof(
+      proof('hermes-crm-mobile'),
+    );
+    const second = await service.loginMobileWithCrmProof(
+      proof('hermes-crm-mobile'),
+    );
     await expect(service.refreshMobile(first.refreshToken)).rejects.toThrow();
-    expect((await prisma.mobileSession.count({ where: { user: { email }, revokedAt: null } }))).toBe(1);
+    expect(
+      await prisma.mobileSession.count({
+        where: { user: { email }, revokedAt: null },
+      }),
+    ).toBe(1);
     const concurrent = await Promise.allSettled([
       service.loginMobileWithCrmProof(proof('hermes-crm-mobile')),
       service.loginMobileWithCrmProof(proof('hermes-crm-mobile')),
     ]);
-    expect(concurrent.some((result) => result.status === 'fulfilled')).toBe(true);
-    expect((await prisma.mobileSession.count({ where: { user: { email }, revokedAt: null } }))).toBe(1);
+    expect(concurrent.some((result) => result.status === 'fulfilled')).toBe(
+      true,
+    );
+    expect(
+      await prisma.mobileSession.count({
+        where: { user: { email }, revokedAt: null },
+      }),
+    ).toBe(1);
     await expect(service.refreshMobile(second.refreshToken)).rejects.toThrow();
   });
 
@@ -183,7 +231,13 @@ run('mobile G2 against disposable PostgreSQL', () => {
       service.loginMobileWithCrmProof(proof('hermes-crm-mobile')),
       service.revokeAllMobileForOperator(account.id, email),
     ]);
-    expect(attempts.every((result) => result.status === 'fulfilled')).toBe(true);
-    expect((await prisma.mobileSession.count({ where: { user: { email }, revokedAt: null } }))).toBeLessThanOrEqual(1);
+    expect(attempts.every((result) => result.status === 'fulfilled')).toBe(
+      true,
+    );
+    expect(
+      await prisma.mobileSession.count({
+        where: { user: { email }, revokedAt: null },
+      }),
+    ).toBeLessThanOrEqual(1);
   });
 });

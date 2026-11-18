@@ -21,7 +21,7 @@ Próximo diseño y prueba, **solo en aislamiento con Meta simulado**: barreras c
 
 ## Validación reproducible (solo simulación)
 
-`npm ci && npx prisma generate && npm run build && npm test -- --runInBand mobile-reply.service.spec.ts`. Integración opt-in: crear **PostgreSQL desechable local** llamado exactamente `hermes_mobile_reply_test` y aplicar `DATABASE_URL=postgresql://...@127.0.0.1:PUERTO/hermes_mobile_reply_test npx prisma migrate deploy`; ejecutar `HERMES_MOBILE_REPLY_TEST_DATABASE_URL=postgresql://...@127.0.0.1:PUERTO/hermes_mobile_reply_test npx jest --config ./test/jest-integration.json --runInBand mobile-reply-postgres.integration-spec.ts`. La suite no se conecta fuera de localhost/127.0.0.1 ni usa DATABASE_URL; Meta siempre es un mock. No insertar números reales ni conectarse a Meta en pruebas.
+`npm ci && npx prisma generate && npm run build && npm test -- --runInBand mobile-reply.service.spec.ts`. Integración opt-in en Windows con Docker y dependencias instaladas: `./scripts/run-mobile-postgres-tests.ps1 -Suite reply`. El runner crea PostgreSQL desechable en loopback con nombre aleatorio `hermes_mobile_reply_test_<32 hex>`, usuario de prueba, aplica migraciones y borra el contenedor en `finally`. La suite exige ese nombre y usuario y rechaza URL compartidas o con parámetros; no usa el `DATABASE_URL` del entorno del usuario. Meta siempre es un mock. No insertar números reales ni conectarse a Meta en pruebas.
 
 ## Rollback / recuperación
 

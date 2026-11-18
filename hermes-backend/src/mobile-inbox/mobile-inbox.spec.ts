@@ -163,7 +163,7 @@ describe('mobile inbox read boundary', () => {
     );
     expect(afterEmpty.sql).not.toContain('latest."createdAt" <');
     await expect(
-      service.list({ limit: 1, cursor: first.nextCursor }),
+      service.list({ limit: 1, cursor: first.nextCursor! }),
     ).rejects.toThrow(BadRequestException);
     await expect(service.list({ limit: 1, cursor: 'bad' })).rejects.toThrow(
       BadRequestException,

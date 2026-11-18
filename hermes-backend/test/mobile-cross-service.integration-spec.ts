@@ -70,9 +70,11 @@ async function post(url: string, body: object, bearer?: string) {
 run('isolated HTTP OTP + SMTP capture + Hermes mobile/web contract', () => {
   let prisma: PrismaClient;
   let mysql: {
-    query: (sql: string, params?: unknown[]) => Promise<unknown>;
+    query: (
+      sql: string,
+      params?: unknown[],
+    ) => Promise<[Array<Record<string, unknown>>, unknown]>;
     end: () => Promise<void>;
-    getConnection: () => Promise<unknown>;
   };
   let provider: Server;
   let hermes: INestApplication;

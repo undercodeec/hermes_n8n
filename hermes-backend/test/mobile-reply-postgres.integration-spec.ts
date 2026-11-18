@@ -12,13 +12,27 @@ import {
 import { MobileReplyService } from '../src/conversations/mobile-reply.service';
 import { MetaSendError } from '../src/meta/meta.service';
 
-// Explicit opt-in, local disposable DB ONLY. Never use DATABASE_URL or a shared DB.
+// Explicit opt-in, NEW local disposable DB ONLY. Never use DATABASE_URL or a shared DB.
 const url = process.env.HERMES_MOBILE_REPLY_TEST_DATABASE_URL;
-const local =
-  url &&
-  /^postgres(?:ql)?:\/\/(?:[^@/]+@)?(?:localhost|127\.0\.0\.1):\d+\/hermes_mobile_reply_test(?:\?|$)/.test(
-    url,
-  );
+function disposableUrl(value?: string): boolean {
+  if (!value) return false;
+  try {
+    const target = new URL(value);
+    return (
+      target.protocol === 'postgresql:' &&
+      target.hostname === '127.0.0.1' &&
+      /^\d+$/.test(target.port) &&
+      target.username === 'hermes_mobile_reply_test' &&
+      Boolean(target.password) &&
+      /^\/hermes_mobile_reply_test_[a-f0-9]{32}$/.test(target.pathname) &&
+      !target.search &&
+      !target.hash
+    );
+  } catch {
+    return false;
+  }
+}
+const local = disposableUrl(url);
 const run = local ? describe : describe.skip;
 
 run('mobile reply PostgreSQL ledger (Meta mock only)', () => {
@@ -26,7 +40,8 @@ run('mobile reply PostgreSQL ledger (Meta mock only)', () => {
     datasources: {
       db: {
         url:
-          url || 'postgresql://test:test@127.0.0.1:1/hermes_mobile_reply_test',
+          url ||
+          'postgresql://test:test@127.0.0.1:1/hermes_mobile_reply_test_unavailable',
       },
     },
   });
@@ -50,6 +65,8 @@ run('mobile reply PostgreSQL ledger (Meta mock only)', () => {
   };
 
   beforeAll(async () => {
+    expect(await prisma.user.count()).toBe(0);
+    expect(await prisma.mobileReplyOperation.count()).toBe(0);
     await prisma.user.create({
       data: {
         id: actor.id,
