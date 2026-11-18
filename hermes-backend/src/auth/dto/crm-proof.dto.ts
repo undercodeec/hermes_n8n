@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsString, MaxLength } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class CrmProofDto {
   @ApiProperty({
@@ -9,4 +9,10 @@ export class CrmProofDto {
   @IsString()
   @MaxLength(2048)
   proof: string;
+
+  @ApiPropertyOptional({ description: 'Refresh web vigente para reexchange sin crear otra sesión; no renueva inactividad' })
+  @IsOptional()
+  @IsString()
+  @MaxLength(256)
+  existingRefreshToken?: string;
 }

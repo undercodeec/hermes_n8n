@@ -4,6 +4,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { mobileJwtKey } from '../mobile-jwt-key';
+import { webJwtKey } from '../web-jwt-key';
 import { UserRole } from '@prisma/client';
 
 export interface JwtPayload {
@@ -12,6 +13,7 @@ export interface JwtPayload {
   role: string;
   sid?: string;
   typ?: string;
+  exp?: number;
 }
 
 @Injectable()
@@ -22,6 +24,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   ) {
     const webSecret = configService.getOrThrow<string>('JWT_SECRET');
     const mobileSecret = mobileJwtKey(webSecret);
+    const sessionWebSecret = webJwtKey(webSecret);
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
@@ -38,8 +41,8 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
           ) as unknown;
           if (!claims || typeof claims !== 'object')
             return done(new Error('Invalid token'));
-          const mobile = (claims as Record<string, unknown>).typ === 'mobile';
-          return done(null, mobile ? mobileSecret : webSecret);
+          const type = (claims as Record<string, unknown>).typ;
+          return done(null, type === 'mobile' ? mobileSecret : type === 'web' ? sessionWebSecret : webSecret);
         } catch {
           return done(new Error('Invalid token'));
         }
@@ -48,7 +51,20 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
   }
 
   async validate(payload: JwtPayload) {
-    if (payload.typ === 'mobile' || payload.sid !== undefined) {
+    if (payload.typ === 'web') {
+      if (typeof payload.sid !== 'string' || !payload.sid ||
+          typeof payload.exp !== 'number')
+        throw new UnauthorizedException('Token web inválido');
+      const session = await this.prisma.webSession.findFirst({
+        where: { id: payload.sid, userId: payload.sub, revokedAt: null, expiresAt: { gt: new Date() } },
+        select: { expiresAt: true },
+      });
+      if (!session || session.expiresAt.getTime() <= Date.now())
+        throw new UnauthorizedException('Sesión web vencida o revocada');
+    } else if (payload.typ !== undefined && payload.typ !== 'mobile') {
+      throw new UnauthorizedException('Tipo de token inválido');
+    }
+    if (payload.typ === 'mobile' || (payload.sid !== undefined && payload.typ !== 'web')) {
       if (payload.typ !== 'mobile' || typeof payload.sid !== 'string') {
         throw new UnauthorizedException('Token móvil inválido');
       }
@@ -71,7 +87,7 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!user || !user.isActive) {
       throw new UnauthorizedException('Usuario no autorizado o inactivo');
     }
-    if (payload.typ === 'mobile') {
+    if (payload.typ === 'mobile' || payload.typ === 'web') {
       const operatorEmail = this.configService
         .get<string>('CRM_OPERATOR_EMAIL', 'gerencia@undercodeec.com')
         .trim()
@@ -88,7 +104,9 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
       email: user.email,
       name: user.name,
       role: user.role,
-      ...(payload.typ === 'mobile' ? { sessionId: payload.sid } : {}),
+      ...(payload.typ === 'mobile' || payload.typ === 'web'
+        ? { sessionId: payload.sid, sessionType: payload.typ, accessExpiresAt: payload.exp }
+        : {}),
     };
   }
 }

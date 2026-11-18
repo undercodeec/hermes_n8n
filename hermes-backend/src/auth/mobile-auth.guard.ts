@@ -12,8 +12,8 @@ export class MobileAuthGuard extends JwtAuthGuard {
     const allowed = await super.canActivate(context);
     const user = context
       .switchToHttp()
-      .getRequest<{ user?: { sessionId?: string } }>().user;
-    if (!allowed || !user?.sessionId)
+      .getRequest<{ user?: { sessionId?: string; sessionType?: string } }>().user;
+    if (!allowed || !user?.sessionId || user.sessionType !== 'mobile')
       throw new UnauthorizedException('Se requiere una sesión móvil');
     return true;
   }

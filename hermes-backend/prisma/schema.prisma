@@ -110,6 +110,7 @@ model User {
   conversationFeedback ConversationFeedback[]
   approvedLearnings    LearningItem[]         @relation("LearningApprover")
   mobileSessions       MobileSession[]
+  webSessions          WebSession[]
 
   @@map("users")
 }
@@ -135,6 +136,21 @@ model MobileSession {
 
   @@index([userId, expiresAt])
   @@map("mobile_sessions")
+}
+
+// OTP web sessions are independent of legacy password-issued JWTs.
+model WebSession {
+  id          String    @id @default(uuid())
+  userId      String
+  refreshHash String
+  expiresAt   DateTime
+  revokedAt   DateTime?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, expiresAt])
+  @@map("web_sessions")
 }
 
 enum MobileReplyStatus {

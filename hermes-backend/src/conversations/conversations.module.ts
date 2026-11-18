@@ -5,9 +5,10 @@ import { MetaModule } from '../meta/meta.module';
 import { ConversationEventsService } from './conversation-events.service';
 import { MobileReplyController } from './mobile-reply.controller';
 import { MobileReplyService } from './mobile-reply.service';
+import { AuthModule } from '../auth/auth.module';
 
 @Module({
-  imports: [MetaModule],
+  imports: [MetaModule, AuthModule],
   controllers: [ConversationsController, MobileReplyController],
   providers: [
     ConversationsService,
