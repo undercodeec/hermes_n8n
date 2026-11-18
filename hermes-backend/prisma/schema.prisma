@@ -137,6 +137,33 @@ model MobileSession {
   @@map("mobile_sessions")
 }
 
+enum MobileReplyStatus {
+  PREPARED
+  DISPATCHING
+  CONFIRMED
+  AMBIGUOUS
+}
+
+// No cascade: the dispatch record must outlive a conversation or user deletion.
+// Operation IDs are global, not scoped to an actor or conversation.
+model MobileReplyOperation {
+  operationId       String            @id @db.Uuid
+  conversationId    String
+  userId            String
+  contentHash       String            @db.VarChar(64)
+  status            MobileReplyStatus @default(PREPARED)
+  dispatchStartedAt DateTime?
+  confirmedAt       DateTime?
+  ambiguousAt       DateTime?
+  wamid             String?           @unique
+  messageId         String?           @unique
+  createdAt         DateTime          @default(now())
+  updatedAt         DateTime          @updatedAt
+
+  @@index([conversationId, userId, createdAt])
+  @@map("mobile_reply_operations")
+}
+
 // ─────────────────────────────────────────────
 // Contacts & Leads
 // ─────────────────────────────────────────────
