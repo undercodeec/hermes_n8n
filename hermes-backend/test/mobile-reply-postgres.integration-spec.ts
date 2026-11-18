@@ -10,6 +10,7 @@ import {
   UserRole,
 } from '@prisma/client';
 import { MobileReplyService } from '../src/conversations/mobile-reply.service';
+import { MetaSendError } from '../src/meta/meta.service';
 
 // Explicit opt-in, local disposable DB ONLY. Never use DATABASE_URL or a shared DB.
 const url = process.env.HERMES_MOBILE_REPLY_TEST_DATABASE_URL;
@@ -167,6 +168,34 @@ run('mobile reply PostgreSQL ledger (Meta mock only)', () => {
     expect(
       (await service.reply(conversationId, dto.operationId, dto, actor)).status,
     ).toBe('DISPATCHING');
+    expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('persists definitive rejection independently of ambiguous delivery and never retries it', async () => {
+    const dto = reply();
+    meta.sendTextMessage.mockRejectedValueOnce(
+      new MetaSendError('DEFINITIVE_REJECTION', false, 400, 'META_HTTP_400'),
+    );
+    const status = await service.reply(
+      conversationId,
+      dto.operationId,
+      dto,
+      actor,
+    );
+    expect(status).toMatchObject({
+      status: MobileReplyStatus.REJECTED,
+      rejectionCode: 'META_HTTP_400',
+      retryable: false,
+    });
+    expect(status.rejectedAt).toBeInstanceOf(Date);
+    expect(
+      (
+        await prisma.mobileReplyOperation.findUniqueOrThrow({
+          where: { operationId: dto.operationId },
+        })
+      ).status,
+    ).toBe(MobileReplyStatus.REJECTED);
+    await service.reply(conversationId, dto.operationId, dto, actor);
     expect(meta.sendTextMessage).toHaveBeenCalledTimes(1);
   });
 
