@@ -6,7 +6,7 @@ param(
   [Parameter(Mandatory = $true)]
   [ValidateSet('YES-SYNTHETIC-LOCAL-ONLY')]
   [string]$ConfirmLocalSynthetic,
-  [ValidateRange(0, 120)]
+  [ValidateRange(0, 600)]
   [int]$RehearsalSeconds = 0
 )
 

@@ -14,7 +14,7 @@ export class MobileInboxQuery {
   @IsInt()
   @Min(1)
   @Max(50)
-  limit = 20;
+  limit: number = 20;
 
   @IsOptional()
   @IsString()
@@ -31,7 +31,7 @@ export class MobileMessageQuery {
   @IsInt()
   @Min(1)
   @Max(100)
-  limit = 50;
+  limit: number = 50;
 
   @IsOptional()
   @IsString()
