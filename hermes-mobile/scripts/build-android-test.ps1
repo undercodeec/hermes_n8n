@@ -140,6 +140,12 @@ try {
           $js.Contains('DATOS FICTICIOS')) {
         throw 'Read-only bundle missing expected API/Inbox code or includes the demo composer. Refusing APK.'
       }
+      $aapt = Join-Path $sdk 'build-tools\36.0.0\aapt.exe'
+      if (!(Test-Path $aapt)) { throw 'aapt 36.0.0 is required for read-only APK manifest validation.' }
+      $manifest = (& $aapt dump badging $apk) -join "`n"
+      if ($LASTEXITCODE -ne 0 -or $manifest -match "uses-permission: name='android\.permission\.(SYSTEM_ALERT_WINDOW|READ_EXTERNAL_STORAGE|WRITE_EXTERNAL_STORAGE|READ_MEDIA_IMAGES|VIBRATE)'") {
+        throw 'Read-only APK still requests an unnecessary overlay/storage/vibration permission.'
+      }
     }
     $signer = Join-Path $sdk 'build-tools\36.0.0\apksigner.bat'
     if (!(Test-Path $signer)) { throw 'apksigner 36.0.0 is required for verification.' }

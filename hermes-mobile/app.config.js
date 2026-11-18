@@ -66,5 +66,12 @@ module.exports = {
     package: variant === 'demo' ? 'com.undercodeec.hermescrmdemo.test' :
       variant === 'staging' ? 'com.undercodeec.hermescrmstaging.test' : 'com.undercodeec.hermescrmreadonly.publicapitest',
     allowBackup: false,
+    ...(variant === 'read-only-public' ? { blockedPermissions: [
+      'android.permission.SYSTEM_ALERT_WINDOW',
+      'android.permission.READ_EXTERNAL_STORAGE',
+      'android.permission.WRITE_EXTERNAL_STORAGE',
+      'android.permission.READ_MEDIA_IMAGES',
+      'android.permission.VIBRATE',
+    ] } : {}),
   },
 };

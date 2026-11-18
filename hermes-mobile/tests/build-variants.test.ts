@@ -37,6 +37,11 @@ test('public API read-only requires exact HTTPS hosts and both explicit opt-ins'
   assert.equal(result.status, 0, result.stderr);
   assert.equal(JSON.parse(result.stdout).android.package, 'com.undercodeec.hermescrmreadonly.publicapitest');
   assert.equal(JSON.parse(result.stdout).name, 'Hermes CRM Read-Only - Test');
+  assert.deepEqual(JSON.parse(result.stdout).android.blockedPermissions.sort(), [
+    'android.permission.SYSTEM_ALERT_WINDOW', 'android.permission.READ_EXTERNAL_STORAGE',
+    'android.permission.WRITE_EXTERNAL_STORAGE', 'android.permission.READ_MEDIA_IMAGES',
+    'android.permission.VIBRATE',
+  ].sort());
   assert.notEqual(config({ ...base, HERMES_MOBILE_PUBLIC_READ_ONLY_CONFIRMED: '' }).status, 0);
   assert.notEqual(config({ ...base, EXPO_PUBLIC_HERMES_API_BASE_URL: 'http://api.undercodeec.com' }).status, 0);
   assert.notEqual(config({ ...base, EXPO_PUBLIC_MOBILE_INBOX_MODE: '' }).status, 0);
