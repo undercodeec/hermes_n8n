@@ -21,6 +21,37 @@ test('staging mode requires explicit endpoints and HTTPS outside loopback', () =
   assert.throws(() => stagingConfig('https://user:pass@otp.example.invalid', 'https://hermes.example.invalid'), /válida/);
 });
 
+test('inbox GET stays on Hermes, uses the protected session, and never calls send routes', async () => {
+  const { store } = fakeStorage();
+  const calls: { url: string; method: string; authorized: boolean }[] = [];
+  const auth = new StagingAuth(config, store, async (url, init) => {
+    calls.push({ url, method: String(init.method), authorized: Boolean((init.headers as Record<string, string>)?.Authorization) });
+    if (url.endsWith('/verify-code')) return result({ proof: 'proof' });
+    if (url.endsWith('/crm-proof')) return result({ accessToken: 'access', refreshToken: 'refresh' });
+    if (url.endsWith('/mobile/session')) return result({ active: true });
+    return result({ data: [], nextCursor: null, reconciliation: 'restart' });
+  });
+  await auth.verifyCode('operator@example.invalid', '12345678');
+  await assert.rejects(auth.authorizedGet('https://example.invalid/api/mobile/inbox'), /Ruta móvil/);
+  await assert.rejects(auth.authorizedGet('/api/conversations'), /Ruta móvil/);
+  const inbox = await auth.authorizedGet('/api/mobile/inbox?limit=20');
+  assert.equal(inbox.status, 200);
+  assert.deepEqual(calls.slice(-2).map((call) => [call.method, call.authorized]), [['GET', true], ['GET', true]]);
+  assert.equal(calls.at(-1)?.url, 'https://hermes.example.invalid/api/mobile/inbox?limit=20');
+  assert.equal(calls.some((call) => /reply|send|activity/.test(call.url)), false);
+});
+
+test('revoked inbox session fails closed without returning data', async () => {
+  const { store } = fakeStorage();
+  const auth = new StagingAuth(config, store, async (url) => {
+    if (url.endsWith('/verify-code')) return result({ proof: 'proof' });
+    if (url.endsWith('/crm-proof')) return result({ accessToken: 'access', refreshToken: 'refresh' });
+    return result({}, 401);
+  });
+  await auth.verifyCode('operator@example.invalid', '12345678');
+  await assert.rejects(auth.authorizedGet('/api/mobile/inbox'), SessionExpired);
+});
+
 test('OTP proof goes only to Hermes; no admin token is stored', async () => {
   const { store, values } = fakeStorage();
   const calls: { url: string; body: Record<string, string> }[] = [];

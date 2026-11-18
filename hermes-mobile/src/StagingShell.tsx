@@ -6,7 +6,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { LocalClearFailed, NetworkUnavailable, RefreshUncertain, SessionExpired, stagingConfig, StagingAuth } from './stagingAuth';
 
 type Phase = 'locked' | 'request' | 'verify' | 'ready';
-export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, activity: () => void) => React.ReactNode }) {
+type ReadOnlyRenderer = (authorizedGet: (path: string) => Promise<Response>, logout: () => void, activity: () => void, accessLost: () => void) => React.ReactNode;
+export function StagingShell({ renderDemo, renderReadOnly }: { renderDemo: (logout: () => void, activity: () => void) => React.ReactNode; renderReadOnly?: ReadOnlyRenderer }) {
   const [phase, setPhase] = useState<Phase>('locked');
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
@@ -117,7 +118,17 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
     })();
   };
 
-  if (phase === 'ready') return <View style={styles.full}>{renderDemo(logout, activity)}</View>;
+  const authorizedGet = useCallback((path: string) => {
+    if (!auth) throw new SessionExpired();
+    return auth.authorizedGet(path);
+  }, [auth]);
+  const accessLost = useCallback(() => {
+    revision.current++;
+    setPhase('locked');
+    setError('No se pudo verificar el acceso a los datos. Vuelve a comprobar la sesión.');
+  }, []);
+
+  if (phase === 'ready') return <View style={styles.full}>{renderReadOnly ? renderReadOnly(authorizedGet, logout, activity, accessLost) : renderDemo(logout, activity)}</View>;
   return <SafeAreaView style={styles.full}>
     <LinearGradient colors={['#F8FAFF', '#F0F4FC', '#F8FAFF']} style={styles.full}>
       <ScrollView contentContainerStyle={styles.center} keyboardShouldPersistTaps="handled">
@@ -125,7 +136,7 @@ export function StagingShell({ renderDemo }: { renderDemo: (logout: () => void, 
           <Image source={require('../assets/hermes-crm-logo.png')} style={styles.logo} resizeMode="contain" accessibilityLabel="Hermes CRM" />
           <Text style={styles.eyebrow}>ENTORNO DE PRUEBA · ACCESO MÓVIL</Text>
           <Text style={styles.title}>Acceso de gerencia</Text>
-          <Text style={styles.disclaimer}>La autenticación se verifica en el entorno configurado. Los chats que se muestran después son ficticios: no se consultan ni envían mensajes reales.</Text>
+          <Text style={styles.disclaimer}>{renderReadOnly ? 'La autenticación y las conversaciones se consultan en el entorno de prueba configurado. Este modo es de solo lectura y no envía mensajes.' : 'La autenticación se verifica en el entorno configurado. Los chats que se muestran después son ficticios: no se consultan ni envían mensajes reales.'}</Text>
           {revocationNotice === 'confirmed' ? <Text accessibilityRole="alert" style={styles.disclaimer}>Revocación remota confirmada. Se borró el acceso local de este dispositivo.</Text> : null}
           {revocationNotice === 'unconfirmed' ? <Text accessibilityRole="alert" style={styles.error}>Se bloqueó el acceso en este dispositivo, pero no se confirmó la revocación remota. Revoca la sesión móvil desde la gestión de sesiones en la web; no compartas ni transfieras el token.</Text> : null}
           {error ? <Text accessibilityRole="alert" style={styles.error}>{error}</Text> : null}

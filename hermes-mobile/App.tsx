@@ -5,6 +5,7 @@ import { Feather } from '@expo/vector-icons';
 import { canCompose, demoReducer, initialState, visibleChats } from './src/demo';
 import { crm } from './src/crmStyles';
 import { StagingShell } from './src/StagingShell';
+import { MobileInboxScreen } from './src/MobileInboxScreen';
 
 const ink = '#162636';
 const muted = '#627383';
@@ -134,6 +135,9 @@ const styles = StyleSheet.create({
 
 export default function App() {
   return process.env.EXPO_PUBLIC_MOBILE_AUTH_MODE === 'staging'
-    ? <StagingShell renderDemo={(logout, activity) => <DemoApp authenticated onLogout={logout} onActivity={activity} /> } />
+    ? <StagingShell renderDemo={(logout, activity) => <DemoApp authenticated onLogout={logout} onActivity={activity} /> }
+        renderReadOnly={process.env.EXPO_PUBLIC_MOBILE_INBOX_MODE === 'read-only'
+          ? (authorizedGet, logout, activity, accessLost) => <MobileInboxScreen authorizedGet={authorizedGet} onLogout={logout} onActivity={activity} onAccessLost={accessLost} />
+          : undefined} />
     : <DemoApp />;
 }

@@ -154,6 +154,33 @@ export class StagingAuth {
     this.lastActivitySent = now;
   }
 
+  /** Authenticated, read-only mobile resource request. Never expose the JWT to UI components. */
+  async authorizedGet(path: string): Promise<Response> {
+    if (!/^\/api\/mobile\/inbox(?:\/|\?|$)/.test(path) || path.includes('://'))
+      throw new Error('Ruta móvil no permitida.');
+    await this.validate();
+    const generation = this.generation;
+    const attempt = async () => {
+      let response: Response;
+      try {
+        response = await this.transport(`${this.config.hermesBase}${path}`, {
+          method: 'GET', headers: { Authorization: `Bearer ${this.accessToken!}` }, cache: 'no-store',
+        });
+      } catch { throw new NetworkUnavailable(); }
+      if (generation !== this.generation || this.blocked) throw new SessionExpired();
+      return response;
+    };
+    let response = await attempt();
+    // The 5-minute access JWT may expire between validation and this GET.
+    // A GET is safe to retry exactly once after normal single-use refresh.
+    if (response.status === 401) {
+      await this.refresh();
+      response = await attempt();
+    }
+    if (response.status === 401 || response.status === 403) throw new SessionExpired();
+    return response;
+  }
+
   async logout() {
     // A rotating refresh already in flight may have consumed the stored token.
     // In that case do not claim remote revocation, even if a later request succeeds.
