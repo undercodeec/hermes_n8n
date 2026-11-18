@@ -1,4 +1,23 @@
-const { expo } = require('./app.json');
+// Single source of Expo app configuration; duplicate app.json would be ambiguous
+// for expo-doctor when the build variant changes the package and display name.
+const expo = {
+  name: 'Hermes CRM Demo - Test',
+  slug: 'hermes-crm-demo',
+  version: '0.1.0',
+  orientation: 'portrait',
+  icon: './assets/icon.png',
+  userInterfaceStyle: 'light',
+  ios: { supportsTablet: true },
+  android: {
+    adaptiveIcon: {
+      backgroundColor: '#F8FAFF',
+      foregroundImage: './assets/android-icon-foreground.png',
+    },
+    predictiveBackGestureEnabled: false,
+  },
+  web: { favicon: './assets/favicon.png' },
+  plugins: ['expo-secure-store', 'expo-font'],
+};
 
 // The demo is the default. Never infer staging from a stray .env file.
 const variant = process.env.HERMES_MOBILE_BUILD_VARIANT || 'demo';

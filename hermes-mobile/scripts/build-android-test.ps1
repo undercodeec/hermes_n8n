@@ -10,6 +10,9 @@ param(
 $ErrorActionPreference = 'Stop'
 $mobile = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $repository = (Resolve-Path (Join-Path $mobile '..')).Path
+if ($mobile.Length -gt 65) {
+  throw 'Windows Ninja/CMake requires a short physical worktree path (e.g. D:\m-g3-apk-qa); subst drives resolve to the original long path.'
+}
 $sdk = if ($env:ANDROID_HOME) { $env:ANDROID_HOME } else { Join-Path $env:LOCALAPPDATA 'Android\Sdk' }
 $envNames = @('EXPO_NO_DOTENV', 'HERMES_MOBILE_BUILD_VARIANT', 'HERMES_MOBILE_ISOLATED_TEST_CONFIRMED',
   'EXPO_PUBLIC_MOBILE_AUTH_MODE', 'EXPO_PUBLIC_MOBILE_INBOX_MODE', 'EXPO_PUBLIC_CRM_AUTH_BASE_URL',
