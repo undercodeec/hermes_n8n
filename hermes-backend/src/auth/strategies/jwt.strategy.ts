@@ -4,6 +4,7 @@ import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../../prisma/prisma.service';
 import { mobileJwtKey } from '../mobile-jwt-key';
+import { UserRole } from '@prisma/client';
 
 export interface JwtPayload {
   sub: string;
@@ -63,6 +64,13 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
 
     if (!user || !user.isActive) {
       throw new UnauthorizedException('Usuario no autorizado o inactivo');
+    }
+    if (payload.typ === 'mobile') {
+      const operatorEmail = this.configService
+        .get<string>('CRM_OPERATOR_EMAIL', 'gerencia@undercodeec.com')
+        .trim().toLowerCase();
+      if (user.role !== UserRole.ADMIN || user.email.trim().toLowerCase() !== operatorEmail)
+        throw new UnauthorizedException('Operador móvil no autorizado');
     }
 
     return {

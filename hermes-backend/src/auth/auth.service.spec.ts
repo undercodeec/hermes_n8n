@@ -261,6 +261,35 @@ describe('CRM mobile sessions and shared proof replay', () => {
     );
   });
 
+  it('revokes with the current refresh without rotating an expired access JWT', async () => {
+    const initial = await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
+    jwt.sign.mockClear();
+    await expect(auth.logoutMobileWithRefresh(initial.refreshToken)).resolves.toEqual({ revoked: true });
+    expect(jwt.sign).not.toHaveBeenCalled();
+    await expect(auth.checkMobile(user.id, sessionId)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.logoutMobileWithRefresh(initial.refreshToken)).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('does not allow a consumed refresh to revoke the winning rotation', async () => {
+    const initial = await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
+    const rotated = await auth.refreshMobile(initial.refreshToken);
+    await expect(auth.logoutMobileWithRefresh(initial.refreshToken)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.checkMobile(user.id, sessionId)).resolves.toMatchObject({ active: true });
+    await expect(auth.logoutMobileWithRefresh(rotated.refreshToken)).resolves.toEqual({ revoked: true });
+  });
+
+  it('rejects a demoted or mismatched operator for an existing mobile access JWT', async () => {
+    const strategy = new JwtStrategy(config as never, db as never);
+    await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
+    storedUser.role = UserRole.SALES_AGENT;
+    await expect(strategy.validate({ sub: user.id, email, role: 'ADMIN', sid: sessionId, typ: 'mobile' }))
+      .rejects.toBeInstanceOf(UnauthorizedException);
+    storedUser.role = UserRole.ADMIN;
+    storedUser.email = 'other@example.invalid';
+    await expect(strategy.validate({ sub: user.id, email, role: 'ADMIN', sid: sessionId, typ: 'mobile' }))
+      .rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
   it('rejects expired session on refresh, activity, check and JWT validation', async () => {
     const initial = await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
     session.expiresAt = new Date(Date.now() - 1);

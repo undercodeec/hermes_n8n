@@ -6,12 +6,15 @@ All paths below are under `/api/auth`. Use the **same operator and OTP**, but a 
 | --- | --- | --- | --- |
 | POST `/mobile/crm-proof` | None | `{ "proof": "..." }` | `{ user, accessToken, refreshToken, expiresAt }` |
 | POST `/mobile/refresh` | None | `{ "refreshToken": "..." }` | `{ user, accessToken, refreshToken, expiresAt }` |
+| POST `/mobile/logout-refresh` | None (requires **current** opaque refresh) | `{ "refreshToken": "..." }` | `{ revoked: true }`; 401 if rotated/expired/revoked |
 | GET `/mobile/session` | Bearer mobile access JWT | None | `{ active: true, expiresAt }` |
 | POST `/mobile/activity` | Bearer mobile access JWT | None | `{ active: true, expiresAt }` |
 | POST `/mobile/logout` | Bearer mobile access JWT | None | `{ revoked: true }` |
 | POST `/mobile/revoke-all` | Bearer **web** JWT of the existing configured CRM operator (ADMIN) | None | `{ revokedSessions: number }` |
 
 `accessToken` is a 5-minute JWT with `sid` and is checked against the persisted session **on every protected request**. `refreshToken` is a rotating opaque credential (only its SHA-256 digest is stored); use the newest value returned by refresh. Duplicate/concurrent use of an old value returns 401. Logout invalidates access and refresh tokens; do not reuse credentials. Store refresh credentials securely on the device, never in logs. Session expires after 30 minutes without explicit `POST /mobile/activity`; checking the session, polling, profile, and refreshing tokens **do not** renew activity. Call activity only for a genuine foreground operator interaction, not for app start, timers, or background traffic. A session can live without an absolute maximum if kept active by operator interaction. Responses include server-derived `expiresAt` (ISO 8601); the server, not the device, decides expiry. Expired/revoked sessions and reused proofs return 401.
+
+When a refresh response is lost, the previous credential may already be consumed: block protected data and require a new OTP if revalidation fails. Never retry an old refresh as a way to recover a new one. A replayed old token returns 401 but does not automatically revoke a successfully rotated token (otherwise a holder of an old credential could force a logout). A lost phone must be revoked from the web. Prefer `/mobile/logout-refresh` with the **currently stored** refresh for explicit logout, including after access JWT expiry; never rotate just to log out. If offline, remove the local credential and report that server-side revocation could not be confirmed; reauthenticate or revoke from the web when connected.
 
 Mobile JWTs are rejected by legacy `JwtAuthGuard` routes, including account registration, payments and messaging. Only explicit mobile session endpoints accept them. Granting mobile Inbox access needs a separately reviewed read-only API contract; this G2 release does not expose live CRM data to the app.
 

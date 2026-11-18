@@ -232,6 +232,24 @@ export class AuthService {
     return this.mobileTokens(result.user, id, newSecret, result.expiresAt);
   }
 
+  // A consumed refresh must not revoke a successful concurrent rotation:
+  // possession of an older token alone must not log the operator out.
+  async logoutMobileWithRefresh(refreshToken: string) {
+    const { id, hash } = this.parseRefresh(refreshToken);
+    const updated = await this.prisma.mobileSession.updateMany({
+      where: {
+        id,
+        refreshHash: hash,
+        revokedAt: null,
+        expiresAt: { gt: new Date() },
+      },
+      data: { revokedAt: new Date() },
+    });
+    if (updated.count !== 1)
+      throw new UnauthorizedException('Sesión móvil vencida o revocada');
+    return { revoked: true };
+  }
+
   async checkMobile(userId: string, sessionId: string) {
     const session = await this.prisma.mobileSession.findFirst({
       where: {
