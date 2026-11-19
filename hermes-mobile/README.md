@@ -36,7 +36,7 @@ El cierre en staging bloquea de inmediato y confirma el borrado del refresh loca
 
 ## APK local de integración retenido (18/11/2026)
 
-[`docs/android-local-test-apk.md`](docs/android-local-test-apk.md) separa la demo del APK `read-only-public`: HTTPS público explícito, entrypoint exclusivo de consulta GET al Inbox Hermes, sin importar el compositor demo ni habilitar envíos. La build **no significa** que la API productiva esté lista: actualmente no ofrece `idleRemainingMs` en `/api/auth/mobile/session`, por lo que el cliente se bloquea. No instalar ese APK, solicitar OTP, usar datos de clientes ni distribuirlo hasta verificar el backend compatible y obtener aprobación específica.
+[`docs/android-local-test-apk.md`](docs/android-local-test-apk.md) separa la demo del APK `read-only-public`: HTTPS público explícito, entrypoint exclusivo de consulta GET al Inbox Hermes, sin importar el compositor demo ni habilitar envíos. El primer APK de lectura se retuvo porque apuntaba el OTP al host web incorrecto. El corte posterior instaló el backend candidato, pero un 401 sin bearer **no acredita** `idleRemainingMs` en una sesión autenticada. No distribuir ni compartir el APK de firma temporal; el operador deberá verificar personalmente el OTP y el plazo, sin publicar datos ni códigos.
 
 ## G4 · Lectura de Inbox en integración (segundo opt-in)
 

@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-const crm = 'https://admincrm.undercodeec.com';
+const crm = 'https://api.undercodeec.com';
 const hermes = 'https://api.undercodeec.com';
 const config = (variables: Record<string, string>) => {
   const env = { ...process.env };
@@ -44,6 +44,7 @@ test('public API read-only requires exact HTTPS hosts and both explicit opt-ins'
   ].sort());
   assert.notEqual(config({ ...base, HERMES_MOBILE_PUBLIC_READ_ONLY_CONFIRMED: '' }).status, 0);
   assert.notEqual(config({ ...base, EXPO_PUBLIC_HERMES_API_BASE_URL: 'http://api.undercodeec.com' }).status, 0);
+  assert.notEqual(config({ ...base, EXPO_PUBLIC_CRM_AUTH_BASE_URL: 'https://admincrm.undercodeec.com' }).status, 0);
   assert.notEqual(config({ ...base, EXPO_PUBLIC_MOBILE_INBOX_MODE: '' }).status, 0);
 });
 

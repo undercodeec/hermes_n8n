@@ -52,7 +52,7 @@ try {
     }
   } elseif ($Variant -eq 'read-only-public') {
     if (!$ConfirmPublicReadOnlyNoInstall -or $ConfirmIsolatedTestEndpoints -or
-        $CrmAuthUrl -cne 'https://admincrm.undercodeec.com' -or $HermesApiUrl -cne 'https://api.undercodeec.com') {
+        $CrmAuthUrl -cne 'https://api.undercodeec.com' -or $HermesApiUrl -cne 'https://api.undercodeec.com') {
       throw 'Read-only public API build requires exact HTTPS CRM/Hermes origins and ConfirmPublicReadOnlyNoInstall; NEVER install while idleRemainingMs is absent.'
     }
   } elseif ($CrmAuthUrl -or $HermesApiUrl -or $ConfirmIsolatedTestEndpoints -or $ConfirmPublicReadOnlyNoInstall) {
@@ -135,7 +135,7 @@ try {
       if (!(Test-Path $bundle)) { throw 'Missing read-only Metro bundle.' }
       $js = [IO.File]::ReadAllText($bundle)
       if (!$js.Contains('/api/mobile/inbox') -or !$js.Contains('https://api.undercodeec.com') -or
-          !$js.Contains('https://admincrm.undercodeec.com') -or
+          $js.Contains('https://admincrm.undercodeec.com') -or
           $js.Contains('agente@example.invalid') -or $js.Contains('Respuesta de prueba') -or
           $js.Contains('DATOS FICTICIOS')) {
         throw 'Read-only bundle missing expected API/Inbox code or includes the demo composer. Refusing APK.'
@@ -158,7 +158,7 @@ try {
     Write-Host "Source HEAD: $head; includes latest mobile safety commit: $commit; variant: $Variant"
     Write-Host "SHA256: $hash"
     Write-Host 'Temporary test key only: NOT a distribution/release signing identity. Do not install or share without authorization.'
-    if ($Variant -eq 'read-only-public') { Write-Host 'Public API is NOT idleRemainingMs-compatible: do not install or launch this APK until backend release and QA authorization are verified.' }
+    if ($Variant -eq 'read-only-public') { Write-Host 'Do not install or launch without checking the effective backend release, matching OTP origin and operator QA authorization.' }
     } finally { [IO.File]::WriteAllBytes($packageFile, $packageBeforeBuild) }
   } finally { Pop-Location }
 } finally {

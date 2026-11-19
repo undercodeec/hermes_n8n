@@ -48,7 +48,7 @@ if (variant === 'staging') {
   if (process.env.HERMES_MOBILE_PUBLIC_READ_ONLY_CONFIRMED !== 'yes' ||
       process.env.EXPO_PUBLIC_MOBILE_AUTH_MODE !== 'staging' ||
       process.env.EXPO_PUBLIC_MOBILE_INBOX_MODE !== 'read-only' ||
-      process.env.EXPO_PUBLIC_CRM_AUTH_BASE_URL !== 'https://admincrm.undercodeec.com' ||
+      process.env.EXPO_PUBLIC_CRM_AUTH_BASE_URL !== 'https://api.undercodeec.com' ||
       process.env.EXPO_PUBLIC_HERMES_API_BASE_URL !== 'https://api.undercodeec.com') {
     throw new Error('Public API read-only test requires explicit, exact HTTPS CRM and Hermes URLs and both opt-ins.');
   }
