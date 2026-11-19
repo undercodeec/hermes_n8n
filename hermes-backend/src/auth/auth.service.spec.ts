@@ -391,10 +391,10 @@ describe('CRM mobile sessions and shared proof replay', () => {
         typ: 'mobile',
       }),
     ).rejects.toBeInstanceOf(UnauthorizedException);
-    // Existing web JWTs are still independent of mobile session lifetime.
+    // Pre-rollout CRM operator JWTs cannot bypass the durable web policy.
     await expect(
       strategy.validate({ sub: user.id, email, role: 'ADMIN' }),
-    ).resolves.toMatchObject({ id: user.id });
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
   it('expires after exactly 24 hours without human activity, including while refresh, checks and validation run', async () => {
@@ -451,10 +451,10 @@ describe('CRM mobile sessions and shared proof replay', () => {
       await expect(
         auth.mobileActivity(user.id, sessionId),
       ).rejects.toBeInstanceOf(UnauthorizedException);
-      // This change does not impose a mobile deadline on existing web JWTs.
+      // An old untyped CRM operator JWT is rejected independently of mobile expiry.
       await expect(
         strategy.validate({ sub: user.id, email, role: 'ADMIN' }),
-      ).resolves.toMatchObject({ id: user.id });
+      ).rejects.toBeInstanceOf(UnauthorizedException);
     } finally {
       jest.useRealTimers();
     }
@@ -595,5 +595,18 @@ describe('CRM mobile sessions and shared proof replay', () => {
       await expect(auth.revokeAllWebForOperator(user.id, email)).resolves.toEqual({ revokedSessions: 1 });
       await expect(auth.webActivity(user.id, sessionId)).rejects.toBeInstanceOf(UnauthorizedException);
     } finally { jest.useRealTimers(); }
+  });
+
+  it('rejects legacy CRM operator JWT and password entry while leaving unrelated users unchanged', async () => {
+    const strategy = new JwtStrategy(config as never, db as never);
+    await expect(strategy.validate({ sub: user.id, email, role: 'ADMIN' }))
+      .rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.login({ email, password: 'synthetic-password' }))
+      .rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.register({ email, password: 'synthetic-password', name: 'Operator' }))
+      .rejects.toBeInstanceOf(UnauthorizedException);
+    storedUser = { ...storedUser, email: 'different-admin@example.invalid' };
+    await expect(strategy.validate({ sub: user.id, email: 'different-admin@example.invalid', role: 'ADMIN' }))
+      .resolves.toMatchObject({ id: user.id });
   });
 });

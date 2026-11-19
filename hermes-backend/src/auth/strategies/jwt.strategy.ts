@@ -87,11 +87,17 @@ export class JwtStrategy extends PassportStrategy(Strategy) {
     if (!user || !user.isActive) {
       throw new UnauthorizedException('Usuario no autorizado o inactivo');
     }
+    // CRM operator must use the durable web/mobile session. Legacy password and
+    // pre-rollout proof JWTs cannot bypass the 24-hour idle/revocation policy.
+    const operatorEmail = this.configService
+      .get<string>('CRM_OPERATOR_EMAIL', 'gerencia@undercodeec.com')
+      .trim()
+      .toLowerCase();
+    if (user.email.trim().toLowerCase() === operatorEmail &&
+        payload.typ !== 'mobile' && payload.typ !== 'web') {
+      throw new UnauthorizedException('Se requiere sesión CRM vigente');
+    }
     if (payload.typ === 'mobile' || payload.typ === 'web') {
-      const operatorEmail = this.configService
-        .get<string>('CRM_OPERATOR_EMAIL', 'gerencia@undercodeec.com')
-        .trim()
-        .toLowerCase();
       if (
         user.role !== UserRole.ADMIN ||
         user.email.trim().toLowerCase() !== operatorEmail

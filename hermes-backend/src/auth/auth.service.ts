@@ -27,6 +27,8 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
+    if (this.isCrmOperator(dto.email))
+      throw new UnauthorizedException('El operador CRM requiere acceso por código');
     const existing = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
@@ -71,6 +73,9 @@ export class AuthService {
     if (!user.isActive) {
       throw new UnauthorizedException('Usuario desactivado');
     }
+
+    if (this.isCrmOperator(user.email))
+      throw new UnauthorizedException('El operador CRM requiere acceso por código');
 
     const isPasswordValid = await bcrypt.compare(dto.password, user.password);
 
