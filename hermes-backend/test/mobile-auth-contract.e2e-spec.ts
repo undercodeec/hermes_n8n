@@ -232,6 +232,7 @@ describe('G2 mobile/web auth HTTP contract (synthetic, in-memory Prisma)', () =>
     await http().get('/api/auth/mobile/session').set(bearer(mobile.accessToken)).expect(401);
     await http().post('/api/auth/mobile/refresh').send({ refreshToken: mobile.refreshToken }).expect(401);
     await http().get('/api/auth/profile').set(bearer(web)).expect(200);
+    await http().get('/api/auth/web/session').set(bearer(web)).expect(200);
     await http().post('/api/auth/mobile/revoke-all').set(bearer(web)).expect(200, { revokedSessions: 0 });
   });
 
