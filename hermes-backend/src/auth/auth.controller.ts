@@ -206,7 +206,7 @@ export class AuthController {
   // Existing web operator can revoke lost phones without ending the web session.
   @Post('mobile/revoke-all')
   @HttpCode(HttpStatus.OK)
-  @UseGuards(JwtAuthGuard, RolesGuard)
+  @UseGuards(WebAuthGuard, RolesGuard)
   @Roles(UserRole.ADMIN)
   @ApiBearerAuth()
   @ApiOperation({
