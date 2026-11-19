@@ -5,6 +5,7 @@ import { readdirSync, readFileSync } from 'fs';
 import { join, relative } from 'path';
 import * as ts from 'typescript';
 import { JwtAuthGuard } from './jwt-auth.guard';
+import { WebAuthGuard } from '../../auth/web-auth.guard';
 import { AuthController } from '../../auth/auth.controller';
 import {
   BankAccountsController,
@@ -116,7 +117,6 @@ describe('legacy JWT route architecture', () => {
   it.each([
     ['register', AuthController.prototype.register],
     ['profile', AuthController.prototype.getProfile],
-    ['revoke-all', AuthController.prototype.revokeAllMobile],
     ['bank accounts', BankAccountsController],
     ['transfers', TransfersController],
     ['conversations', ConversationsController],
@@ -126,5 +126,9 @@ describe('legacy JWT route architecture', () => {
     expect(Reflect.getMetadata(GUARDS_METADATA, target)).toContain(
       JwtAuthGuard,
     );
+  });
+  it('phone revocation requires a durable web session rather than any JWT', () => {
+    expect(Reflect.getMetadata(GUARDS_METADATA, AuthController.prototype.revokeAllMobile))
+      .toContain(WebAuthGuard);
   });
 });
