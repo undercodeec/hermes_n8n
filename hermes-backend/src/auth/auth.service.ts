@@ -13,10 +13,12 @@ import { PrismaService } from '../prisma/prisma.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 import { mobileJwtKey } from './mobile-jwt-key';
+import { webJwtKey } from './web-jwt-key';
 
 @Injectable()
 export class AuthService {
-  private readonly mobileIdleMs = 30 * 60 * 1000;
+  private readonly mobileIdleMs = 24 * 60 * 60 * 1000;
+  private readonly webIdleMs = 24 * 60 * 60 * 1000;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -25,6 +27,8 @@ export class AuthService {
   ) {}
 
   async register(dto: RegisterDto) {
+    if (this.isCrmOperator(dto.email))
+      throw new UnauthorizedException('El operador CRM requiere acceso por código');
     const existing = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
@@ -70,6 +74,9 @@ export class AuthService {
       throw new UnauthorizedException('Usuario desactivado');
     }
 
+    if (this.isCrmOperator(user.email))
+      throw new UnauthorizedException('El operador CRM requiere acceso por código');
+
     const isPasswordValid = await bcrypt.compare(dto.password, user.password);
 
     if (!isPasswordValid) {
@@ -89,13 +96,15 @@ export class AuthService {
     };
   }
 
-  async loginWithCrmProof(proof: string) {
+  async loginWithCrmProof(proof: string, existingRefreshToken?: string) {
     const payload = this.verifyCrmProof(proof);
+    const existing = existingRefreshToken ? this.parseRefresh(existingRefreshToken) : null;
     const generatedPassword = await bcrypt.hash(
       randomBytes(32).toString('hex'),
       12,
     );
-    const user = await this.consumeProof(payload, async (tx) => {
+    const refreshSecret = randomBytes(32).toString('base64url');
+    const result = await this.consumeProof(payload, async (tx) => {
       const account = await tx.user.upsert({
         where: { email: payload.sub },
         update: {},
@@ -108,17 +117,138 @@ export class AuthService {
       });
       if (!account.isActive || account.role !== UserRole.ADMIN)
         throw new UnauthorizedException('Usuario no autorizado o inactivo');
-      return account;
+      // Serialize OTP exchange against per-operator revocation.
+      await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${account.id} FOR UPDATE`;
+      if (payload.exp <= Math.floor(Date.now() / 1000)) this.invalidCrmProof();
+      const current = await tx.user.findUnique({ where: { id: account.id } });
+      if (!current?.isActive || current.role !== UserRole.ADMIN)
+        throw new UnauthorizedException('Usuario no autorizado o inactivo');
+      if (existing) {
+        const active = await tx.webSession.findFirst({
+          where: { id: existing.id, userId: account.id, revokedAt: null, expiresAt: { gt: new Date() } },
+        });
+        if (!active || active.expiresAt.getTime() <= Date.now())
+          throw new UnauthorizedException('Sesión web vencida o revocada');
+        const rotated = await tx.webSession.updateMany({
+          where: {
+            id: existing.id, userId: account.id, refreshHash: existing.hash,
+            revokedAt: null, expiresAt: { gt: new Date() },
+          },
+          data: { refreshHash: this.hashRefresh(refreshSecret) },
+        });
+        if (rotated.count !== 1)
+          throw new UnauthorizedException('Refresh token ya utilizado');
+        return { user: current, session: active };
+      }
+      const session = await tx.webSession.create({
+        data: {
+          userId: account.id,
+          refreshHash: this.hashRefresh(refreshSecret),
+          expiresAt: new Date(Date.now() + this.webIdleMs),
+        },
+      });
+      return { user: current, session };
     });
+    return this.webTokens(result.user, result.session.id, refreshSecret, result.session.expiresAt);
+  }
 
+  async refreshWeb(refreshToken: string) {
+    const { id, hash } = this.parseRefresh(refreshToken);
+    const secret = randomBytes(32).toString('base64url');
+    const session = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.webSession.findUnique({
+        where: { id }, include: { user: true },
+      });
+      const now = new Date();
+      if (!existing || existing.revokedAt || existing.expiresAt <= now ||
+          !existing.user.isActive || existing.user.role !== UserRole.ADMIN ||
+          !this.isCrmOperator(existing.user.email))
+        throw new UnauthorizedException('Sesión web vencida o revocada');
+      const updated = await tx.webSession.updateMany({
+        where: { id, refreshHash: hash, revokedAt: null, expiresAt: { gt: now } },
+        data: { refreshHash: this.hashRefresh(secret) },
+      });
+      if (updated.count !== 1)
+        throw new UnauthorizedException('Refresh token ya utilizado');
+      return existing;
+    });
+    return this.webTokens(session.user, id, secret, session.expiresAt);
+  }
+
+  async checkWeb(userId: string, sessionId: string) {
+    const session = await this.prisma.webSession.findFirst({
+      where: { id: sessionId, userId, revokedAt: null, expiresAt: { gt: new Date() } },
+      select: { expiresAt: true },
+    });
+    if (!session || session.expiresAt.getTime() <= Date.now())
+      throw new UnauthorizedException('Sesión web vencida o revocada');
+    return { active: true, expiresAt: session.expiresAt, idleRemainingMs: session.expiresAt.getTime() - Date.now() };
+  }
+
+  async webActivity(userId: string, sessionId: string) {
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + this.webIdleMs);
+    const result = await this.prisma.webSession.updateMany({
+      where: { id: sessionId, userId, revokedAt: null, expiresAt: { gt: now } },
+      data: { expiresAt },
+    });
+    if (result.count !== 1)
+      throw new UnauthorizedException('Sesión web vencida o revocada');
+    return { active: true, expiresAt };
+  }
+
+  async logoutWeb(userId: string, sessionId: string) {
+    await this.prisma.webSession.updateMany({
+      where: { id: sessionId, userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    return { revoked: true };
+  }
+
+  async logoutWebWithRefresh(refreshToken: string) {
+    const { id, hash } = this.parseRefresh(refreshToken);
+    const result = await this.prisma.webSession.updateMany({
+      where: { id, refreshHash: hash, revokedAt: null, expiresAt: { gt: new Date() } },
+      data: { revokedAt: new Date() },
+    });
+    if (result.count !== 1)
+      throw new UnauthorizedException('Sesión web vencida o revocada');
+    return { revoked: true };
+  }
+
+  async revokeAllWebForOperator(userId: string, email: string) {
+    if (!this.isCrmOperator(email))
+      throw new UnauthorizedException('Operador no autorizado');
+    return this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR UPDATE`;
+      const user = await tx.user.findUnique({ where: { id: userId } });
+      if (!user?.isActive || user.role !== UserRole.ADMIN || !this.isCrmOperator(user.email))
+        throw new UnauthorizedException('Operador no autorizado');
+      const result = await tx.webSession.updateMany({
+        where: { userId, revokedAt: null }, data: { revokedAt: new Date() },
+      });
+      return { revokedSessions: result.count };
+    });
+  }
+
+  private isCrmOperator(email: string): boolean {
+    return email.trim().toLowerCase() === this.configService
+      .get<string>('CRM_OPERATOR_EMAIL', 'gerencia@undercodeec.com')
+      .trim().toLowerCase();
+  }
+
+  private webTokens(
+    user: { id: string; email: string; name: string; role: UserRole },
+    id: string, secret: string, expiresAt: Date,
+  ) {
     return {
-      user: {
-        id: user.id,
-        email: user.email,
-        name: user.name,
-        role: user.role,
-      },
-      accessToken: this.generateToken(user.id, user.email, user.role),
+      user: { id: user.id, email: user.email, name: user.name, role: user.role },
+      accessToken: this.jwtService.sign(
+        { sub: user.id, email: user.email, role: user.role, sid: id, typ: 'web' },
+        { expiresIn: '5m', secret: webJwtKey(this.configService.getOrThrow<string>('JWT_SECRET')) },
+      ),
+      refreshToken: `${id}.${secret}`,
+      expiresAt,
     };
   }
 
@@ -250,18 +380,23 @@ export class AuthService {
   }
 
   async checkMobile(userId: string, sessionId: string) {
+    const now = new Date();
     const session = await this.prisma.mobileSession.findFirst({
       where: {
         id: sessionId,
         userId,
         revokedAt: null,
-        expiresAt: { gt: new Date() },
+        expiresAt: { gt: now },
       },
       select: { expiresAt: true },
     });
+    // Do not report an active session if it expired while the DB read was pending.
     if (!session)
       throw new UnauthorizedException('Sesión móvil vencida o revocada');
-    return { active: true, expiresAt: session.expiresAt };
+    const idleRemainingMs = session.expiresAt.getTime() - Date.now();
+    if (idleRemainingMs <= 0)
+      throw new UnauthorizedException('Sesión móvil vencida o revocada');
+    return { active: true, expiresAt: session.expiresAt, idleRemainingMs };
   }
 
   async mobileActivity(userId: string, sessionId: string) {

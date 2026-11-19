@@ -52,6 +52,7 @@ describe('CRM mobile sessions and shared proof replay', () => {
     expiresAt: Date;
     revokedAt: Date | null;
   };
+  let webSession: typeof session;
   const upsert = jest.fn(async (args: { update: Record<string, unknown> }) => {
     Object.assign(storedUser, args.update);
     return { ...storedUser };
@@ -124,6 +125,25 @@ describe('CRM mobile sessions and shared proof replay', () => {
         },
       ),
     },
+    webSession: {
+      create: jest.fn(async ({ data }: { data: { userId: string; refreshHash: string; expiresAt: Date } }) => {
+        webSession = { id: sessionId, ...data, revokedAt: null };
+        return { ...webSession };
+      }),
+      findUnique: jest.fn(async () => webSession ? { ...webSession, user: { ...storedUser } } : null),
+      findFirst: jest.fn(async ({ where }: { where: { id: string; userId: string; expiresAt: { gt: Date } } }) =>
+        webSession?.id === where.id && webSession.userId === where.userId && !webSession.revokedAt &&
+        webSession.expiresAt > where.expiresAt.gt ? { ...webSession } : null),
+      updateMany: jest.fn(async ({ where, data }: { where: { id?: string; userId?: string; refreshHash?: string; expiresAt?: { gt: Date } }; data: { refreshHash?: string; expiresAt?: Date; revokedAt?: Date } }) => {
+        if (!webSession || webSession.revokedAt ||
+            (where.id && webSession.id !== where.id) ||
+            (where.userId && webSession.userId !== where.userId) ||
+            (where.refreshHash && webSession.refreshHash !== where.refreshHash) ||
+            (where.expiresAt && webSession.expiresAt <= where.expiresAt.gt)) return { count: 0 };
+        Object.assign(webSession, data);
+        return { count: 1 };
+      }),
+    },
     $transaction: jest.fn(
       async (fn: (tx: unknown) => Promise<unknown>): Promise<unknown> => {
         const previous = new Set(consumed);
@@ -155,6 +175,7 @@ describe('CRM mobile sessions and shared proof replay', () => {
     consumed.clear();
     storedUser = { ...user };
     session = undefined as never;
+    webSession = undefined as never;
     jest.clearAllMocks();
   });
 
@@ -370,32 +391,115 @@ describe('CRM mobile sessions and shared proof replay', () => {
         typ: 'mobile',
       }),
     ).rejects.toBeInstanceOf(UnauthorizedException);
-    // Existing web JWTs are still independent of mobile session lifetime.
+    // Pre-rollout CRM operator JWTs cannot bypass the durable web policy.
     await expect(
       strategy.validate({ sub: user.id, email, role: 'ADMIN' }),
-    ).resolves.toMatchObject({ id: user.id });
+    ).rejects.toBeInstanceOf(UnauthorizedException);
   });
 
-  it('allows 29 minutes idle but rejects at the exact 30-minute server deadline', async () => {
-    const initial = await auth.loginMobileWithCrmProof(
-      proof({ aud: 'hermes-crm-mobile' }),
-    );
-    const expiry = session.expiresAt.getTime();
-    jest.useFakeTimers({ now: expiry - 60_000 });
+  it('expires after exactly 24 hours without human activity, including while refresh, checks and validation run', async () => {
+    const start = Date.parse('2026-11-18T12:00:00.000Z');
+    jest.useFakeTimers({ now: start });
     try {
-      await expect(auth.checkMobile(user.id, sessionId)).resolves.toMatchObject(
-        { active: true },
+      const initial = await auth.loginMobileWithCrmProof(
+        proof({ aud: 'hermes-crm-mobile' }),
       );
+      const expiry = start + 24 * 60 * 60 * 1000;
+      expect(session.expiresAt.getTime()).toBe(expiry);
+      jest.setSystemTime(start + 30 * 60 * 1000);
+      const rotated = await auth.refreshMobile(initial.refreshToken);
+      expect(rotated.expiresAt.getTime()).toBe(expiry);
+      expect(await auth.checkMobile(user.id, sessionId)).toEqual({
+        active: true,
+        expiresAt: session.expiresAt,
+        idleRemainingMs: expiry - Date.now(),
+      });
+      const strategy = new JwtStrategy(config as never, db as never);
+      await expect(
+        strategy.validate({
+          sub: user.id,
+          email,
+          role: 'ADMIN',
+          sid: sessionId,
+          typ: 'mobile',
+        }),
+      ).resolves.toMatchObject({ sessionId });
+      jest.setSystemTime(expiry - 1);
+      const lastRefresh = await auth.refreshMobile(rotated.refreshToken);
+      expect(lastRefresh.expiresAt.getTime()).toBe(expiry);
+      expect(await auth.checkMobile(user.id, sessionId)).toEqual({
+        active: true,
+        expiresAt: session.expiresAt,
+        idleRemainingMs: 1,
+      });
       jest.setSystemTime(expiry);
       await expect(auth.checkMobile(user.id, sessionId)).rejects.toBeInstanceOf(
         UnauthorizedException,
       );
       await expect(
-        auth.refreshMobile(initial.refreshToken),
+        auth.refreshMobile(lastRefresh.refreshToken),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(
+        strategy.validate({
+          sub: user.id,
+          email,
+          role: 'ADMIN',
+          sid: sessionId,
+          typ: 'mobile',
+        }),
       ).rejects.toBeInstanceOf(UnauthorizedException);
       await expect(
         auth.mobileActivity(user.id, sessionId),
       ).rejects.toBeInstanceOf(UnauthorizedException);
+      // An old untyped CRM operator JWT is rejected independently of mobile expiry.
+      await expect(
+        strategy.validate({ sub: user.id, email, role: 'ADMIN' }),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('extends the mobile deadline only for explicit interaction, with no absolute maximum', async () => {
+    const start = Date.parse('2026-11-18T12:00:00.000Z');
+    const day = 24 * 60 * 60 * 1000;
+    jest.useFakeTimers({ now: start });
+    try {
+      const initial = await auth.loginMobileWithCrmProof(
+        proof({ aud: 'hermes-crm-mobile' }),
+      );
+      for (let dayNumber = 1; dayNumber <= 7; dayNumber++) {
+        const interaction = start + dayNumber * (day - 1_000);
+        jest.setSystemTime(interaction);
+        const result = await auth.mobileActivity(user.id, sessionId);
+        expect(result.expiresAt.getTime()).toBe(interaction + day);
+        expect(session.expiresAt.getTime()).toBe(interaction + day);
+      }
+      jest.setSystemTime(session.expiresAt.getTime() - 1);
+      await expect(
+        auth.refreshMobile(initial.refreshToken),
+      ).resolves.toMatchObject({ expiresAt: session.expiresAt });
+      jest.setSystemTime(session.expiresAt.getTime());
+      await expect(
+        auth.mobileActivity(user.id, sessionId),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('does not return a positive TTL when the session expires during the DB read', async () => {
+    const start = Date.parse('2026-11-18T12:00:00.000Z');
+    jest.useFakeTimers({ now: start });
+    try {
+      await auth.loginMobileWithCrmProof(proof({ aud: 'hermes-crm-mobile' }));
+      db.mobileSession.findFirst.mockImplementationOnce(async () => {
+        jest.setSystemTime(session.expiresAt);
+        return { ...session };
+      });
+      await expect(auth.checkMobile(user.id, sessionId)).rejects.toBeInstanceOf(
+        UnauthorizedException,
+      );
     } finally {
       jest.useRealTimers();
     }
@@ -413,5 +517,96 @@ describe('CRM mobile sessions and shared proof replay', () => {
       where: { userId: user.id, revokedAt: null },
       data: { revokedAt: expect.any(Date) },
     });
+  });
+
+  it('web OTP exchanges for a revocable short JWT and rotates refresh exactly once without activity', async () => {
+    const initial = await auth.loginWithCrmProof(proof());
+    expect(jwt.sign).toHaveBeenCalledWith(
+      expect.objectContaining({ typ: 'web', sid: sessionId }),
+      expect.objectContaining({ expiresIn: '5m', secret: expect.any(String) }),
+    );
+    expect(initial.refreshToken).toMatch(/^[0-9a-f-]{36}\.[A-Za-z0-9_-]{43}$/);
+    const expiry = webSession.expiresAt.getTime();
+    const results = await Promise.allSettled([
+      auth.refreshWeb(initial.refreshToken), auth.refreshWeb(initial.refreshToken),
+    ]);
+    expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+    expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+    expect(webSession.expiresAt.getTime()).toBe(expiry);
+    await expect(auth.logoutWebWithRefresh(initial.refreshToken)).rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.logoutWebWithRefresh((results.find((r) => r.status === 'fulfilled') as PromiseFulfilledResult<{ refreshToken: string }>).value.refreshToken))
+      .resolves.toEqual({ revoked: true });
+    await expect(auth.checkWeb(user.id, sessionId)).rejects.toBeInstanceOf(UnauthorizedException);
+  });
+
+  it('reexchanges fresh admin proof into the same web session, without extending idle or duplicating records', async () => {
+    const initial = await auth.loginWithCrmProof(proof());
+    const expiry = webSession.expiresAt.getTime();
+    const renewed = await auth.loginWithCrmProof(proof(), initial.refreshToken);
+    expect(renewed.refreshToken).not.toBe(initial.refreshToken);
+    expect(renewed.expiresAt.getTime()).toBe(expiry);
+    expect(db.webSession.create).toHaveBeenCalledTimes(1);
+    await expect(auth.loginWithCrmProof(proof(), initial.refreshToken)).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(db.webSession.create).toHaveBeenCalledTimes(1);
+    await expect(auth.refreshWeb(renewed.refreshToken)).resolves.toMatchObject({ expiresAt: webSession.expiresAt });
+  });
+
+  it('cannot use an admin reexchange to revive an expired or revoked web session', async () => {
+    const initial = await auth.loginWithCrmProof(proof());
+    webSession.expiresAt = new Date(Date.now());
+    await expect(auth.loginWithCrmProof(proof(), initial.refreshToken)).rejects.toBeInstanceOf(UnauthorizedException);
+    expect(db.webSession.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('web inactivity expires exactly at 24h, independent of GET, refresh and JWT validation', async () => {
+    const start = Date.parse('2026-11-18T12:00:00.000Z');
+    const day = 86_400_000;
+    jest.useFakeTimers({ now: start });
+    try {
+      const initial = await auth.loginWithCrmProof(proof());
+      const strategy = new JwtStrategy(config as never, db as never);
+      jest.setSystemTime(start + day - 1);
+      const rotated = await auth.refreshWeb(initial.refreshToken);
+      expect(rotated.expiresAt.getTime()).toBe(start + day);
+      expect((await auth.checkWeb(user.id, sessionId)).idleRemainingMs).toBe(1);
+      await expect(strategy.validate({ sub: user.id, email, role: 'ADMIN', typ: 'web', sid: sessionId, exp: Math.floor(Date.now() / 1000) + 300 }))
+        .resolves.toMatchObject({ sessionType: 'web' });
+      jest.setSystemTime(start + day);
+      await expect(auth.checkWeb(user.id, sessionId)).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(auth.refreshWeb(rotated.refreshToken)).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(auth.webActivity(user.id, sessionId)).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(strategy.validate({ sub: user.id, email, role: 'ADMIN', typ: 'web', sid: sessionId, exp: Math.floor(Date.now() / 1000) + 300 }))
+        .rejects.toBeInstanceOf(UnauthorizedException);
+    } finally { jest.useRealTimers(); }
+  });
+
+  it('web activity alone extends idle without any absolute cap, and revocation stops it', async () => {
+    const start = Date.parse('2026-11-18T12:00:00.000Z');
+    const day = 86_400_000;
+    jest.useFakeTimers({ now: start });
+    try {
+      await auth.loginWithCrmProof(proof());
+      for (let index = 1; index <= 7; index++) {
+        jest.setSystemTime(start + index * (day - 1000));
+        await auth.webActivity(user.id, sessionId);
+        expect(webSession.expiresAt.getTime()).toBe(Date.now() + day);
+      }
+      await expect(auth.revokeAllWebForOperator(user.id, 'other@example.invalid')).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(auth.revokeAllWebForOperator(user.id, email)).resolves.toEqual({ revokedSessions: 1 });
+      await expect(auth.webActivity(user.id, sessionId)).rejects.toBeInstanceOf(UnauthorizedException);
+    } finally { jest.useRealTimers(); }
+  });
+
+  it('rejects legacy CRM operator JWT and password entry while leaving unrelated users unchanged', async () => {
+    const strategy = new JwtStrategy(config as never, db as never);
+    await expect(strategy.validate({ sub: user.id, email, role: 'ADMIN' }))
+      .rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.login({ email, password: 'synthetic-password' }))
+      .rejects.toBeInstanceOf(UnauthorizedException);
+    await expect(auth.register({ email, password: 'synthetic-password', name: 'Operator' }))
+      .rejects.toBeInstanceOf(UnauthorizedException);
+    storedUser = { ...storedUser, email: 'different-admin@example.invalid' };
+    await expect(strategy.validate({ sub: user.id, email: 'different-admin@example.invalid', role: 'ADMIN' }))
+      .resolves.toMatchObject({ id: user.id });
   });
 });

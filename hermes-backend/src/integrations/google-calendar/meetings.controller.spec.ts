@@ -39,6 +39,7 @@ describe('GET /api/meetings', () => {
               findUnique: ({ where }: { where: { id: UserRole } }) =>
                 Promise.resolve({
                   id: where.id,
+                  email: 'test@example.test',
                   role: where.id,
                   isActive: true,
                 }),

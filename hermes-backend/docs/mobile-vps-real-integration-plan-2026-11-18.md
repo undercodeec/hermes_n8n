@@ -8,6 +8,8 @@ El alcance propuesto es autenticación con el buzón ya autorizado, un operador 
 
 **Este documento es un plan, no evidencia de despliegue ni instrucción de ejecutar una ventana automáticamente.** Antes de cada acción productiva se informarán destino, versión o digest, secuencia, impacto y recuperación; cualquier requisito obligatorio de un procedimiento aplicable que exija restauración real se revisará y no se dará por cumplido mediante la aceptación genérica del riesgo. Si se requiere excepción, presentar explícitamente el alcance y obtener decisión por operación.
 
+**Lectura temporal:** la sección «Estado observado y candidatos» es la fotografía **anterior** al despliegue; no describe el estado actual. La evidencia posterior está en «Registro de ejecución y validación» al final. No interpretar un PR, commit local, build o imagen publicada como runtime efectivo.
+
 ## Estado observado y candidatos
 
 - Inspección de solo lectura del 18/11/2026: `hermes-app` estaba activo con imagen `ghcr.io/undercodeec/hermes-backend@sha256:4003d04037c7c3d28ff0b9c1da1554ea5151764bd4d3b9ab2762c681a3ebadbb`, puerto loopback 3003, documentación HTTP 200 y rutas móviles de sesión e Inbox HTTP 404. La migración de sesiones móviles no figuraba aplicada; volver a verificar el estado efectivo antes de cambiar nada.
@@ -36,3 +38,22 @@ El alcance propuesto es autenticación con el buzón ya autorizado, un operador 
 ## Evidencia previa y límites
 
 Existen pruebas locales previas de OTP/Mailpit, Android con datos sintéticos, carga y restauración de esquema sintético, pero el propietario decidió que la siguiente fase sea en VPS real. Esas pruebas no acreditan SMTP real, HTTPS, compatibilidad productiva ni restauración del backup externo. Este plan tampoco acredita una prueba real ni autoriza envío móvil.
+
+## Registro de ejecución y validación — 18/11/2026
+
+### Versiones y respaldos
+
+- Antes de migrar, a petición del propietario se crearon nuevos backups en el VPS de PostgreSQL (formato custom) y MariaDB (comprimido), bajo `/var/backups/hermes-mobile-20261118T155555Z-4c8f025f`, restringido a `root`. Se verificaron archivos, checksums e integridad de lectura; **no se restauraron** en un entorno aislado. El backup externo indicado por el propietario tampoco fue restaurado aquí. No hay evidencia de RPO/RTO o recuperación exitosa: ver [`mobile-g2-g4-restore-rehearsal.md`](mobile-g2-g4-restore-rehearsal.md).
+- UnderCode API: commit `015ac6f` activo en PM2 tras aplicar y comprobar la migración MariaDB OTP (`crm_auth_otp` y `crm_auth_limits`). Esta actualización de API **no actualizó Next.js**. Web activa: `/var/www/undercodeec/versions/444738a08f970da671fc6ed6d02ac5d9a05f76f6`; sustituirla por `015ac6f` sin integración retiraría cambios exclusivos de estabilidad del Inbox web. La UI web de revocación **no está publicada**; un escaneo del build activo no encontró el contrato `revokedSessions`.
+- Hermes: migraciones Prisma `20261117190000_mobile_sessions` y `20261117200000_mobile_reply_ledger` aplicadas. `hermes-app` corre el código de integración `b035359` en `ghcr.io/undercodeec/hermes-backend@sha256:f52e477f9e57b4a2b378a4d01633d74db80edff65ef0359c8e181a4a6cc0509d`. La discrepancia observada en `config-hash` Compose no quedó explicada; el propietario aceptó avanzar tras comparar configuración resuelta del override (solo cambiaba la imagen). No presentar esa aceptación como causa resuelta.
+- **Observación posterior de solo lectura (18/11/2026):** enlace web y digest anteriores siguen activos; PM2 `api-undercodeec` y `web-undercodeec` online (contadores de reinicios observados 1 y 5 respectivamente, sin atribuirles causa); contenedor Hermes running, `RestartCount=0`; web CRM y documentación API respondieron HTTP 200. HTTP 200 no prueba funciones autenticadas. Los PR UnderCode #6 y Hermes #28/#29/#30 siguen en borrador; las versiones productivas se constataron por separado de esos PR.
+
+### Prueba en Android y límites de evidencia
+
+- El propietario ingresó con OTP real en Android/Expo Go y confirmó Inbox e historial en **solo lectura**, logout con revocación remota, bloqueo al regresar a la app sin red en modo avión y recuperación tras reconectar. No se leyó, fotografió ni conservó contenido de conversaciones, OTP o tokens por el coordinador; no se envió WhatsApp.
+- Ante el reporte de historial inverso se mantuvo la paginación API `(createdAt DESC, id DESC)` y se invirtió **una copia para presentación cronológica** en la app móvil; se colocó «Cargar mensajes anteriores» arriba y el scroll inicial al final. TypeScript y **40 pruebas** pasaron; commit `8faa029` publicado en PR borrador #28. El propietario volvió a probar en Android/Expo Go y confirmó orden, paginación y posición de scroll, además de logout con revocación. La ordenación por ID en fechas idénticas es determinista, no garantía de causalidad. **No hay APK distribuida**. Se detuvieron Metro y el reverse ADB 8097 tras la segunda prueba.
+- **Sin comprobar:** simultaneidad de web y móvil autenticados y revocación **desde UI web** preservando la sesión web; medición física de 30 minutos sin interacción y continuidad por actividad; aplicación instalable firmada o de desarrollo validada fuera de Expo Go; iOS (no hay iPhone); restauración aislada de backups productivos y escenarios offline adicionales. La UI web requiere integrar y construir un candidato sobre la release activa antes de cualquier cambio de enlace o reinicio. No atribuir a un test de reloj simulado la medición física de 30 minutos.
+
+### Parada y recuperación disponibles
+
+Mantener `MOBILE_REPLY_ENABLED` apagado: persiste la carrera de autorización posterior a `DISPATCHING`. La imagen Hermes anterior para reversión de código es `sha256:4003d04037c7c3d28ff0b9c1da1554ea5151764bd4d3b9ab2762c681a3ebadbb`; antes de volver a código sin ledger durable de proofs, detener canjes y esperar **≥210 segundos desde el último proof firmado**. Rollback de web al enlace anterior debe conservar el arreglo del Inbox; rollback de código **no revierte migraciones ni recupera datos**. La falta de ensayo de restauración exige mantener explícito el riesgo residual.

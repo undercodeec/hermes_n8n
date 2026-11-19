@@ -36,7 +36,7 @@ describe('retention ADMIN API', () => {
       controllers: [RetentionController],
       providers: [
         JwtStrategy,
-        { provide: ConfigService, useValue: { getOrThrow: () => secret } },
+        { provide: ConfigService, useValue: { getOrThrow: () => secret, get: (_key: string, fallback: string) => fallback } },
         {
           provide: PrismaService,
           useValue: { user: { findUnique: jest.fn().mockResolvedValue(user) } },

@@ -24,6 +24,7 @@ type Session = { id: string; userId: string; refreshHash: string; expiresAt: Dat
 function memoryPrisma() {
   const users = new Map<string, Account>();
   const sessions = new Map<string, Session>();
+  const webSessions = new Map<string, Session>();
   const consumed = new Set<string>();
   users.set(operatorId, { id: operatorId, email: operator, name: 'Synthetic operator', role: UserRole.ADMIN, isActive: true });
   const matches = (session: Session, where: {
@@ -76,6 +77,28 @@ function memoryPrisma() {
         return { count };
       }),
     },
+    webSession: {
+      create: jest.fn(async ({ data }: { data: Pick<Session, 'userId' | 'refreshHash' | 'expiresAt'> }) => {
+        const session = { ...data, id: randomUUID(), revokedAt: null };
+        webSessions.set(session.id, session);
+        return { ...session };
+      }),
+      findUnique: jest.fn(async ({ where }: { where: { id: string } }) => {
+        const session = webSessions.get(where.id);
+        return session ? { ...session, user: { ...users.get(session.userId)! } } : null;
+      }),
+      findFirst: jest.fn(async ({ where }: { where: Parameters<typeof matches>[1] }) => {
+        const session = [...webSessions.values()].find((item) => matches(item, where));
+        return session ? { ...session } : null;
+      }),
+      updateMany: jest.fn(async ({ where, data }: { where: Parameters<typeof matches>[1]; data: Partial<Session> }) => {
+        let count = 0;
+        for (const session of webSessions.values()) {
+          if (matches(session, where)) { Object.assign(session, data); count++; }
+        }
+        return { count };
+      }),
+    },
     $queryRaw: jest.fn(async () => []),
     $transaction: jest.fn(async (action: (tx: unknown) => Promise<unknown>): Promise<unknown> => {
       const before = new Set(consumed);
@@ -83,7 +106,7 @@ function memoryPrisma() {
       catch (error) { consumed.clear(); for (const jti of before) consumed.add(jti); throw error; }
     }),
   };
-  return { db, users, sessions, consumed };
+  return { db, users, sessions, webSessions, consumed };
 }
 
 describe('G2 mobile/web auth HTTP contract (synthetic, in-memory Prisma)', () => {
@@ -148,7 +171,12 @@ describe('G2 mobile/web auth HTTP contract (synthetic, in-memory Prisma)', () =>
     const web = await webLogin();
     const mobile = await mobileLogin();
     await http().get('/api/auth/profile').set(bearer(web)).expect(200);
-    await http().get('/api/auth/mobile/session').set(bearer(mobile.accessToken)).expect(200);
+    const check = await http().get('/api/auth/mobile/session').set(bearer(mobile.accessToken)).expect(200);
+    const checkBody = check.body as { active: boolean; expiresAt: string; idleRemainingMs: number };
+    expect(typeof checkBody.idleRemainingMs).toBe('number');
+    expect(checkBody).toEqual({ active: true, expiresAt: mobile.expiresAt, idleRemainingMs: checkBody.idleRemainingMs });
+    expect(checkBody.idleRemainingMs).toBeGreaterThan(0);
+    expect(checkBody.idleRemainingMs).toBeLessThanOrEqual(24 * 60 * 60 * 1000);
     await http().get('/api/auth/mobile/session').expect(401);
     await http().get('/api/auth/mobile/session').set(bearer(web)).expect(401);
     await http().get('/api/auth/profile').set(bearer(mobile.accessToken)).expect(403);
@@ -157,7 +185,7 @@ describe('G2 mobile/web auth HTTP contract (synthetic, in-memory Prisma)', () =>
     await http().post('/api/auth/mobile/revoke-all').expect(401);
     await http().post('/api/auth/mobile/revoke-all').set(bearer('invalid')).expect(401);
     state.users.get(operatorId)!.role = UserRole.SALES_AGENT;
-    await http().post('/api/auth/mobile/revoke-all').set(bearer(web)).expect(403);
+    await http().post('/api/auth/mobile/revoke-all').set(bearer(web)).expect(401);
   });
 
   it('rotates refresh without extending idle time; replay cannot log out winning rotation', async () => {
@@ -205,6 +233,19 @@ describe('G2 mobile/web auth HTTP contract (synthetic, in-memory Prisma)', () =>
     await http().post('/api/auth/mobile/refresh').send({ refreshToken: mobile.refreshToken }).expect(401);
     await http().get('/api/auth/profile').set(bearer(web)).expect(200);
     await http().post('/api/auth/mobile/revoke-all').set(bearer(web)).expect(200, { revokedSessions: 0 });
+  });
+
+  it('web HTTP session refresh and activity are independent, revocation blocks direct bearer', async () => {
+    const created = await http().post('/api/auth/crm-proof').send({ proof: proof('hermes-crm') }).expect(200);
+    const web = created.body as { accessToken: string; refreshToken: string; expiresAt: string };
+    const status = await http().get('/api/auth/web/session').set(bearer(web.accessToken)).expect(200);
+    expect(status.body).toEqual(expect.objectContaining({ active: true, idleRemainingMs: expect.any(Number) }));
+    const refreshed = await http().post('/api/auth/web/refresh').send({ refreshToken: web.refreshToken }).expect(200);
+    expect(refreshed.body.expiresAt).toBe(web.expiresAt);
+    await http().post('/api/auth/web/refresh').send({ refreshToken: web.refreshToken }).expect(401);
+    await http().post('/api/auth/web/activity').set(bearer(refreshed.body.accessToken as string)).expect(200);
+    await http().post('/api/auth/web/logout-refresh').send({ refreshToken: refreshed.body.refreshToken }).expect(200);
+    await http().get('/api/auth/profile').set(bearer(web.accessToken)).expect(401);
   });
 
   it('rejects mismatched operator and inactive accounts without revoking their web tokens', async () => {

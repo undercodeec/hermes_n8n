@@ -11,6 +11,7 @@ import {
   MessageEvent,
   StreamableFile,
   Header,
+  Optional,
 } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { UserRole } from '@prisma/client';
@@ -30,7 +31,8 @@ import {
 } from './dto/query-conversations.dto';
 import { ReplyConversationDto } from './dto/reply-conversation.dto';
 import { ConversationEventsService } from './conversation-events.service';
-import { Observable } from 'rxjs';
+import { Observable, concatMap, map, takeUntil, takeWhile, timer } from 'rxjs';
+import { AuthService } from '../auth/auth.service';
 
 @ApiTags('Conversations')
 @ApiBearerAuth()
@@ -41,6 +43,7 @@ export class ConversationsController {
   constructor(
     private readonly conversationsService: ConversationsService,
     private readonly conversationEvents: ConversationEventsService,
+    @Optional() private readonly authService?: AuthService,
   ) {}
 
   @Post()
@@ -59,8 +62,19 @@ export class ConversationsController {
 
   @Sse('events')
   @ApiOperation({ summary: 'Eventos en tiempo real del Inbox mediante SSE' })
-  events(): Observable<MessageEvent> {
-    return this.conversationEvents.stream();
+  events(@CurrentUser() user: { id: string; sessionId?: string; sessionType?: string; accessExpiresAt?: number }): Observable<MessageEvent> {
+    const stream = this.conversationEvents.stream();
+    if (user?.sessionType !== 'web') return stream;
+    if (!this.authService || !user.sessionId || !user.accessExpiresAt)
+      throw new Error('Web SSE session validation unavailable');
+    // Guard authorizes the handshake; every emitted event checks DB revocation
+    // and idle expiry. Close the connection at JWT expiry even without events.
+    return stream.pipe(
+      concatMap(async (event) => ({ event, active: !!(await this.authService!.checkWeb(user.id, user.sessionId!).catch(() => null)) })),
+      takeWhile(({ active }) => active),
+      map(({ event }) => event),
+      takeUntil(timer(Math.max(0, user.accessExpiresAt * 1000 - Date.now()))),
+    );
   }
 
   @Get(':id/messages')

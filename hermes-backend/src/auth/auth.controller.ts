@@ -19,6 +19,7 @@ import { LoginDto } from './dto/login.dto';
 import { CrmProofDto } from './dto/crm-proof.dto';
 import { MobileRefreshDto } from './dto/mobile-refresh.dto';
 import { MobileAuthGuard } from './mobile-auth.guard';
+import { WebAuthGuard } from './web-auth.guard';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { Roles } from '../common/decorators/roles.decorator';
@@ -61,7 +62,52 @@ export class AuthController {
     description: 'Prueba inválida, vencida o reutilizada',
   })
   async loginWithCrmProof(@Body() dto: CrmProofDto) {
-    return this.authService.loginWithCrmProof(dto.proof);
+    return this.authService.loginWithCrmProof(dto.proof, dto.existingRefreshToken);
+  }
+
+  @Post('web/refresh')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Rotar refresh web sin renovar la inactividad' })
+  async webRefresh(@Body() dto: MobileRefreshDto) {
+    return this.authService.refreshWeb(dto.refreshToken);
+  }
+
+  @Post('web/logout-refresh')
+  @HttpCode(HttpStatus.OK)
+  async webLogoutWithRefresh(@Body() dto: MobileRefreshDto) {
+    return this.authService.logoutWebWithRefresh(dto.refreshToken);
+  }
+
+  @Get('web/session')
+  @UseGuards(WebAuthGuard)
+  @ApiBearerAuth()
+  async webSession(@CurrentUser() user: { id: string; sessionId: string }) {
+    return this.authService.checkWeb(user.id, user.sessionId);
+  }
+
+  // Only foreground gestures; never called by timers, GET, SSE or refresh.
+  @Post('web/activity')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(WebAuthGuard)
+  @ApiBearerAuth()
+  async webActivity(@CurrentUser() user: { id: string; sessionId: string }) {
+    return this.authService.webActivity(user.id, user.sessionId);
+  }
+
+  @Post('web/logout')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(WebAuthGuard)
+  @ApiBearerAuth()
+  async webLogout(@CurrentUser() user: { id: string; sessionId: string }) {
+    return this.authService.logoutWeb(user.id, user.sessionId);
+  }
+
+  @Post('web/revoke-all')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(WebAuthGuard)
+  @ApiBearerAuth()
+  async revokeAllWeb(@CurrentUser() user: { id: string; email: string }) {
+    return this.authService.revokeAllWebForOperator(user.id, user.email);
   }
 
   @Post('mobile/crm-proof')
@@ -120,7 +166,11 @@ export class AuthController {
   @UseGuards(MobileAuthGuard)
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Comprobar sesión móvil sin renovar actividad' })
-  @ApiResponse({ status: 200, description: 'active y expiresAt del servidor' })
+  @ApiResponse({
+    status: 200,
+    description:
+      'active, expiresAt e idleRemainingMs (reloj servidor; sin credenciales)',
+  })
   @ApiResponse({
     status: 401,
     description: 'Sesión inválida, revocada o inactiva',

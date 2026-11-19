@@ -1,5 +1,6 @@
 import { JwtService } from '@nestjs/jwt';
 import { mobileJwtKey } from './mobile-jwt-key';
+import { webJwtKey } from './web-jwt-key';
 import { JwtStrategy } from './strategies/jwt.strategy';
 
 describe('mobile access JWT key separation and rollback', () => {
@@ -33,5 +34,16 @@ describe('mobile access JWT key separation and rollback', () => {
   it('rejects malformed and oversized key-selection hints', async () => {
     await expect(keyFor('bad')).rejects.toThrow();
     await expect(keyFor('x'.repeat(8193))).rejects.toThrow();
+  });
+
+  it('separates short web session JWTs from legacy password JWTs and mobile JWTs', async () => {
+    const claims = { sub: 'synthetic-user', role: 'ADMIN', sid: 'synthetic-session', typ: 'web' };
+    const token = jwt.sign(claims, { secret: webJwtKey(legacySecret), expiresIn: '5m' });
+    expect(await keyFor(token)).toBe(webJwtKey(legacySecret));
+    expect(() => jwt.verify(token, { secret: legacySecret })).toThrow();
+    expect(() => jwt.verify(token, { secret: mobileJwtKey(legacySecret) })).toThrow();
+    const forged = jwt.sign(claims, { secret: legacySecret });
+    const selected = await keyFor(forged);
+    expect(() => jwt.verify(forged, { secret: selected })).toThrow();
   });
 });

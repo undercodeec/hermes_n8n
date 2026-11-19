@@ -134,6 +134,11 @@ run('mobile G2 against disposable PostgreSQL', () => {
       orderBy: { createdAt: 'desc' },
     });
     const expiry = session.expiresAt.getTime();
+    expect(expiry - session.createdAt.getTime()).toBeGreaterThan(86_399_000);
+    expect(expiry - session.createdAt.getTime()).toBeLessThanOrEqual(86_401_000);
+    const mobileStatus = await service.checkMobile(session.userId, session.id);
+    expect(mobileStatus.idleRemainingMs).toBeGreaterThan(0);
+    expect(mobileStatus.idleRemainingMs).toBeLessThanOrEqual(86_400_000);
     const refreshed = await Promise.allSettled([
       service.refreshMobile(login.refreshToken),
       service.refreshMobile(login.refreshToken),
@@ -195,6 +200,26 @@ run('mobile G2 against disposable PostgreSQL', () => {
     await expect(
       service.loginWithCrmProof(proof('hermes-crm')),
     ).resolves.toHaveProperty('accessToken');
+  });
+
+  it('web session persists 24h idle deadline, refresh does not renew, and revocation rejects direct JWT', async () => {
+    const login = await service.loginWithCrmProof(proof('hermes-crm'));
+    const id = login.refreshToken.split('.')[0];
+    const webClaims = { sub: '', email, role: 'ADMIN', typ: 'web', sid: id, exp: Math.floor(Date.now() / 1000) + 300 };
+    const session = await prisma.webSession.findUniqueOrThrow({ where: { id } });
+    webClaims.sub = session.userId;
+    expect(session.expiresAt.getTime() - session.createdAt.getTime()).toBeGreaterThan(86_399_000);
+    expect(session.expiresAt.getTime() - session.createdAt.getTime()).toBeLessThanOrEqual(86_401_000);
+    const refreshed = await service.refreshWeb(login.refreshToken);
+    expect((await prisma.webSession.findUniqueOrThrow({ where: { id } })).expiresAt.getTime())
+      .toBe(session.expiresAt.getTime());
+    await expect(service.refreshWeb(login.refreshToken)).rejects.toThrow();
+    expect((await service.checkWeb(session.userId, id)).idleRemainingMs).toBeGreaterThan(0);
+    await expect(strategy.validate(webClaims))
+      .resolves.toMatchObject({ sessionId: id });
+    await service.logoutWebWithRefresh(refreshed.refreshToken);
+    await expect(strategy.validate(webClaims))
+      .rejects.toThrow();
   });
 
   it('only one phone stays active after sequential and concurrent logins', async () => {

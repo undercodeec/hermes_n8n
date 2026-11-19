@@ -23,7 +23,7 @@ describe('mobile inbox read boundary', () => {
   };
   const prisma = {
     ...tx,
-    mobileSession: { findFirst: jest.fn() },
+    mobileSession: { findFirst: jest.fn(), updateMany: jest.fn() },
     $transaction: (fn: (client: typeof tx) => Promise<unknown>) => fn(tx),
   };
   const service = new MobileInboxService(prisma as never);
@@ -58,6 +58,38 @@ describe('mobile inbox read boundary', () => {
         select: { id: true },
       }),
     );
+  });
+
+  it('inbox polling cannot renew the mobile session while the app remains open', async () => {
+    const start = Date.parse('2026-11-18T12:00:00Z');
+    const deadline = start + 24 * 60 * 60 * 1000;
+    jest.useFakeTimers({ now: start });
+    try {
+      const guard = new MobileInboxGuard(
+        prisma as never,
+        { get: () => 'operator@example.test' } as never,
+      );
+      prisma.mobileSession.findFirst.mockImplementation(
+        ({ where }: { where: { expiresAt: { gt: Date } } }) =>
+          deadline > where.expiresAt.gt.getTime() ? { id: 's' } : null,
+      );
+      const actor = { id: 'u', email: 'operator@example.test', sessionId: 's' };
+      jest.setSystemTime(deadline - 1);
+      expect(await guard.active(actor)).toBe(true);
+      jest.setSystemTime(deadline);
+      expect(await guard.active(actor)).toBe(false);
+      expect(prisma.mobileSession.findFirst).toHaveBeenCalledTimes(2);
+      expect(prisma.mobileSession.findFirst).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          where: expect.objectContaining({
+            expiresAt: { gt: new Date(deadline) },
+          }),
+        }),
+      );
+      expect(prisma.mobileSession.updateMany).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('ranks by indexed latest message, deterministic ties and empties last; never hydrates all candidates', async () => {
