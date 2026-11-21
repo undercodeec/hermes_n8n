@@ -54,3 +54,19 @@ test('separate read-only entrypoint never imports DemoApp or its composer', () =
   assert.doesNotMatch(entry + readOnly, /\.\/App['"]|\/demo['"]|DemoApp|SEND_DEMO|reply|send/i);
   assert.match(readOnly, /MobileInboxScreen/);
 });
+
+test('Play read-only identity requires explicit production guards and remains separate from test APK', () => {
+  const base = { HERMES_MOBILE_BUILD_VARIANT: 'play-read-only', HERMES_MOBILE_PUBLIC_READ_ONLY_CONFIRMED: 'yes',
+    EXPO_PUBLIC_MOBILE_AUTH_MODE: 'staging', EXPO_PUBLIC_MOBILE_INBOX_MODE: 'read-only',
+    EXPO_PUBLIC_CRM_AUTH_BASE_URL: crm, EXPO_PUBLIC_HERMES_API_BASE_URL: hermes };
+  const result = config(base);
+  assert.equal(result.status, 0, result.stderr);
+  const app = JSON.parse(result.stdout);
+  assert.equal(app.android.package, 'com.undercodeec.hermescrm');
+  assert.equal(app.name, 'Hermes CRM');
+  assert.equal(app.android.allowBackup, false);
+  assert.ok(app.android.blockedPermissions.includes('android.permission.SYSTEM_ALERT_WINDOW'));
+  assert.notEqual(config({ ...base, HERMES_MOBILE_PUBLIC_READ_ONLY_CONFIRMED: '' }).status, 0);
+  assert.notEqual(config({ ...base, EXPO_PUBLIC_MOBILE_INBOX_MODE: '' }).status, 0);
+  assert.notEqual(config({ ...base, EXPO_PUBLIC_CRM_AUTH_BASE_URL: 'https://admincrm.undercodeec.com' }).status, 0);
+});

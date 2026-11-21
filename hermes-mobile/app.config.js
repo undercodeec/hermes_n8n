@@ -21,7 +21,7 @@ const expo = {
 
 // The demo is the default. Never infer staging from a stray .env file.
 const variant = process.env.HERMES_MOBILE_BUILD_VARIANT || 'demo';
-if (!['demo', 'staging', 'read-only-public'].includes(variant)) throw new Error('Unknown mobile build variant.');
+if (!['demo', 'staging', 'read-only-public', 'play-read-only'].includes(variant)) throw new Error('Unknown mobile build variant.');
 
 function testEndpoint(value) {
   if (!value) throw new Error('Both isolated HTTPS test endpoints are required for a staging build.');
@@ -44,7 +44,7 @@ if (variant === 'staging') {
           .some((endpoint) => new URL(endpoint).hostname === host))) {
     throw new Error('The isolated auth + synthetic demo build cannot target public APIs or real Inbox.');
   }
-} else if (variant === 'read-only-public') {
+} else if (variant === 'read-only-public' || variant === 'play-read-only') {
   if (process.env.HERMES_MOBILE_PUBLIC_READ_ONLY_CONFIRMED !== 'yes' ||
       process.env.EXPO_PUBLIC_MOBILE_AUTH_MODE !== 'staging' ||
       process.env.EXPO_PUBLIC_MOBILE_INBOX_MODE !== 'read-only' ||
@@ -60,13 +60,15 @@ if (variant === 'staging') {
 module.exports = {
   ...expo,
   name: variant === 'demo' ? 'Hermes CRM Demo - Test' :
-    variant === 'staging' ? 'Hermes CRM Staging - Test' : 'Hermes CRM Read-Only - Test',
+    variant === 'staging' ? 'Hermes CRM Staging - Test' :
+    variant === 'play-read-only' ? 'Hermes CRM' : 'Hermes CRM Read-Only - Test',
   android: {
     ...expo.android,
     package: variant === 'demo' ? 'com.undercodeec.hermescrmdemo.test' :
-      variant === 'staging' ? 'com.undercodeec.hermescrmstaging.test' : 'com.undercodeec.hermescrmreadonly.publicapitest',
+      variant === 'staging' ? 'com.undercodeec.hermescrmstaging.test' :
+      variant === 'play-read-only' ? 'com.undercodeec.hermescrm' : 'com.undercodeec.hermescrmreadonly.publicapitest',
     allowBackup: false,
-    ...(variant === 'read-only-public' ? { blockedPermissions: [
+    ...(variant === 'read-only-public' || variant === 'play-read-only' ? { blockedPermissions: [
       'android.permission.SYSTEM_ALERT_WINDOW',
       'android.permission.READ_EXTERNAL_STORAGE',
       'android.permission.WRITE_EXTERNAL_STORAGE',
