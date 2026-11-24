@@ -1,0 +1,30 @@
+services:
+  mock:
+    image: node:22-bookworm-slim
+    pull_policy: never
+    command: ["node", "/fixture/docker-fixture.mjs", "mock"]
+    volumes:
+      - ./:/fixture:ro
+      - ${PILOT_CERT_DIR:?required}/cert.pem:/certs/cert.pem:ro
+      - ${PILOT_CERT_DIR:?required}/key.pem:/certs/key.pem:ro
+    networks: [upstream]
+  relay:
+    image: node:22-bookworm-slim
+    pull_policy: never
+    command: ["node", "/fixture/docker-fixture.mjs", "relay"]
+    volumes:
+      - ./:/fixture:ro
+    networks: [agent, upstream]
+  agent:
+    image: node:22-bookworm-slim
+    pull_policy: never
+    command: ["node", "/fixture/docker-fixture.mjs", "test"]
+    volumes:
+      - ./:/fixture:ro
+      - ${PILOT_CERT_DIR:?required}/cert.pem:/certs/cert.pem:ro
+    networks: [agent]
+networks:
+  agent:
+    internal: true
+  upstream:
+    internal: true
