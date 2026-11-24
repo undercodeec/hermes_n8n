@@ -1,0 +1,25 @@
+services:
+  upstream:
+    image: node:22.15.0-bookworm
+    command: ["node", "/test/upstream.cjs"]
+    volumes:
+      - ./upstream.cjs:/test/upstream.cjs:ro
+    networks:
+      isolated:
+        aliases: [api.synthetic.test]
+  proxy:
+    image: haproxy:3.0.11-alpine
+    depends_on: [upstream]
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks: [isolated]
+  client:
+    image: node:22.15.0-bookworm
+    profiles: [test]
+    command: ["node", "/test/client.cjs", "allow"]
+    volumes:
+      - ./client.cjs:/test/client.cjs:ro
+    networks: [isolated]
+networks:
+  isolated:
+    internal: true
