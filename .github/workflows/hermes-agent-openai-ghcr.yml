@@ -36,6 +36,18 @@ jobs:
       - name: Install synthetic TLS test dependency
         run: python -m pip install 'cryptography==46.0.7'
 
+      - name: Set up Node for CRM contract check
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Verify CRM output validator
+        working-directory: hermes-backend
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm test -- --runInBand conversation-engine/agent-output.validator.spec.ts
+
       - name: Verify egress control unit tests
         working-directory: hermes-backend/deploy/openai-egress-persistent
         run: python3 -m unittest -v test_controls.py

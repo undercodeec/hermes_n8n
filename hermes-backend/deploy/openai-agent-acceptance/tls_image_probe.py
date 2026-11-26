@@ -32,7 +32,7 @@ class Mock(BaseHTTPRequestHandler):
         elif SCENARIO == 'rate_limit':
             code, data = 429, b'{"error":{"message":"synthetic","type":"rate_limit_error"}}'
         else:
-            content = '{invalid' if SCENARIO == 'content_json' else '{"answer":"synthetic-ok"}'
+            content = '{invalid' if SCENARIO == 'content_json' else '{"replyText":"synthetic-ok"}'
             message = {'role': 'assistant', 'content': content}
             finish = 'length' if SCENARIO == 'nonstop' else 'stop'
             code = 200

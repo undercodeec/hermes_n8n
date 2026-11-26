@@ -45,7 +45,7 @@ def evaluate(scenario, observation):
         try:
             choice = body['choices'][0]
             content = json.loads(choice['message']['content'])
-            if status != 200 or choice['finish_reason'] != 'stop' or content != {'answer': 'synthetic-ok'}:
+            if status != 200 or choice['finish_reason'] != 'stop' or content != {'replyText': 'synthetic-ok'}:
                 return 'gateway did not propagate the structured synthetic answer'
         except (KeyError, TypeError, IndexError, ValueError): return 'unexpected success response contract'
     else:

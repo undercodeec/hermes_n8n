@@ -32,7 +32,7 @@ class Tests(unittest.TestCase):
 
     def test_evaluator_checks_observed_contract_and_failure(self):
         success = {'calls':[good_call()], 'outcome':'success', 'ledger_calls':1,
-                   'reported_api_calls':1, 'content':'{"answer":"synthetic-ok"}'}
+                   'reported_api_calls':1, 'content':'{"replyText":"synthetic-ok"}'}
         self.assertIsNone(runner.evaluate('success', success))
         self.assertIsNotNone(runner.evaluate('content_json', success))
         self.assertIsNotNone(runner.evaluate('success', {**success, 'calls':[]}))

@@ -54,7 +54,7 @@ class Upstream(BaseHTTPRequestHandler):
             status, body = 200, b'{invalid HTTP JSON'
         else:
             status = 200
-            message = {'role': 'assistant', 'content': '{"answer":"synthetic-ok"}'}
+            message = {'role': 'assistant', 'content': '{"replyText":"synthetic-ok"}'}
             finish = 'stop'
             if SCENARIO == 'turn_limit':
                 message = {'role': 'assistant', 'content': None, 'tool_calls': [{'id': 'call_test', 'type': 'function', 'function': {'name': 'synthetic_noop', 'arguments': '{}'}}]}
@@ -72,7 +72,7 @@ class Upstream(BaseHTTPRequestHandler):
 def gateway_request_body():
     return {'model': 'hermes-agent', 'messages': [
         {'role': 'system', 'content': 'synthetic CRM policy'},
-        {'role': 'user', 'content': 'Return only JSON {"answer":"synthetic-ok"}.'}], 'stream': False}
+        {'role': 'user', 'content': 'Return only JSON {"replyText":"synthetic-ok"}.'}], 'stream': False}
 
 
 def gateway_env():
@@ -109,7 +109,7 @@ def response_summary(raw):
         try:
             choice = body['choices'][0]
             parsed = json.loads(choice['message']['content'])
-            summary['synthetic_answer_ok'] = choice['finish_reason'] == 'stop' and parsed == {'answer': 'synthetic-ok'}
+            summary['synthetic_answer_ok'] = choice['finish_reason'] == 'stop' and parsed == {'replyText': 'synthetic-ok'}
         except (KeyError, TypeError, IndexError, ValueError):
             pass
         return summary

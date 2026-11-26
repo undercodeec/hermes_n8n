@@ -5,7 +5,7 @@ import docker_acceptance as d
 def obs(calls=1, status=200, body=None):
     request = {'path': '/v1/chat/completions', 'model': 'gpt-test', 'messages_count': 1}
     if body is None:
-        body = {'choices': [{'finish_reason': 'stop', 'message': {'content': '{"answer":"synthetic-ok"}'}}]}
+        body = {'choices': [{'finish_reason': 'stop', 'message': {'content': '{"replyText":"synthetic-ok"}'}}]}
     return {'calls': [dict(request) for _ in range(calls)], 'http_status': status, 'body': body}
 
 class DockerAcceptanceTests(unittest.TestCase):

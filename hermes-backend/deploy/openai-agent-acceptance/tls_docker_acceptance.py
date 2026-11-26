@@ -64,7 +64,7 @@ def evaluate(scenario, obs):
         if obs.get('outcome') != 'success' or obs.get('reported_api_calls') != 1: return 'turn did not succeed'
         try: content = json.loads(obs.get('content', ''))
         except (TypeError, ValueError): return 'answer is not JSON'
-        if content != {'answer': 'synthetic-ok'}: return 'wrong answer'
+        if content != {'replyText': 'synthetic-ok'}: return 'wrong answer'
         if scenario == 'turn_limit' and (obs.get('second_outcome') != 'error' or obs.get('second_error_type') != 'BudgetAbort' or obs.get('ledger_calls_after_second') != 1 or obs.get('terminal_reason_after_second') != 'call_limit'):
             return 'second attempt was not refused by the shared ledger'
     else:

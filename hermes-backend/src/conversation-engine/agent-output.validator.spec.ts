@@ -20,6 +20,21 @@ describe('AgentOutputValidator', () => {
     ).toBe('Hola, ¿en qué puedo ayudarle?');
   });
 
+  it('accepts the synthetic OpenAI gateway CRM proposal', () => {
+    const gatewayCompletion = {
+      model: 'hermes-agent',
+      choices: [
+        {
+          finish_reason: 'stop',
+          message: { content: '{"replyText":"synthetic-ok"}' },
+        },
+      ],
+    };
+    expect(validator.validate(gatewayCompletion, 900).replyText).toBe(
+      'synthetic-ok',
+    );
+  });
+
   it('accepts ordered conversational parts and derives legacy replyText', () => {
     const result = validator.validate(
       completion({

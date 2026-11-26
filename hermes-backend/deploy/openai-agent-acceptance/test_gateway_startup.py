@@ -66,7 +66,7 @@ class StartupTests(unittest.TestCase):
         self.assertTrue(response['has_error'])
         self.assertNotIn(marker, str(response))
         self.assertFalse(probe.response_summary(b'{broken')['json_object'])
-        self.assertTrue(probe.response_summary(b'{"choices":[{"finish_reason":"stop","message":{"content":"{\\"answer\\":\\"synthetic-ok\\"}"}}]}')['synthetic_answer_ok'])
+        self.assertTrue(probe.response_summary(b'{"choices":[{"finish_reason":"stop","message":{"content":"{\\"replyText\\":\\"synthetic-ok\\"}"}}]}')['synthetic_answer_ok'])
 
     def test_passive_startup_snapshot(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as temp:
