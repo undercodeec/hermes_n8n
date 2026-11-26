@@ -1,4 +1,4 @@
-﻿import pathlib
+import pathlib
 import unittest
 import docker_acceptance as runner
 import image_probe as probe
@@ -7,7 +7,7 @@ import image_probe as probe
 def observation():
     return {'calls':[{'path':'/v1/chat/completions','model':'gpt-6-luna','host':'api.openai.com',
         'stream':False,'max_completion_tokens':100,'messages_count':2,'system_contains_policy':True}],
-        'http_status':200,'body':{'choices':[{'finish_reason':'stop','message':{'content':'{"answer":"synthetic-ok"}'}}]}}
+        'http_status':200,'response':{'json_object':True,'has_error':False,'has_choices':True,'synthetic_answer_ok':True}}
 
 class GatewayTlsTests(unittest.TestCase):
     def test_candidate_config_and_gateway_input(self):
@@ -47,7 +47,7 @@ class GatewayTlsTests(unittest.TestCase):
 
     def test_turn_limit_not_claimed_from_one_shot_gateway(self):
         obs = observation(); obs['calls'].append(dict(obs['calls'][0]))
-        obs['http_status'] = 500; obs['body'] = {'error':{}}
+        obs['calls'].pop(); obs['http_status'] = 500; obs['response'] = {'json_object':True, 'has_error':True, 'has_choices':False}
         self.assertIn('one-shot', runner.evaluate_gateway('turn_limit',obs))
 
 if __name__ == '__main__': unittest.main(verbosity=2)

@@ -49,6 +49,7 @@ jobs:
           python3 -B deploy/openai-agent-acceptance/test_docker_acceptance.py
           python3 -B deploy/openai-agent-acceptance/test_tls_acceptance.py
           python3 -B deploy/openai-agent-acceptance/test_gateway_tls.py
+          python3 -B deploy/openai-agent-acceptance/test_gateway_startup.py
           python3 -B deploy/openai-agent-acceptance/harness.py --adapter python3 -B deploy/openai-agent-acceptance/fixture_adapter.py
 
       - name: Verify isolated agent guard unit tests

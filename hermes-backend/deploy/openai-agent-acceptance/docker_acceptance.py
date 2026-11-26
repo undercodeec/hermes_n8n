@@ -1,4 +1,4 @@
-﻿"""Actual gateway acceptance through an isolated TLS mock in the candidate image."""
+"""Actual gateway acceptance through an isolated TLS mock in the candidate image."""
 import argparse
 import json
 import pathlib
@@ -55,18 +55,59 @@ def evaluate(scenario, observation):
 
 
 def evaluate_gateway(scenario, observation):
-    reason = evaluate(scenario, observation)
-    if reason: return reason
-    calls = observation['calls']
-    if scenario == 'turn_limit':
-        return 'gateway route is one-shot; this scenario does not exercise a shared-ledger call limit'
+    calls = observation.get('calls')
+    if not isinstance(calls, list): return 'missing independent mock observations'
     if len(calls) != 1: return 'expected exactly one actual upstream dispatch'
     call = calls[0]
-    if (call.get('model') != 'gpt-6-luna' or call.get('host') != 'api.openai.com' or
+    if (not isinstance(call, dict) or call.get('path') != '/v1/chat/completions' or
+            call.get('model') != 'gpt-6-luna' or call.get('host') != 'api.openai.com' or
             call.get('stream') is not False or call.get('max_completion_tokens') != 100 or
-            call.get('messages_count', 0) < 2 or call.get('system_contains_policy') is not True):
+            not isinstance(call.get('messages_count'), int) or call['messages_count'] < 2 or
+            call.get('system_contains_policy') is not True):
         return 'OpenAI upstream request does not match the candidate contract'
+    if scenario == 'turn_limit':
+        return 'gateway route is one-shot; this scenario does not exercise a shared-ledger call limit'
+    status, response = observation.get('http_status'), observation.get('response')
+    if type(status) is not int or not isinstance(response, dict) or response.get('json_object') is not True:
+        return 'gateway did not return an observable JSON response'
+    if scenario == 'success':
+        if status != 200 or response.get('synthetic_answer_ok') is not True:
+            return 'gateway did not propagate the structured synthetic answer'
+    elif status < 400 or response.get('has_error') is not True or response.get('has_choices') is not False:
+        return 'failure not exposed as a non-2xx error without assistant choices'
     return None
+
+
+def format_safe_diagnostics(obs):
+    # All output is from fixed enums, booleans or bounded integers; never print raw logs/body.
+    parts = []
+    codes = {'root_forbidden', 'tls_mock_startup_failed', 'gateway_exited',
+             'gateway_readiness_timeout', 'gateway_response_not_json', 'gateway_io_error'}
+    code = obs.get('diagnostic_code')
+    if code in codes: parts.append('reason=' + code)
+    health = obs.get('health_error')
+    if health in {'connection_refused', 'timeout', 'connection_reset', 'http_non_200', 'other_io_error'}:
+        parts.append('health=' + health)
+    for field in ('health_http_status', 'gateway_exit_code'):
+        value = obs.get(field)
+        if type(value) is int and -255 <= value <= 599: parts.append('%s=%d' % (field, value))
+    preflight = obs.get('preflight')
+    fields = ('api_platform_present', 'api_enabled', 'api_key_usable', 'api_connected',
+              'host_expected', 'port_expected', 'model_expected')
+    if isinstance(preflight, dict):
+        result = preflight.get('result')
+        if result in {'ok', 'process_failed', 'invalid_output', 'timeout', 'unavailable'}:
+            parts.append('config_probe=' + result)
+        for field in fields:
+            if type(preflight.get(field)) is bool: parts.append('%s=%s' % (field, str(preflight[field]).lower()))
+    allowed = {'api_key_rejected', 'aiohttp_missing', 'api_listener_started', 'address_in_use',
+               'permission_denied', 'module_missing', 'import_error', 'config_parse_failed',
+               'no_platforms', 'api_connect_failed', 'log_unavailable'}
+    flags = obs.get('log_flags')
+    if isinstance(flags, list):
+        clean = sorted({x for x in flags if isinstance(x, str) and x in allowed})
+        if clean: parts.append('log_categories=' + ','.join(clean))
+    return ' '.join(parts)
 
 
 def main():
@@ -98,9 +139,14 @@ def main():
                         print('FAIL %s: Docker/probe exited %s (details withheld)' % (scenario, result.returncode)); failures += 1; continue
                     obs = json.loads(result.stdout)
                     reason = evaluate_gateway(scenario, obs)
+                    calls = obs.get('calls')
+                    count = len(calls) if isinstance(calls, list) else 'unknown'
+                    status = obs.get('http_status')
+                    status = status if type(status) is int and 100 <= status <= 599 else None
                     print('%s %s: dispatches=%s http=%s%s' % ('FAIL' if reason else 'PASS', scenario,
-                          len(obs.get('calls', [])), obs.get('http_status'), ': ' + reason if reason else ''))
-                    if obs.get('diagnostic'): print('  diagnostic: ' + str(obs['diagnostic'])[:300])
+                          count, status, ': ' + reason if reason else ''))
+                    diagnostics = format_safe_diagnostics(obs)
+                    if diagnostics: print('  diagnostic: ' + diagnostics)
                     failures += bool(reason)
                 except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
                     print('FAIL %s: %s' % (scenario, type(exc).__name__)); failures += 1
