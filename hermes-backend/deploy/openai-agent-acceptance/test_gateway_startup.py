@@ -1,4 +1,4 @@
-﻿import json
+import json
 import tempfile
 import unittest
 import urllib.error
@@ -19,6 +19,11 @@ class StartupTests(unittest.TestCase):
         self.assertGreaterEqual(len(env['API_SERVER_KEY']), 32)
         self.assertEqual(env['API_SERVER_KEY'], probe.KEY)
         self.assertNotIn('WHATSAPP_ENABLED', env)
+        self.assertEqual(env['HERMES_GATEWAY_NO_SUPERVISE'], '1')
+        self.assertEqual(env['HERMES_DISABLE_LAZY_INSTALLS'], '1')
+        self.assertNotIn('HERMES_LAZY_INSTALL_TARGET', env)
+        self.assertNotIn('TIRITH_ENABLED', env)
+        self.assertFalse(any('WATCHDOG' in k for k in env))
 
     def test_logs_are_fixed_labels_not_lines_or_secrets(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as temp:
@@ -62,6 +67,36 @@ class StartupTests(unittest.TestCase):
         self.assertNotIn(marker, str(response))
         self.assertFalse(probe.response_summary(b'{broken')['json_object'])
         self.assertTrue(probe.response_summary(b'{"choices":[{"finish_reason":"stop","message":{"content":"{\\"answer\\":\\"synthetic-ok\\"}"}}]}')['synthetic_answer_ok'])
+
+    def test_passive_startup_snapshot(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as temp:
+            base = Path(temp); home = base/'home'; home.mkdir()
+            proc = base/'proc'; process = proc/'123'; process.mkdir(parents=True)
+            (home/'gateway.pid').write_text('sensitive pid content')
+            (home/'gateway_state.json').write_text(json.dumps({'gateway_state':'starting','secret':'DO-NOT-LEAK'}))
+            (process/'cmdline').write_bytes(b'/bin/sleep\0infinity\0DO-NOT-LEAK\0')
+            (process/'stat').write_text('123 (sleep) S 1 2 3')
+            result = probe.startup_snapshot(home, 123, proc)
+            self.assertEqual(result, {'pid_file_present':True,'gateway_state':'starting',
+                                      'process_kind':'sleep_infinity','process_state':'S'})
+            self.assertNotIn('DO-NOT-LEAK', str(result))
+            rendered = runner.format_safe_diagnostics({'startup': result})
+            self.assertIn('process_kind=sleep_infinity', rendered)
+            self.assertIn('gateway_state=starting', rendered)
+            self.assertNotIn('DO-NOT-LEAK', rendered)
+            (home/'gateway_state.json').write_text('{broken')
+            self.assertEqual(probe.startup_snapshot(home, 999, proc)['gateway_state'], 'unavailable')
+
+    def test_real_startup_log_categories_without_raw_log(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as temp:
+            home=Path(temp); (home/'logs').mkdir()
+            (home/'logs'/'gateway.log').write_text('Starting Hermes Gateway...\nConnecting to api_server...\nDO-NOT-LEAK')
+            stderr=home/'gateway.stderr'; stderr.write_text('s6 supervision DO-NOT-LEAK')
+            flags=probe.startup_log_flags(stderr,home)
+            self.assertEqual(flags,['api_connecting','gateway_start_entered','supervision_redirect'])
+            rendered=runner.format_safe_diagnostics({'log_flags':flags})
+            self.assertIn('supervision_redirect',rendered)
+            self.assertNotIn('DO-NOT-LEAK',rendered)
 
     def test_health_diagnostics_are_classifications_only(self):
         self.assertEqual(probe.classify_health_error(urllib.error.URLError(ConnectionRefusedError('secret'))),'connection_refused')

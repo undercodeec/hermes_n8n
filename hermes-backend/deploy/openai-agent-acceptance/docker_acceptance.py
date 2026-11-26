@@ -102,11 +102,21 @@ def format_safe_diagnostics(obs):
             if type(preflight.get(field)) is bool: parts.append('%s=%s' % (field, str(preflight[field]).lower()))
     allowed = {'api_key_rejected', 'aiohttp_missing', 'api_listener_started', 'address_in_use',
                'permission_denied', 'module_missing', 'import_error', 'config_parse_failed',
-               'no_platforms', 'api_connect_failed', 'log_unavailable'}
+               'no_platforms', 'api_connect_failed', 'log_unavailable', 'supervision_redirect',
+               'gateway_start_entered', 'api_connecting', 'gateway_running'}
     flags = obs.get('log_flags')
     if isinstance(flags, list):
         clean = sorted({x for x in flags if isinstance(x, str) and x in allowed})
         if clean: parts.append('log_categories=' + ','.join(clean))
+    startup = obs.get('startup')
+    if isinstance(startup, dict):
+        value = startup.get('pid_file_present')
+        if type(value) is bool: parts.append('pid_file_present=' + str(value).lower())
+        for field, allowed_values in (('gateway_state', {'starting', 'running', 'stopped', 'startup_failed', 'draining', 'missing', 'unavailable', 'invalid', 'other'}),
+                                      ('process_kind', {'sleep_infinity', 'python_or_hermes', 'other', 'unavailable'}),
+                                      ('process_state', {'R', 'S', 'D', 'T', 'Z', 'other', 'unavailable'})):
+            value = startup.get(field)
+            if isinstance(value, str) and value in allowed_values: parts.append(field + '=' + value)
     return ' '.join(parts)
 
 
@@ -134,7 +144,7 @@ def main():
                 name = tls.name()
                 try:
                     command = gateway_command(image_id, scenario, name, metadata['ca_path'], ca, cert, key)
-                    result = tls.run_named(command, name, 100)
+                    result = tls.run_named(command, name, 145)
                     if result.returncode:
                         print('FAIL %s: Docker/probe exited %s (details withheld)' % (scenario, result.returncode)); failures += 1; continue
                     obs = json.loads(result.stdout)

@@ -80,7 +80,9 @@ def gateway_env():
             'OPENAI_BASE_URL': 'https://api.openai.com/v1', 'API_SERVER_KEY': KEY,
             'API_SERVER_ENABLED': 'true', 'API_SERVER_HOST': '127.0.0.1',
             'API_SERVER_PORT': '18772', 'API_SERVER_MODEL_NAME': 'hermes-agent',
-            'PYTHONDONTWRITEBYTECODE': '1', 'NO_PROXY': '*'}
+            'PYTHONDONTWRITEBYTECODE': '1', 'NO_PROXY': '*',
+            'HERMES_GATEWAY_NO_SUPERVISE': '1', 'HERMES_DISABLE_LAZY_INSTALLS': '1',
+            'AWS_EC2_METADATA_DISABLED': 'true'}
 
 
 def request(url, data=None, timeout=40):
@@ -123,6 +125,10 @@ LOG_PATTERNS = {
     'config_parse_failed': ('failed to process config.yaml',),
     'no_platforms': ('no platforms configured', 'no platforms enabled', 'no platforms connected'),
     'api_connect_failed': ('failed to connect api_server', 'api server failed to start'),
+    'supervision_redirect': ('s6 supervision',),
+    'gateway_start_entered': ('starting hermes gateway',),
+    'api_connecting': ('connecting to api_server',),
+    'gateway_running': ('gateway running with',),
 }
 
 
@@ -136,6 +142,48 @@ def classify_gateway_log(path):
     except OSError:
         return ['log_unavailable']
     return [name for name, patterns in LOG_PATTERNS.items() if any(p in text for p in patterns)]
+
+
+def startup_snapshot(home, pid, proc_root=pathlib.Path('/proc')):
+    """Passive snapshot; never expose raw status, filenames, argv, PID or exception text."""
+    info = {'pid_file_present': (home / 'gateway.pid').is_file()}
+    state_path = home / 'gateway_state.json'
+    try:
+        if state_path.stat().st_size > 65536:
+            info['gateway_state'] = 'invalid'
+        else:
+            state = json.loads(state_path.read_text(encoding='utf-8')).get('gateway_state')
+            info['gateway_state'] = state if state in ('starting', 'running', 'stopped', 'startup_failed', 'draining') else 'other'
+    except FileNotFoundError:
+        info['gateway_state'] = 'missing'
+    except (OSError, ValueError, AttributeError):
+        info['gateway_state'] = 'unavailable'
+    # The Linux /proc snapshot distinguishes a redirected sleeping CLI from a Python gateway.
+    try:
+        raw = (proc_root / str(pid) / 'cmdline').read_bytes()[:8192].split(b'\0')
+        executable = raw[0].rsplit(b'/', 1)[-1] if raw else b''
+        if executable == b'sleep' and b'infinity' in raw[1:]:
+            info['process_kind'] = 'sleep_infinity'
+        elif executable.startswith(b'python') or executable == b'hermes':
+            info['process_kind'] = 'python_or_hermes'
+        else:
+            info['process_kind'] = 'other'
+        stat = (proc_root / str(pid) / 'stat').read_text(encoding='ascii')
+        state = stat.rsplit(')', 1)[1].split()[0]
+        info['process_state'] = state if state in ('R', 'S', 'D', 'T', 'Z') else 'other'
+    except (OSError, ValueError, IndexError, UnicodeError):
+        info['process_kind'] = 'unavailable'
+        info['process_state'] = 'unavailable'
+    return info
+
+
+def startup_log_flags(stderr_path, home):
+    flags = set()
+    for path in (stderr_path, home / 'logs' / 'gateway.log', home / 'logs' / 'agent.log'):
+        flags.update(classify_gateway_log(path))
+    # Missing optional log files is not itself evidence of a failure.
+    flags.discard('log_unavailable')
+    return sorted(flags)
 
 
 def classify_health_error(exc):
@@ -202,7 +250,7 @@ def main():
     try:
         proc = subprocess.Popen(['/opt/hermes/.venv/bin/hermes', 'gateway', 'run'], env=env,
                                 cwd='/opt/hermes', stdout=stderr_file, stderr=stderr_file)
-        deadline = time.monotonic() + 35
+        deadline = time.monotonic() + 60
         while time.monotonic() < deadline:
             if proc.poll() is not None:
                 output['diagnostic_code'] = 'gateway_exited'
@@ -220,6 +268,7 @@ def main():
             time.sleep(0.25)
         else:
             output['diagnostic_code'] = 'gateway_readiness_timeout'
+            output['startup'] = startup_snapshot(HOME, proc.pid)
             return output
         data = json.dumps(gateway_request_body()).encode()
         status, body = request('http://127.0.0.1:18772/v1/chat/completions', data)
@@ -240,7 +289,7 @@ def main():
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait()
-        output['log_flags'] = classify_gateway_log(stderr_path)
+        output['log_flags'] = startup_log_flags(stderr_path, HOME)
         server.shutdown()
         server.server_close()
         thread.join()

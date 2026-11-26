@@ -105,3 +105,18 @@ python -B deploy/openai-agent-acceptance/docker_acceptance.py --image <imagen-lo
 ```
 
 Docker no estaba disponible en el entorno local donde se modificó el arnés; queda por verificar la carga de configuración real y el arranque en la imagen de CI. No se cambió código funcional del gateway ni se alteró la verificación TLS.
+
+### Arranque aislado: ajuste para CI 45738747420
+
+El código de pruebas exacto `tests/docker/test_gateway_run_supervised.py` de la fuente temporal indica que `hermes gateway run` puede redirigir al supervisor s6, dejando el comando original en `sleep infinity`; especifica `HERMES_GATEWAY_NO_SUPERVISE=1` como alternativa para conservar el gateway en primer plano. El arnés utiliza `--entrypoint` propio y no inicia s6. Ahora fija esa variable en el entorno **del proceso gateway**. Esta es una causa plausible del síntoma reportado (proceso vivo sin listener), no una causa observada en ese run: sus diagnósticos anteriores no incluían estado del proceso ni la traza de redirección.
+
+El entorno explícito anterior también descartaba `HERMES_DISABLE_LAZY_INSTALLS=1`, que las pruebas de imagen inmutable esperan. Ahora se establece esa opción y se omite deliberadamente `HERMES_LAZY_INSTALL_TARGET`; también se desactiva la consulta AWS IMDS para este entorno sin red. No se deshabilitan Tirith, watchdogs ni verificaciones de seguridad o TLS; el código real aún puede ejecutar su inicialización y fallar. No se heredan credenciales ni configuración de plataforma del host. El timeout de readiness aumenta de 35 a 60 s, consistente con las pruebas de arranque Docker de la fuente, y el timeout externo a 145 s; sólo se acepta `/health` 200 seguido de la llamada y respuesta correctas, no un proceso vivo.
+
+Cuando se agota readiness, se recopila pasivamente información limitada: existencia de `gateway.pid`, estado allowlisted de `gateway_state.json`, clase (`sleep_infinity`, `python_or_hermes`, `other`, `unavailable`) y estado Linux (`R/S/D/T/Z`) del proceso observado por `/proc`. Además se buscan mensajes fijos de inicio, conexión API, listener, gateway en ejecución o redirección s6 tanto en stderr como en los logs de gateway/agent dentro del home efímero. Sólo se emiten etiquetas; nunca se imprimen argv, PID, líneas de log, contenido del estado, cuerpos ni claves. Si no hay evidencia, se informa `missing`/`unavailable`, sin inferir una etapa. Estas señales sirven para localizar el punto alcanzado, no garantizan cuál llamada bloqueó.
+
+```powershell
+python -B deploy/openai-agent-acceptance/test_gateway_startup.py
+python -B deploy/openai-agent-acceptance/docker_acceptance.py --image <imagen-local> --scenario success
+```
+
+Las autopruebas locales pasan; el daemon Docker del entorno de edición seguía inaccesible, por lo que debe confirmarse el arreglo mediante el siguiente run real sin asumir que la redirección era la única causa.
