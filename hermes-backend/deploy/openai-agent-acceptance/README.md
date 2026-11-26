@@ -120,3 +120,20 @@ python -B deploy/openai-agent-acceptance/docker_acceptance.py --image <imagen-lo
 ```
 
 Las autopruebas locales pasan; el daemon Docker del entorno de edición seguía inaccesible, por lo que debe confirmarse el arreglo mediante el siguiente run real sin asumir que la redirección era la única causa.
+
+### Loopback y puertos: CI 45740976115
+
+Se identificó una causa concreta en el arnés anterior: `tls_docker_acceptance.probe_command` configura intencionalmente `HTTP_PROXY`/`HTTPS_PROXY` inválidos en el **proceso del probe** para pruebas de aislamiento, pero el `NO_PROXY=*` estaba únicamente en el entorno separado del subprocess del gateway. `urllib.request.urlopen` del probe podía usar el proxy inválido para consultar `127.0.0.1:18772`, de modo que un `connection_refused` no necesariamente provenía del listener real. La causa exacta del run no se verificó en esa ejecución, pero el defecto del arnés sí se reproduce/controla en una autoprueba con variables proxy envenenadas.
+
+La consulta HTTP del gateway utiliza ahora un opener explícito `ProxyHandler({})`, restringido a HTTP loopback y puertos de prueba 18772 y 8642; tanto readiness como el POST se conectan directamente sin depender de `NO_PROXY` heredado. Este cambio no afecta la verificación TLS ni las pruebas de `trust_env=False` del módulo OpenAI; no sustituye al gateway ni altera sus respuestas. La aceptación sigue exigiendo health en **18772**, POST real, respuesta del gateway y despacho TLS mock correctos; no se hace fallback automático al puerto predeterminado para aprobar.
+
+Si vence el timeout, el arnés lee `/proc/<pid>/net/tcp` y `tcp6` para verificar LISTEN en el puerto objetivo y el predeterminado, y cruza inodes con descriptores del proceso para categorías `gateway_owned_target`, `gateway_owned_default` y `gateway_owned_other`. También intenta health directo en ambos puertos como información diagnóstica. Se emiten sólo booleanos, sin direcciones, puertos arbitrarios, inodes ni contenido HTTP. Si `/proc` o los descriptores no son accesibles, los booleanos `*_readable=false` distinguen ausencia de visibilidad de ausencia de listeners; los sockets en la tabla de red pueden pertenecer a otro proceso y los que pertenecen a un descendiente no cuentan como pertenecientes al PID inspeccionado. Los chequeos alternativos son diagnósticos y nunca convierten un fallo en PASS.
+
+Fuente temporal: el preflight obtiene `PlatformConfig.extra` en un proceso separado; la instancia real de `APIServerAdapter` vuelve a leer host y puerto desde `config.extra` (o env por defecto) y efectúa el bind en `connect()`. Ver ambos valores de preflight correctos no prueba el puerto del socket real del proceso en ejecución. Las categorías `/proc` agregadas permiten contrastarlo sin exponer la dirección de escucha.
+
+```powershell
+python -B deploy/openai-agent-acceptance/test_gateway_network.py
+python -B deploy/openai-agent-acceptance/docker_acceptance.py --image <imagen-local> --scenario success
+```
+
+El daemon Docker no estaba accesible en el entorno donde se editó esta versión; hace falta CI para confirmar el camino completo con la imagen candidata. No se ha producido ni inferido un PASS de imagen.

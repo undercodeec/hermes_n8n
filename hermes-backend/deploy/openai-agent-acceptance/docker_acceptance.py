@@ -117,6 +117,14 @@ def format_safe_diagnostics(obs):
                                       ('process_state', {'R', 'S', 'D', 'T', 'Z', 'other', 'unavailable'})):
             value = startup.get(field)
             if isinstance(value, str) and value in allowed_values: parts.append(field + '=' + value)
+    listeners = obs.get('listeners')
+    fields = ('proc_tcp_readable', 'proc_tcp6_readable', 'listen_target', 'listen_default',
+              'gateway_fd_readable', 'gateway_owned_target', 'gateway_owned_default',
+              'gateway_owned_other', 'health_target_200', 'health_default_200')
+    if isinstance(listeners, dict):
+        for field in fields:
+            if type(listeners.get(field)) is bool:
+                parts.append(field + '=' + str(listeners[field]).lower())
     return ' '.join(parts)
 
 

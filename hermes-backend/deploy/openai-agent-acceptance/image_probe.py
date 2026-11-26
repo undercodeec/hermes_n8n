@@ -11,6 +11,7 @@ import pathlib
 import subprocess
 import sys
 import threading
+from urllib.parse import urlsplit
 import time
 import urllib.error
 import urllib.request
@@ -86,10 +87,14 @@ def gateway_env():
 
 
 def request(url, data=None, timeout=40):
+    # Gateway health/chat must never inherit the mock's poisoned proxy environment.
+    parsed = urlsplit(url)
+    if parsed.scheme != 'http' or parsed.hostname != '127.0.0.1' or parsed.port not in (18772, 8642):
+        raise ValueError('gateway probe allows loopback test ports only')
     headers = {'Authorization': 'Bearer ' + KEY, 'Content-Type': 'application/json'}
     req = urllib.request.Request(url, data=data, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as response:
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(req, timeout=timeout) as response:
             return response.status, response.read(1000000)
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read(1000000)
@@ -175,6 +180,64 @@ def startup_snapshot(home, pid, proc_root=pathlib.Path('/proc')):
         info['process_kind'] = 'unavailable'
         info['process_state'] = 'unavailable'
     return info
+
+
+def listener_snapshot(pid, proc_root=pathlib.Path('/proc')):
+    """Inspect LISTEN sockets in namespace; return fixed booleans only, no addresses or ports."""
+    info = {'proc_tcp_readable': False, 'proc_tcp6_readable': False,
+            'listen_target': False, 'listen_default': False,
+            'gateway_fd_readable': False, 'gateway_owned_target': False,
+            'gateway_owned_default': False, 'gateway_owned_other': False}
+    listeners = []
+    for name, field in (('tcp', 'proc_tcp_readable'), ('tcp6', 'proc_tcp6_readable')):
+        try:
+            content = (proc_root / str(pid) / 'net' / name).read_text(encoding='ascii')
+            info[field] = True
+        except (OSError, UnicodeError):
+            continue
+        for line in content.splitlines()[1:]:
+            parts = line.split()
+            if len(parts) < 10 or parts[3] != '0A': continue
+            try:
+                port = int(parts[1].rsplit(':', 1)[1], 16)
+                inode = parts[9]
+                if not inode.isdigit(): continue
+            except (ValueError, IndexError):
+                continue
+            listeners.append((port, inode))
+            if port == 18772: info['listen_target'] = True
+            if port == 8642: info['listen_default'] = True
+    owned = set()
+    try:
+        fd_dir = proc_root / str(pid) / 'fd'
+        for entry in fd_dir.iterdir():
+            try:
+                link = os.readlink(entry)
+            except OSError:
+                continue
+            if link.startswith('socket:[') and link.endswith(']') and link[8:-1].isdigit():
+                owned.add(link[8:-1])
+        info['gateway_fd_readable'] = True
+    except OSError:
+        pass
+    for port, inode in listeners:
+        if inode not in owned: continue
+        if port == 18772: info['gateway_owned_target'] = True
+        elif port == 8642: info['gateway_owned_default'] = True
+        else: info['gateway_owned_other'] = True
+    return info
+
+
+def diagnostic_health_scan():
+    # Diagnostics only: never change the configured route or turn a failure into PASS.
+    results = {}
+    for label, port in (('health_target_200', 18772), ('health_default_200', 8642)):
+        try:
+            status, _ = request('http://127.0.0.1:%d/health' % port, timeout=1)
+            results[label] = status == 200
+        except (OSError, urllib.error.URLError, TimeoutError, ValueError):
+            results[label] = False
+    return results
 
 
 def startup_log_flags(stderr_path, home):
@@ -269,6 +332,8 @@ def main():
         else:
             output['diagnostic_code'] = 'gateway_readiness_timeout'
             output['startup'] = startup_snapshot(HOME, proc.pid)
+            output['listeners'] = listener_snapshot(proc.pid)
+            output['listeners'].update(diagnostic_health_scan())
             return output
         data = json.dumps(gateway_request_body()).encode()
         status, body = request('http://127.0.0.1:18772/v1/chat/completions', data)
