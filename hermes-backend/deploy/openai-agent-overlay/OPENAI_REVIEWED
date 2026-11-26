@@ -1,0 +1,7 @@
+Registry publication review only; this marker does not authorize deployment.
+Scope: text-only CRM through the private hermes-agent Chat Completions alias.
+Evidence: run 45745463049 built the candidate, passed the isolated HTTPS
+gateway smoke and 35 CRM output validator tests. The source receives a new
+revision on this commit and the workflow must repeat these checks before push.
+Known limitations: no monthly spend cap; direct gateway WhatsApp and sessions
+API not validated; production egress, runtime and rollback require verification.
