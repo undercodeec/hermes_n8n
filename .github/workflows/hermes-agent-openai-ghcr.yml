@@ -1,0 +1,136 @@
+name: Hermes agent - build and publish GHCR
+
+on:
+  push:
+    branches:
+      - feat/hermes-agent-openai-ghcr-20261125
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: hermes-agent-openai-ghcr
+  cancel-in-progress: false
+
+jobs:
+  build-and-publish:
+    if: github.repository == 'undercodeec/hermes_n8n' && github.ref == 'refs/heads/feat/hermes-agent-openai-ghcr-20261125'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      digest: ${{ steps.publish.outputs.digest }}
+    steps:
+      - name: Check out exact event commit
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Python for synthetic acceptance
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.13'
+
+      - name: Install synthetic TLS test dependency
+        run: python -m pip install 'cryptography==46.0.7'
+
+      - name: Verify egress control unit tests
+        working-directory: hermes-backend/deploy/openai-egress-persistent
+        run: python3 -m unittest -v test_controls.py
+
+      - name: Verify acceptance harness (fixture, not agent acceptance)
+        working-directory: hermes-backend
+        run: |
+          set -euo pipefail
+          python3 -B deploy/openai-agent-acceptance/test_harness.py
+          python3 -B deploy/openai-agent-acceptance/test_image_probe.py
+          python3 -B deploy/openai-agent-acceptance/test_docker_acceptance.py
+          python3 -B deploy/openai-agent-acceptance/test_tls_acceptance.py
+          python3 -B deploy/openai-agent-acceptance/test_gateway_tls.py
+          python3 -B deploy/openai-agent-acceptance/harness.py --adapter python3 -B deploy/openai-agent-acceptance/fixture_adapter.py
+
+      - name: Verify isolated agent guard unit tests
+        run: python3 -B hermes-backend/deploy/openai-agent-overlay/source/tests/test_openai_budgeted_turn.py
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567 # v3.3.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build candidate agent image without publishing
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: ./hermes-backend
+          file: ./hermes-backend/deploy/openai-agent-overlay/Dockerfile
+          platforms: linux/amd64
+          pull: true
+          push: false
+          load: true
+          tags: hermes-agent-qa:${{ github.sha }}
+          build-args: |
+            PATCH_REVISION=${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            io.undercode.hermes.component=agent
+
+      - name: Exercise candidate gateway with isolated synthetic upstream
+        working-directory: hermes-backend
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+        run: python3 -B deploy/openai-agent-acceptance/docker_acceptance.py --image "hermes-agent-qa:$SOURCE_SHA" --scenario success
+
+      - name: Refuse publication of unreviewed candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f hermes-backend/deploy/openai-agent-overlay/OPENAI_REVIEWED || {
+            echo "OpenAI adaptation is incomplete or not reviewed; refusing publication."
+            exit 1
+          }
+
+      - name: Publish the tested agent image
+        id: publish
+        env:
+          SOURCE_SHA: ${{ github.sha }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="ghcr.io/undercodeec/hermes-agent:${SOURCE_SHA}-run${RUN_ID}-attempt${RUN_ATTEMPT}"
+          docker tag "hermes-agent-qa:$SOURCE_SHA" "$tag"
+          docker push "$tag"
+          digest="$(docker image inspect "$tag" --format '{{json .RepoDigests}}' | python3 -c 'import json,sys; a=json.load(sys.stdin); d=[x.split("@",1)[1] for x in a if x.startswith("ghcr.io/undercodeec/hermes-agent@sha256:")]; assert len(d)==1; print(d[0])')"
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+
+      - name: Verify and report immutable image reference
+        env:
+          IMAGE_DIGEST: ${{ steps.publish.outputs.digest }}
+          SOURCE_SHA: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
+          source_tree="$(git rev-parse HEAD^{tree})"
+          image="ghcr.io/undercodeec/hermes-agent@$IMAGE_DIGEST"
+          docker buildx imagetools inspect "$image"
+          docker pull --platform linux/amd64 "$image"
+          test "$(docker image inspect --format '{{.Os}}/{{.Architecture}}' "$image")" = "linux/amd64"
+          test "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" = "$SOURCE_SHA"
+          test "$(docker image inspect --format '{{index .Config.Labels "io.undercode.hermes.component"}}' "$image")" = "agent"
+          {
+            echo "## Hermes agent image published (no deployment)"
+            echo "- Source commit: \`$SOURCE_SHA\`"
+            echo "- Source tree: \`$source_tree\`"
+            echo "- Digest: \`$image\`"
+          } >> "$GITHUB_STEP_SUMMARY"

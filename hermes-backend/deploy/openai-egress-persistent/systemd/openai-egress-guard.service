@@ -1,0 +1,9 @@
+[Unit]
+Description=Install dedicated OpenAI egress firewall
+After=docker.service
+Before=openai-egress-proxy.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/openai-egress/orchestrator.py bootstrap
+RemainAfterExit=yes

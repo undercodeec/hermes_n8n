@@ -1,0 +1,16 @@
+{
+  "source_commit": "a251551a4b7dc187780193756d0747a1e3ea8e88",
+  "base_image": "nousresearch/hermes-agent@sha256:99641e57ec762c59e54cb44aa6746b7fc68c18b3c5ddb088af54234c613d9294",
+  "agent_image_id": "sha256:403917d73eb19e9388ea5bf49a52da8b1282e092ec412637aa81ad930e4c7efe",
+  "file_sha256": {
+    "agent/agent_init.py": "9b499baf9f4bc51ae7ac75185bb9b67f6ee745b3c789998d2dd031d569ee3f4d",
+    "agent/auxiliary_client.py": "fa2c0aff55f6b17679ab76b85c42ee5950450ae08cf81bd4bdcbd44e65fce775",
+    "agent/chat_completion_helpers.py": "af69c5001fa0de6cb637d6999191045d12410affd41d862d6bbaa3f0db6a24a3",
+    "agent/codex_runtime.py": "c9867df36eedc3fafd40e5ce5a88a3ef31b959f2304758e42840bdb5771ec742",
+    "agent/gemini_native_adapter.py": "d732864e011490e69fde20844dcc9ad55adf2333c4565062e40f2617903170e3",
+    "agent/provider_budget.py": "57c93db85f6fd7164b2249ec7ff48a0c8e484bcade9ce907883f858ed1257783",
+    "agent/transports/chat_completions.py": "f4aee5f61334ea08826eab1311e5a53d546c6d33831b238afc9a2547cde0180f",
+    "agent/turn_facade.py": "c7d54841a0ebff46ef772a7a507b44cee8052c3fcb258b00ed9f0c84c264d6f8",
+    "gateway/platforms/api_server.py": "6a5abd4d301a7e8de3454ca9929b9c8a4b707c21743b42d8a711fefdc700589d"
+  }
+}

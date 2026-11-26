@@ -1,0 +1,14 @@
+[Unit]
+Description=Supervise dedicated OpenAI proxy and expiring firewall entries
+Requires=openai-egress-guard.service docker.service
+BindsTo=docker.service
+After=openai-egress-guard.service docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=/etc/openai-egress/image.conf
+ExecStart=/usr/bin/python3 /opt/openai-egress/orchestrator.py supervise --image ${OPENAI_PROXY_IMAGE}
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=60
